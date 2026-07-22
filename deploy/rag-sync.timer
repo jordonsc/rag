@@ -1,0 +1,18 @@
+# Polls GitHub for changes every 15 minutes (option 1: no public endpoint needed).
+# The indexer re-clones the active repos and re-embeds only changed files, indexes
+# new repos, and purges archived/removed ones. Deploy to
+#   ~/.config/systemd/user/rag-sync.timer
+# then: systemctl --user enable --now rag-sync.timer
+
+[Unit]
+Description=Run RAG corpus sync every 15 minutes
+
+[Timer]
+# Every 15 minutes, wall-clock (deterministic). Persistent catches missed runs
+# after downtime; the small jitter avoids hammering GitHub on the dot.
+OnCalendar=*:0/15
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

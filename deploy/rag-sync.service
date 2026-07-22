@@ -1,0 +1,31 @@
+# RAG corpus sync — runs the indexer once against the GitHub source.
+# Rootless user unit; deploy to ~/.config/systemd/user/rag-sync.service
+# Driven by rag-sync.timer. Config + secrets come from ~/.config/rag/env (chmod 600):
+#   VOYAGE_API_KEY=...
+#   GITHUB_TOKEN=...
+#   RAG_GITHUB__ACCOUNT=your-github-account   <-- REQUIRED (the account whose repos are indexed)
+# The container ships NO rag.toml — config is built-in defaults + RAG_* env, so the
+# GitHub account MUST be set in that env file. Without it, `cfg.account` is empty,
+# every repo fails the `owner.login == account` check, 0 repos are selected, and the
+# reconcile PURGES the whole corpus. (Incident 2026-06-22: a deploy reinstalled this
+# unit with the account var missing and wiped the index — hence it lives in the env
+# file now, not the unit.)
+
+[Unit]
+Description=RAG corpus sync (GitHub -> Qdrant)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Pull the image only if missing; never block on a registry for `localhost/` images.
+ExecStart=/usr/bin/podman run --rm --name rag-sync \
+    --pull=never \
+    --network=host \
+    --env-file=%h/.config/rag/env \
+    -e RAG_QDRANT__URL=http://localhost:6334 \
+    -e RAG_GITHUB__WORK_DIR=/work/corpus \
+    -e RUST_LOG=info \
+    -v %h/rag/corpus:/work/corpus \
+    localhost/rag:latest rag-ingest run --source github
+TimeoutStartSec=1800

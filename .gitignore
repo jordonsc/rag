@@ -1,0 +1,17 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Local config & secrets — never commit a real key
+/rag.toml
+.env
+/.mcp.json
+
+# Editor / OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Deploy target (real values; example is committed)
+/deploy/deploy.env

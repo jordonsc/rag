@@ -1,0 +1,52 @@
+# Quadlet unit for the RAG HTTP retrieval service (rag-serve).
+# Rootless — deploy to
+#   ~/.config/containers/systemd/rag-serve.container   on the server
+# then: systemctl --user daemon-reload && systemctl --user start rag-serve.service
+#
+# Auto-starts on boot via linger (same as qdrant). Uses host networking so it
+# binds :17793 directly and reaches Qdrant at localhost:6334 (rootless containers
+# can't otherwise reach the host LAN IP). Secrets come from the shared env file.
+#
+# No rag.toml is shipped: rag-serve runs on built-in defaults + RAG_* env, so the
+# only required secret is VOYAGE_API_KEY (from the env file). QDRANT_API_KEY is
+# optional (trusted LAN Qdrant has no auth).
+
+[Unit]
+Description=RAG retrieval service (HTTP /search, /health, /info)
+After=network-online.target qdrant.service
+Wants=network-online.target
+# Retrieval is useless without the vector store; start after it.
+Requires=qdrant.service
+
+[Container]
+Image=localhost/rag:latest
+ContainerName=rag-serve
+Exec=rag-serve
+Network=host
+EnvironmentFile=%h/.config/rag/env
+# Reach Qdrant over the host loopback (host networking).
+Environment=RAG_QDRANT__URL=http://localhost:6334
+Environment=RAG_SERVER__BIND=0.0.0.0:17793
+Environment=RUST_LOG=info
+# `POST /reindex` writes this file; the rag-reindex.path unit watches it on the host
+# and starts rag-sync.service. The dir is bind-mounted from the host.
+Environment=RAG_SERVER__REINDEX_TRIGGER=/triggers/reindex
+Volume=%h/rag/triggers:/triggers:rw
+# Ledger SQLite store (source of truth) + its reconcile trigger. After each ledger
+# write, rag-serve touches /triggers/ledger-reindex; the rag-ledger-reindex.path unit
+# watches it and runs a (cheap) reconcile. The 15-min ledger timer is the backstop.
+Environment=RAG_LEDGER__DB_PATH=/ledger/ledger.db
+Environment=RAG_SERVER__LEDGER_REINDEX_TRIGGER=/triggers/ledger-reindex
+Volume=%h/rag/ledger:/ledger:rw
+# Liveness: the service answers /health with "ok".
+HealthCmd=curl -fsS http://localhost:17793/health || exit 1
+HealthInterval=30s
+HealthRetries=3
+HealthStartPeriod=10s
+
+[Service]
+Restart=always
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

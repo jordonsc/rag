@@ -1,0 +1,55 @@
+# Quadlet unit for the RAG MCP gateway (rag-mcp --transport http).
+# Rootless — deploy to
+#   ~/.config/containers/systemd/rag-mcp.container   on the server
+# then: systemctl --user daemon-reload && systemctl --user start rag-mcp.service
+#
+# A long-lived Streamable HTTP server that exposes BOTH MCP tool sets at once:
+#   POST :17794/corpus  -> search_corpus, reindex_corpus
+#   POST :17794/ledger  -> the ledger_* tools
+# so remote Claude Code clients register two URLs and need NO local binary. Each
+# request still forwards to rag-serve (localhost:17793), so the Voyage key never
+# leaves the server — same trust model as the stdio binary.
+#
+# Host networking so it binds :17794 directly and reaches rag-serve on the host
+# loopback (rootless containers can't otherwise reach the host LAN IP).
+#
+# LEDGER IDENTITY: a shared HTTP server has no client git context, so ledger
+# writes attribute the author from RAG_EMAIL / RAG_AGENT below (fine for a
+# single-operator estate), and ledger_create needs an explicit `repo` arg. The
+# local stdio binary still captures the client's real git identity automatically.
+
+[Unit]
+Description=RAG MCP gateway (Streamable HTTP; /corpus + /ledger)
+After=network-online.target rag-serve.service
+Wants=network-online.target
+# The gateway is a thin client of rag-serve; start after it.
+Requires=rag-serve.service
+
+[Container]
+Image=localhost/rag:latest
+ContainerName=rag-mcp
+Exec=rag-mcp --transport http --bind 0.0.0.0:17794
+Network=host
+# Forward to rag-serve over the host loopback (host networking).
+Environment=RAG_SERVE_URL=http://localhost:17793
+Environment=RAG_MCP_BIND=0.0.0.0:17794
+Environment=RUST_LOG=info
+# Author identity stamped on ledger writes that arrive over HTTP (no client git
+# context server-side). Set RAG_EMAIL in ~/.config/rag/env (e.g.
+# RAG_EMAIL=you@example.com); RAG_AGENT defaults here but can be overridden there too.
+Environment=RAG_AGENT=rag-mcp-http
+EnvironmentFile=%h/.config/rag/env
+# Liveness: the MCP endpoint answers (any HTTP response = up). A bare GET without
+# a session yields 4xx, which is still "listening"; -s keeps curl's exit 0 unless
+# the connection is refused.
+HealthCmd=curl -s http://localhost:17794/corpus -o /dev/null || exit 1
+HealthInterval=30s
+HealthRetries=3
+HealthStartPeriod=10s
+
+[Service]
+Restart=always
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

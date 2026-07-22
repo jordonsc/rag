@@ -1,0 +1,18 @@
+# Watches the reindex trigger file; when rag-serve writes it (POST /reindex),
+# this starts rag-sync.service for an immediate corpus re-index. Rootless user
+# unit — deploy to ~/.config/systemd/user/rag-reindex.path, then:
+#   systemctl --user enable --now rag-reindex.path
+#
+# Because it activates the same oneshot rag-sync.service the 15-min timer uses,
+# systemd serialises runs — a manual re-index and the timer can never run two
+# indexers against the corpus at once.
+
+[Unit]
+Description=Watch the RAG re-index trigger file and run a sync
+
+[Path]
+PathModified=%h/rag/triggers/reindex
+Unit=rag-sync.service
+
+[Install]
+WantedBy=default.target

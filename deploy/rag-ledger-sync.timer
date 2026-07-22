@@ -1,0 +1,16 @@
+# Backstop reconcile of the ledger index every 15 minutes, so changes made outside
+# the MCP/HTTP path (a manual SQL edit, a future CLI) converge even if they never
+# fired the trigger file. Offset from rag-sync.timer (:0/15) to avoid both embedding
+# at the same instant. Deploy to ~/.config/systemd/user/rag-ledger-sync.timer
+# then: systemctl --user enable --now rag-ledger-sync.timer
+
+[Unit]
+Description=Reconcile the RAG ledger index every 15 minutes
+
+[Timer]
+OnCalendar=*:7/15
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

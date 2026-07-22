@@ -1,0 +1,17 @@
+# RAG backup — snapshots the Qdrant corpus collection + copies the ledger SQLite DB.
+# Rootless user unit; deploy to ~/.config/systemd/user/rag-backup.service
+# Driven by rag-backup.timer (daily). Runs the host-side backup script (curl to the
+# local Qdrant REST API + file copies), keeping the last 7 of each under ~/rag/backups.
+#
+# The Qdrant snapshot is rebuildable (saves a re-embed); the ledger DB is NOT — it's
+# the source of truth. Before this existed the only snapshot was a one-off (an
+# incident showed it 9 days stale + pre-ledger), hence a scheduled daily backup.
+
+[Unit]
+Description=RAG backup (Qdrant snapshot + ledger DB)
+Wants=network-online.target
+After=network-online.target qdrant.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash %h/rag/src/deploy/backup-qdrant.sh

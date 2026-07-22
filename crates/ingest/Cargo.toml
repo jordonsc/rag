@@ -1,0 +1,43 @@
+[package]
+name = "rag-ingest"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "rag-ingest"
+path = "src/main.rs"
+
+[dependencies]
+rag-core = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+dotenvy = { workspace = true }
+uuid = { workspace = true }
+
+# Corpus walk (gitignore-aware)
+ignore = "0.4"
+
+# Parallel chunking across files (CPU-bound, embarrassingly parallel)
+rayon = "1"
+
+# Chunking: semantic text/code splitting (character-sized; see chunker.rs)
+text-splitter = { version = "0.31", features = ["code", "markdown"] }
+
+# tree-sitter grammars for code-aware chunking
+tree-sitter = "0.26"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
+tree-sitter-bash = "0.25"
+tree-sitter-ruby = "0.23"

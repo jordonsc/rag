@@ -1,0 +1,18 @@
+# Watches the ledger reconcile trigger file; when rag-serve touches it (after a
+# ledger create/append), this starts rag-ledger-sync.service for an immediate
+# reconcile. Rootless user unit — deploy to
+#   ~/.config/systemd/user/rag-ledger-reindex.path
+# then: systemctl --user enable --now rag-ledger-reindex.path
+#
+# Activates the same oneshot the 15-min timer uses, so systemd serialises runs — a
+# triggered reconcile and the timer can never run two reconcilers at once.
+
+[Unit]
+Description=Watch the RAG ledger reconcile trigger file and run a reconcile
+
+[Path]
+PathModified=%h/rag/triggers/ledger-reindex
+Unit=rag-ledger-sync.service
+
+[Install]
+WantedBy=default.target

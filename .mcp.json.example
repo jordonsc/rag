@@ -1,0 +1,28 @@
+{
+  "//": "Register the RAG MCP servers with Claude Code. TWO transports — pick one. Both are thin clients of rag-serve (which holds the Voyage key server-side); NO API key here. 'rag' = search_corpus/reindex_corpus; 'ledger' = ledger_search/get/create/append/move/archive.",
+
+  "// stdio (per-client subprocess)": "Build first: `cargo build --release -p rag-mcp`, then set the command path to your checkout. ONE binary, two servers via --server so tool-use history reads 'Calling rag…' vs 'Calling ledger…'. Captures the client's git identity automatically; RAG_AGENT labels ledger writes (creator email + repo come from git).",
+
+  "// http (shared Streamable HTTP gateway)": "No local binary — point at the rag-mcp gateway on your server (port 17794), which serves both tool sets under /corpus and /ledger. Register via: `claude mcp add --transport http rag http://your-server:17794/corpus` and `... ledger http://your-server:17794/ledger`, or use the http blocks below. Ledger writes are attributed to the gateway's RAG_EMAIL/RAG_AGENT and ledger_create needs an explicit `repo` arg (no client git context server-side).",
+
+  "mcpServers": {
+    "rag": {
+      "command": "/path/to/rag/target/release/rag-mcp",
+      "args": ["--server", "corpus"],
+      "env": {
+        "RAG_SERVE_URL": "http://localhost:17793"
+      }
+    },
+    "ledger": {
+      "command": "/path/to/rag/target/release/rag-mcp",
+      "args": ["--server", "ledger"],
+      "env": {
+        "RAG_SERVE_URL": "http://localhost:17793",
+        "RAG_AGENT": "your-agent-label"
+      }
+    },
+
+    "// rag (http alternative)": { "type": "http", "url": "http://your-server:17794/corpus" },
+    "// ledger (http alternative)": { "type": "http", "url": "http://your-server:17794/ledger" }
+  }
+}

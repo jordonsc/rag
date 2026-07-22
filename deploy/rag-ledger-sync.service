@@ -1,0 +1,23 @@
+# RAG ledger reconcile — make the Qdrant `corpus = ledger` points match the SQLite
+# ledger. Cheap (a handful of topics, no GitHub clone). Rootless user unit; deploy
+# to ~/.config/systemd/user/rag-ledger-sync.service. Driven by rag-ledger-sync.timer
+# (15-min backstop) and rag-ledger-reindex.path (fired by rag-serve after a write).
+# Secrets come from ~/.config/rag/env (chmod 600): VOYAGE_API_KEY=...
+
+[Unit]
+Description=RAG ledger reconcile (SQLite -> Qdrant)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/podman run --rm --name rag-ledger-sync \
+    --pull=never \
+    --network=host \
+    --env-file=%h/.config/rag/env \
+    -e RAG_QDRANT__URL=http://localhost:6334 \
+    -e RAG_LEDGER__DB_PATH=/ledger/ledger.db \
+    -e RUST_LOG=info \
+    -v %h/rag/ledger:/ledger:rw \
+    localhost/rag:latest rag-ingest reconcile-ledger
+TimeoutStartSec=600

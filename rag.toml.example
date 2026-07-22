@@ -1,0 +1,56 @@
+# RAG configuration — copy to `rag.toml` and adjust. NEVER put API keys here.
+# Secrets are read from the environment only:
+#   VOYAGE_API_KEY   (required when a Voyage client is constructed)
+#   QDRANT_API_KEY   (optional; only if your Qdrant requires auth)
+#
+# Any field below can be overridden by an env var prefixed with `RAG_`, using
+# `__` for nesting, e.g.  RAG_QDRANT__URL=http://localhost:6334
+
+[corpus]
+# Root of all local code repositories (used by `--source local`). Each top-level
+# dir is treated as a `repo`.
+code_root = "/path/to/repos"
+# Root of the markdown document library (the wiki corpus).
+wiki_root = "/path/to/repos/wiki"
+
+[qdrant]
+# gRPC endpoint of the Qdrant instance (port 6334 is gRPC; 6333 is REST).
+url = "http://localhost:6334"
+collection = "rag_corpus"
+
+[voyage]
+embed_model = "voyage-4-large"
+rerank_model = "rerank-2.5"
+# Embedding dimensionality. voyage-4-large supports 256/512/1024/2048.
+dimensions = 1024
+
+[chunk]
+# Target chunk size in tokens (aligned to the embedding tokenizer) + overlap.
+max_tokens = 512
+overlap_tokens = 64
+
+[ingest]
+# Skip source files larger than this many bytes during discovery.
+max_file_bytes = 1000000
+
+[github]
+# Corpus source when running with `--source github`. The PAT is read from the
+# environment (GITHUB_TOKEN), never from this file. Archived repos are always
+# skipped (and purged from the index).
+account = "your-github-account"           # GitHub user/org whose repos form the corpus
+work_dir = "/path/to/rag/corpus"          # where shallow clones are kept
+wiki_repo = "wiki"                        # repo treated as the `wiki` corpus
+include_forks = true                      # set false to skip forked repos
+exclude = []                              # repo names to skip entirely
+
+[server]
+# Bind address for the HTTP retrieval service.
+bind = "0.0.0.0:17793"
+# ANN candidate set fetched before reranking (the over-fetch), and the default
+# number of results returned when a /search request omits `top_k`.
+over_fetch = 50
+default_top_k = 8
+# Path to a file `POST /reindex` writes to trigger an immediate re-index. Empty
+# disables the endpoint. In the container deployment the unit sets this to
+# /triggers/reindex (a systemd .path unit watches it and starts rag-sync.service).
+reindex_trigger = ""

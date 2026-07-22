@@ -1,0 +1,32 @@
+# Quadlet unit for the RAG Qdrant vector DB. Rootless — deploy to
+#   ~/.config/containers/systemd/qdrant.container   on the server
+# then: systemctl --user daemon-reload && systemctl --user start qdrant.service
+#
+# Requires lingering enabled for the user so it starts at boot without a login:
+#   sudo loginctl enable-linger <user>
+#
+# Image is pinned by tag (v1.18.2, digest pinned in deploy/RUNBOOK.md).
+# Data lives in explicit bind mounts under ~/rag/qdrant for easy backup (see deploy/RUNBOOK.md).
+
+[Unit]
+Description=Qdrant vector database (RAG corpus)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=docker.io/qdrant/qdrant:v1.18.2
+ContainerName=qdrant
+# 6333 = REST/HTTP, 6334 = gRPC (the Rust client uses gRPC).
+PublishPort=6333:6333
+PublishPort=6334:6334
+Volume=%h/rag/qdrant/storage:/qdrant/storage:rw
+Volume=%h/rag/qdrant/snapshots:/qdrant/snapshots:rw
+Environment=QDRANT__TELEMETRY_DISABLED=true
+Environment=QDRANT__LOG_LEVEL=INFO
+
+[Service]
+Restart=always
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target
