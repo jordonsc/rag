@@ -129,10 +129,6 @@ soft-deletes a topic — retained in SQLite but excluded from `all_for_index` so
 reconciler drops it from the index entirely, hidden from `ledger_search` unless
 `archived = true` (a substring search over the soft-deleted set), and restorable.
 
-> **Setting this up (or an agent installing from the repo URL)?** Start with
-> [`CLAUDE.md`](CLAUDE.md) — the quick-start covering what you need and how to stand up a
-> fresh RAG + ledger system. This README is the reference behind it.
-
 ## Deployment
 
 Designed to run on one Linux box as rootless Podman containers managed by systemd
@@ -141,6 +137,12 @@ user units. `./deploy/deploy.sh` is a one-command deploy (ship source → build 
 first. Full ops — backup/restore, rollback, key rotation, re-index — are in
 [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md); per-component reference in
 [`deploy/README.md`](deploy/README.md).
+
+## Agent Instructions
+
+If you're an agent that's been instructed to install this project, start with the 
+[`CLAUDE.md`](CLAUDE.md) — the quick-start covering what you need and how to stand up a
+fresh RAG + ledger system.
 
 ## Status & scope
 
