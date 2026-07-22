@@ -129,6 +129,10 @@ soft-deletes a topic — retained in SQLite but excluded from `all_for_index` so
 reconciler drops it from the index entirely, hidden from `ledger_search` unless
 `archived = true` (a substring search over the soft-deleted set), and restorable.
 
+> **Setting this up (or an agent installing from the repo URL)?** Start with
+> [`CLAUDE.md`](CLAUDE.md) — the quick-start covering what you need and how to stand up a
+> fresh RAG + ledger system. This README is the reference behind it.
+
 ## Deployment
 
 Designed to run on one Linux box as rootless Podman containers managed by systemd
