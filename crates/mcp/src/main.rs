@@ -177,7 +177,9 @@ struct LedgerMoveArgs {
     /// Destination project (repo name). The topic is reassigned a brand-new id in
     /// this repo (a fresh number too); the old id is removed.
     repo: String,
-    /// The acting agent. Falls back to $RAG_AGENT.
+    /// The acting agent — **always pass this**, set to your own model name
+    /// (e.g. "Claude Opus 5 (1M context)"). Nothing downstream can derive it, so
+    /// the $RAG_AGENT fallback is the marker "Unknown", not a guess.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
 }
@@ -190,7 +192,9 @@ struct LedgerArchiveArgs {
     /// `true` (default) archives (soft-delete + drop from the index); `false` restores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     archived: Option<bool>,
-    /// The acting agent. Falls back to $RAG_AGENT.
+    /// The acting agent — **always pass this**, set to your own model name
+    /// (e.g. "Claude Opus 5 (1M context)"). Nothing downstream can derive it, so
+    /// the $RAG_AGENT fallback is the marker "Unknown", not a guess.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
 }
@@ -223,7 +227,9 @@ struct LedgerCreateArgs {
     /// Optional tags.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     tags: Vec<String>,
-    /// The acting agent, e.g. "Claude Opus 4.8". Falls back to $RAG_AGENT.
+    /// The acting agent — **always pass this**, set to your own model name
+    /// (e.g. "Claude Opus 5 (1M context)"). Nothing downstream can derive it, so
+    /// the $RAG_AGENT fallback is the marker "Unknown", not a guess.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
 }
@@ -244,11 +250,21 @@ struct LedgerAppendArgs {
     /// New status (e.g. resolved, accepted, superseded, reverted).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     set_status: Option<String>,
+    /// Amend the topic's title — for a handle that turned out wrong or unclear.
+    /// The amendment is logged like any other change. Must not be blank.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    set_title: Option<String>,
+    /// Replace the topic's tags **wholesale** — send the full list you want, not
+    /// just the ones being added. `[]` clears every tag; omit to leave them alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    set_tags: Option<Vec<String>>,
     /// If set, this topic supersedes the given topic id: links both ways and marks
     /// the other topic `superseded` (the "this was a bad idea, do it this way now" move).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     supersedes: Option<String>,
-    /// The acting agent. Falls back to $RAG_AGENT.
+    /// The acting agent — **always pass this**, set to your own model name
+    /// (e.g. "Claude Opus 5 (1M context)"). Nothing downstream can derive it, so
+    /// the $RAG_AGENT fallback is the marker "Unknown", not a guess.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
 }
@@ -279,6 +295,10 @@ struct AppendReq {
     set_state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     set_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    set_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    set_tags: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     supersedes: Option<String>,
     author_email: String,
@@ -566,7 +586,11 @@ impl LedgerServer {
         split them. Optionally update current-state (set_state — keep it a concise status, not a \
         growing dossier), status (set_status), or mark that this topic supersedes another \
         (supersedes=<topic_id> — links both ways and flips the other to 'superseded', the way to \
-        record 'this earlier approach was wrong'). The author email is captured from git."
+        record 'this earlier approach was wrong'). It is also how a topic's metadata is amended: \
+        set_title for a handle that turned out wrong, set_tags to refile it (wholesale — send the \
+        full list, not a delta). The `summary` is NOT amendable by design: it is the original \
+        framing, and a topic that was framed wrongly is worth more than one tidied to match its \
+        outcome — correct it in the body instead. The author email is captured from git."
     )]
     async fn ledger_append(
         &self,
@@ -583,6 +607,8 @@ impl LedgerServer {
             kind: args.kind.unwrap_or_else(|| "note".to_string()),
             set_state: args.set_state,
             set_status: args.set_status,
+            set_title: args.set_title,
+            set_tags: args.set_tags,
             supersedes: args.supersedes,
             author_email: identity_email(),
             author_agent: resolve_agent(args.agent),
@@ -704,6 +730,14 @@ fn git_repo() -> Option<String> {
 }
 
 /// The acting agent: the explicit arg, else `$RAG_AGENT`.
+///
+/// **The env is a marker, not an identity.** Nothing in this stack can derive
+/// which model is calling — one stdio process serves a whole session including
+/// subagents running other models, and MCP's `initialize` carries the *client*
+/// (`claude-code`), not the model. So the caller is the only thing that knows,
+/// and `$RAG_AGENT` should be set to something that admits it (`Unknown`, or
+/// `rag-mcp-http` on the shared gateway). Setting it to a model name stamps
+/// every unattributed write with a confident lie that outlives the release.
 fn resolve_agent(arg: Option<String>) -> Option<String> {
     arg.or_else(|| std::env::var("RAG_AGENT").ok())
         .map(|s| s.trim().to_string())

@@ -119,8 +119,12 @@ that (corpus-first rule + ledger write/read reflexes). For a from-scratch setup 
 A cross-project, append-only record of decisions, incidents, defects, and
 investigations — so prior reasoning and "don't repeat this" lessons survive. SQLite
 is the source of truth; topics have an immutable summary, a mutable current state,
-and an append-only event log (state/status change only by appending). It's derived
-into Qdrant as `corpus = ledger` by a pull-based reconciler, so a normal
+an amendable title and tag set, and an append-only event log. **Every mutable field
+changes only by appending an event, and the event records the value it installed**,
+so the log always explains the change and nothing is ever silently rewritten. The
+summary is the exception with no setter at all: it is the original framing, and a
+topic that was framed wrongly is worth more than one tidied to match its outcome.
+It's derived into Qdrant as `corpus = ledger` by a pull-based reconciler, so a normal
 `search_corpus` surfaces it alongside code. Written only through the typed
 `ledger_create` / `ledger_append` MCP tools; read via `ledger_search` / `ledger_get`.
 Housekeeping: `ledger_move` refiles a topic under another project (minting a new id;

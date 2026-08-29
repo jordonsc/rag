@@ -361,6 +361,12 @@ struct LedgerAppendBody {
     set_state: Option<String>,
     #[serde(default)]
     set_status: Option<String>,
+    /// Amend the topic's title. Blank is rejected by the store.
+    #[serde(default)]
+    set_title: Option<String>,
+    /// Replace the topic's tag set wholesale; `[]` clears it, absent leaves it.
+    #[serde(default)]
+    set_tags: Option<Vec<String>>,
     #[serde(default)]
     supersedes: Option<String>,
     author_email: String,
@@ -389,6 +395,8 @@ async fn ledger_append(
             kind,
             set_state: body.set_state,
             set_status,
+            set_title: body.set_title,
+            set_tags: body.set_tags,
             supersedes: body.supersedes,
             author_email: body.author_email,
             author_agent: body.author_agent,

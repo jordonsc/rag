@@ -197,8 +197,16 @@ pub struct Topic {
     #[serde(rename = "type")]
     pub topic_type: TopicType,
     pub repo: String,
+    /// Amendable handle — changed only via [`LedgerStore::append_event`]'s
+    /// `set_title`, which records the new value on the event that made the
+    /// change. References between topics are by `topic_id`, never by title, so
+    /// a retitle breaks nothing.
     pub title: String,
-    /// Immutable original framing, set at creation.
+    /// **Immutable** original framing, set at creation and never revised.
+    ///
+    /// This is the one field that records what the problem looked like *before*
+    /// the answer was known, which is the thing a later reader most needs and a
+    /// present author is most tempted to tidy away. It has no setter by design.
     pub summary: String,
     /// Current understanding — mutated only via [`LedgerStore::append_event`].
     pub current_state: String,
@@ -207,6 +215,9 @@ pub struct Topic {
     pub updated_at: String,
     pub creator_email: String,
     pub creator_agent: Option<String>,
+    /// Amendable retrieval affordance — changed via `set_tags`. Not part of the
+    /// indexed payload or the embedded text, so a tag change does not by itself
+    /// force a re-embed (the event it is recorded on does).
     pub tags: Vec<String>,
     /// Soft-delete flag. An archived topic is retained in the source of truth but
     /// hidden from a normal `ledger_search` and purged from the RAG index (the
@@ -227,6 +238,11 @@ pub struct Event {
     pub body: String,
     pub new_state: Option<String>,
     pub new_status: Option<String>,
+    /// The title this event set, if it amended one.
+    pub new_title: Option<String>,
+    /// The tag set this event installed, if it amended one. Wholesale
+    /// replacement, not a delta — see [`NewEvent::set_tags`].
+    pub new_tags: Option<Vec<String>>,
 }
 
 /// A typed link from a topic to another topic.
@@ -285,6 +301,13 @@ pub struct NewEvent {
     pub kind: EventKind,
     pub set_state: Option<String>,
     pub set_status: Option<Status>,
+    /// Amend the topic's title. Rejected when blank: a topic with no handle is
+    /// worse than one with a stale handle.
+    pub set_title: Option<String>,
+    /// Replace the topic's tag set **wholesale** — this is not an add or a
+    /// remove, so a caller adding one tag sends the full list. An empty vec is
+    /// a legitimate value (clear every tag); `None` leaves them untouched.
+    pub set_tags: Option<Vec<String>>,
     /// If set, this topic supersedes `other`: a bidirectional link is written and
     /// `other`'s status is flipped to `superseded`.
     pub supersedes: Option<String>,
@@ -339,6 +362,10 @@ impl LedgerStore {
             // id is never handed out again (see `next_seq`).
             "ALTER TABLE moves ADD COLUMN old_repo TEXT",
             "ALTER TABLE moves ADD COLUMN old_seq INTEGER",
+            // Amendable metadata (title/tags): the new value is recorded on the
+            // event that made the change, so an amendment is never silent.
+            "ALTER TABLE events ADD COLUMN new_title TEXT",
+            "ALTER TABLE events ADD COLUMN new_tags TEXT",
         ] {
             if let Err(e) = sqlx::query(stmt).execute(&self.pool).await {
                 if !e.to_string().contains("duplicate column name") {
@@ -407,7 +434,16 @@ impl LedgerStore {
             .ok_or_else(|| Error::Ledger("topic vanished after create".into()))
     }
 
-    /// Append a monologue event, atomically applying any state/status/link change.
+    /// Append a monologue event, atomically applying any state/status/metadata/link
+    /// change.
+    ///
+    /// Every mutable field of a topic moves through here and nowhere else, so the
+    /// log always explains the change: `set_state` and `set_status` for where the
+    /// topic stands, `set_title` and `set_tags` for its handle and its filing.
+    /// The value each one installed is recorded on the event that installed it,
+    /// which is what keeps an amendment from being a silent rewrite.
+    ///
+    /// `summary` is deliberately absent from that list — see [`Topic::summary`].
     pub async fn append_event(&self, new: NewEvent) -> Result<Event> {
         let now = now_iso();
         let mut tx = self.pool.begin().await?;
@@ -425,9 +461,24 @@ impl LedgerStore {
         let new_state = new.set_state.clone();
         let new_status = new.set_status.map(|s| s.as_str().to_string());
 
+        // A blank title would leave the topic with no handle at all, which is
+        // worse than the stale one the caller is trying to replace. Tags carry
+        // no such floor: clearing every tag is a legitimate amendment.
+        let new_title = match new.set_title.as_deref().map(str::trim) {
+            Some("") => return Err(Error::Ledger("set_title must not be blank".into())),
+            Some(title) => Some(title.to_string()),
+            None => None,
+        };
+        let new_tags = new.set_tags.clone();
+        let new_tags_json = match &new_tags {
+            Some(tags) => Some(serde_json::to_string(tags)?),
+            None => None,
+        };
+
         let event_id: i64 = sqlx::query_scalar(
             "INSERT INTO events (topic_id, ts, author_email, author_agent, kind, body, \
-             new_state, new_status) VALUES (?,?,?,?,?,?,?,?) RETURNING event_id",
+             new_state, new_status, new_title, new_tags) \
+             VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING event_id",
         )
         .bind(&new.topic_id)
         .bind(&now)
@@ -437,6 +488,8 @@ impl LedgerStore {
         .bind(&new.body)
         .bind(&new_state)
         .bind(&new_status)
+        .bind(&new_title)
+        .bind(&new_tags_json)
         .fetch_one(&mut *tx)
         .await?;
 
@@ -451,6 +504,22 @@ impl LedgerStore {
         if let Some(status) = &new_status {
             sqlx::query("UPDATE topics SET status = ?, updated_at = ? WHERE topic_id = ?")
                 .bind(status)
+                .bind(&now)
+                .bind(&new.topic_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        if let Some(title) = &new_title {
+            sqlx::query("UPDATE topics SET title = ?, updated_at = ? WHERE topic_id = ?")
+                .bind(title)
+                .bind(&now)
+                .bind(&new.topic_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        if let Some(tags) = &new_tags_json {
+            sqlx::query("UPDATE topics SET tags = ?, updated_at = ? WHERE topic_id = ?")
+                .bind(tags)
                 .bind(&now)
                 .bind(&new.topic_id)
                 .execute(&mut *tx)
@@ -496,6 +565,8 @@ impl LedgerStore {
             body: new.body,
             new_state,
             new_status,
+            new_title,
+            new_tags,
         })
     }
 
@@ -521,8 +592,8 @@ impl LedgerStore {
 
     async fn events_for(&self, topic_id: &str) -> Result<Vec<Event>> {
         let rows = sqlx::query_as::<_, EventRowRaw>(
-            "SELECT event_id, ts, author_email, author_agent, kind, body, new_state, new_status \
-             FROM events WHERE topic_id = ? ORDER BY event_id",
+            "SELECT event_id, ts, author_email, author_agent, kind, body, new_state, new_status, \
+             new_title, new_tags FROM events WHERE topic_id = ? ORDER BY event_id",
         )
         .bind(topic_id)
         .fetch_all(&self.pool)
@@ -938,6 +1009,8 @@ struct EventRowRaw {
     body: String,
     new_state: Option<String>,
     new_status: Option<String>,
+    new_title: Option<String>,
+    new_tags: Option<String>,
 }
 
 impl EventRowRaw {
@@ -951,6 +1024,14 @@ impl EventRowRaw {
             body: self.body,
             new_state: self.new_state,
             new_status: self.new_status,
+            new_title: self.new_title,
+            // A malformed tags blob is treated as "no amendment recorded"
+            // rather than failing the read: the topic row is authoritative for
+            // the current tags, and this column is provenance.
+            new_tags: self
+                .new_tags
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok()),
         })
     }
 }
@@ -1005,7 +1086,9 @@ CREATE TABLE IF NOT EXISTS events (
     kind         TEXT NOT NULL,
     body         TEXT NOT NULL,
     new_state    TEXT,
-    new_status   TEXT
+    new_status   TEXT,
+    new_title    TEXT,
+    new_tags     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_topic ON events(topic_id);
 
@@ -1090,6 +1173,8 @@ mod tests {
             kind: EventKind::StatusChange,
             set_state: Some("Locked: char sizing, calibrated to the token target.".into()),
             set_status: Some(Status::Accepted),
+            set_title: None,
+            set_tags: None,
             supersedes: None,
             author_email: "dev@example.com".into(),
             author_agent: None,
@@ -1113,6 +1198,8 @@ mod tests {
             kind: EventKind::Correction,
             set_state: None,
             set_status: Some(Status::Accepted),
+            set_title: None,
+            set_tags: None,
             supersedes: Some(bad.topic_id.clone()),
             author_email: "dev@example.com".into(),
             author_agent: None,
@@ -1129,6 +1216,153 @@ mod tests {
         assert_eq!(good_rec.links[0].rel, LinkRel::Supersedes);
     }
 
+    /// **An amendment is a logged change, not a silent rewrite** — the topic row
+    /// carries the new value and the event that made the change carries it too,
+    /// so replay reconstructs what the title and tags were at any point.
+    #[tokio::test]
+    async fn title_and_tags_are_amendable_and_the_event_records_it() {
+        let s = store().await;
+        let t = s.create_topic(sample_topic()).await.unwrap();
+        let original = t.title.clone();
+
+        s.append_event(NewEvent {
+            topic_id: t.topic_id.clone(),
+            body: "Retitled: the first handle described the symptom, not the cause.".into(),
+            kind: EventKind::Correction,
+            set_state: None,
+            set_status: None,
+            set_title: Some("The cause, named properly".into()),
+            set_tags: Some(vec!["ledger".into(), "vocabulary".into()]),
+            supersedes: None,
+            author_email: "dev@example.com".into(),
+            author_agent: None,
+        })
+        .await
+        .unwrap();
+
+        let rec = s.get_topic(&t.topic_id).await.unwrap().unwrap();
+        assert_eq!(rec.topic.title, "The cause, named properly");
+        assert_eq!(rec.topic.tags, vec!["ledger", "vocabulary"]);
+
+        // The change is on the event, so history explains it.
+        let amendment = rec.events.last().unwrap();
+        assert_eq!(
+            amendment.new_title.as_deref(),
+            Some("The cause, named properly")
+        );
+        assert_eq!(
+            amendment.new_tags.as_deref(),
+            Some(["ledger".to_string(), "vocabulary".to_string()].as_slice())
+        );
+        // And the seed event is untouched, so the original handle is recoverable.
+        assert_ne!(original, rec.topic.title);
+        assert!(rec.events[0].new_title.is_none());
+    }
+
+    /// **Absent is not the same as empty.** Omitting a setter leaves the field
+    /// alone; an empty tag list is a real amendment that clears them.
+    #[tokio::test]
+    async fn omitted_setters_leave_metadata_alone_and_empty_tags_clear_it() {
+        let s = store().await;
+        let t = s
+            .create_topic(NewTopic {
+                tags: vec!["keep".into()],
+                ..sample_topic()
+            })
+            .await
+            .unwrap();
+
+        s.append_event(NewEvent {
+            topic_id: t.topic_id.clone(),
+            body: "An ordinary note.".into(),
+            kind: EventKind::Note,
+            set_state: None,
+            set_status: None,
+            set_title: None,
+            set_tags: None,
+            supersedes: None,
+            author_email: "dev@example.com".into(),
+            author_agent: None,
+        })
+        .await
+        .unwrap();
+        let rec = s.get_topic(&t.topic_id).await.unwrap().unwrap();
+        assert_eq!(
+            rec.topic.title, t.title,
+            "an ordinary note must not retitle"
+        );
+        assert_eq!(rec.topic.tags, vec!["keep"]);
+
+        s.append_event(NewEvent {
+            topic_id: t.topic_id.clone(),
+            body: "Refiled: the tag was wrong.".into(),
+            kind: EventKind::Correction,
+            set_state: None,
+            set_status: None,
+            set_title: None,
+            set_tags: Some(vec![]),
+            supersedes: None,
+            author_email: "dev@example.com".into(),
+            author_agent: None,
+        })
+        .await
+        .unwrap();
+        let rec = s.get_topic(&t.topic_id).await.unwrap().unwrap();
+        assert!(rec.topic.tags.is_empty(), "an empty list clears the tags");
+    }
+
+    /// A blank title is refused: a topic with no handle at all is worse than one
+    /// with a stale handle, and the amendment is otherwise irreversible.
+    #[tokio::test]
+    async fn a_blank_title_is_refused() {
+        let s = store().await;
+        let t = s.create_topic(sample_topic()).await.unwrap();
+        let err = s
+            .append_event(NewEvent {
+                topic_id: t.topic_id.clone(),
+                body: "Trying to clear the title.".into(),
+                kind: EventKind::Correction,
+                set_state: None,
+                set_status: None,
+                set_title: Some("   ".into()),
+                set_tags: None,
+                supersedes: None,
+                author_email: "dev@example.com".into(),
+                author_agent: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("set_title"), "{err}");
+
+        let rec = s.get_topic(&t.topic_id).await.unwrap().unwrap();
+        assert_eq!(rec.topic.title, t.title);
+        assert_eq!(rec.events.len(), 1, "a refused amendment writes no event");
+    }
+
+    /// A retitle must reach the search index: `title` is part of the embedded
+    /// topic point, so the reconciler has to see the hash move.
+    #[tokio::test]
+    async fn a_retitle_moves_the_topic_hash() {
+        let s = store().await;
+        let t = s.create_topic(sample_topic()).await.unwrap();
+        let before = s.all_for_index().await.unwrap()[0].topic_hash.clone();
+        s.append_event(NewEvent {
+            topic_id: t.topic_id.clone(),
+            body: "Retitled.".into(),
+            kind: EventKind::Correction,
+            set_state: None,
+            set_status: None,
+            set_title: Some("A better handle".into()),
+            set_tags: None,
+            supersedes: None,
+            author_email: "dev@example.com".into(),
+            author_agent: None,
+        })
+        .await
+        .unwrap();
+        assert_ne!(before, s.all_for_index().await.unwrap()[0].topic_hash);
+    }
+
     #[tokio::test]
     async fn topic_hash_changes_with_content() {
         let s = store().await;
@@ -1141,6 +1375,8 @@ mod tests {
             kind: EventKind::Note,
             set_state: None,
             set_status: None,
+            set_title: None,
+            set_tags: None,
             supersedes: None,
             author_email: "dev@example.com".into(),
             author_agent: None,
@@ -1255,6 +1491,8 @@ mod tests {
             kind: EventKind::Correction,
             set_state: None,
             set_status: None,
+            set_title: None,
+            set_tags: None,
             supersedes: Some(bad.topic_id.clone()),
             author_email: "dev@example.com".into(),
             author_agent: None,

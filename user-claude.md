@@ -87,6 +87,13 @@ whose finding is worth keeping (even with no code change):
   `supersedes: <topic_id>` to record that a newer topic replaces a worse earlier one (this flips the old one to
   `superseded`). The creator email + repo are captured from git automatically (over the stdio MCP binary; the shared
   HTTP gateway instead stamps its configured `RAG_EMAIL` and needs an explicit `repo` on `ledger_create`).
+- **Always pass `agent` explicitly**, set to your own model name as stated in your system prompt (e.g.
+  `"Claude Opus 5 (1M context)"`). Nothing in the stack can derive it — one MCP process serves a whole session
+  including subagents on other models — so `$RAG_AGENT` is a marker for an unattributed write (`Unknown`), not a
+  guess. A write stamped `Unknown` is a write that forgot.
+- **`title` and `tags` are amendable** via `set_title` / `set_tags`, and the amendment is logged like any other
+  change. `set_tags` replaces the list wholesale, so send the full set. `summary` is deliberately not amendable:
+  correct a wrong framing in the body, don't overwrite the record of it.
 
 **Prefer many small, atomic topics over one broad, evolving one — one topic = one decision or one finding.** Reach for
 `ledger_create` for each distinct decision/finding, even several within a single task or session (e.g. "Postgres over

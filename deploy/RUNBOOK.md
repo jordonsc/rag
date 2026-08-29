@@ -42,12 +42,15 @@ Unlike the corpus index, **the ledger DB cannot be rebuilt from elsewhere — ba
 
 - **stdio subprocess (`--transport stdio`, the default, on the client box).**
   Spawned per-client by Claude Code; captures the client's git `user.email`/repo
-  and `$RAG_AGENT` automatically. Build + register locally:
+  automatically. Set `RAG_AGENT` to **`Unknown`** rather than a model name — one
+  process serves a whole session including subagents on other models, so no static
+  value is right, and a stale model name stamps every unattributed write with a
+  confident lie. Agents pass `agent` per call. Build + register locally:
 
   ```bash
   cargo build --release -p rag-mcp          # on the client box
   claude mcp add rag --scope user --env RAG_SERVE_URL=http://your-server:17793 \
-    -- /path/to/rag/target/release/rag-mcp
+    --env RAG_AGENT=Unknown -- /path/to/rag/target/release/rag-mcp
   ```
 
 All agent surfaces — the HTTP gateway, the stdio binary, and the HTTP Skill
