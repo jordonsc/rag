@@ -98,6 +98,24 @@ pub struct ServerConfig {
     /// 1.0 = neutral (default); < 1.0 demotes ledger results relative to code/wiki.
     #[serde(default = "default_ledger_weight")]
     pub ledger_weight: f32,
+    /// Directory holding the built ledger web UI (a `dist/` with `index.html` at
+    /// its root). Empty disables static serving entirely — the default, and what
+    /// keeps a JSON-only deployment behaving exactly as it always has.
+    #[serde(default)]
+    pub web_root: String,
+    /// Directory of saved Summarise system prompts — one Markdown file per
+    /// prompt, which an operator can also manage with a text editor. Empty (the
+    /// default) means no library: the UI then offers only the built-in default
+    /// prompt, and the save/delete endpoints answer 503. A configured directory
+    /// that does not exist is an empty library, created on the first save.
+    ///
+    /// **`~/rag/prompts`, not `~/.config/rag/prompts`.** `rag-serve` runs in a
+    /// container, so this has to be bind-mounted in, and `~/.config/rag/` is
+    /// where the secrets env file lives — mounting that directory would put the
+    /// secrets on the container filesystem for no gain. `~/rag/` is where the
+    /// ledger DB, the corpus clones and the trigger files already live.
+    #[serde(default)]
+    pub prompts_dir: String,
 }
 
 fn default_ledger_weight() -> f32 {
@@ -150,6 +168,8 @@ impl Default for Config {
                 reindex_trigger: String::new(),
                 ledger_reindex_trigger: String::new(),
                 ledger_weight: default_ledger_weight(),
+                web_root: String::new(),
+                prompts_dir: String::new(),
             },
             ledger: LedgerConfig {
                 db_path: home_dir().join("rag/ledger/ledger.db"),
@@ -187,5 +207,10 @@ mod tests {
         assert_eq!(cfg.voyage.embed_model, "voyage-4-large");
         assert_eq!(cfg.voyage.dimensions, 1024);
         assert_eq!(cfg.qdrant.collection, "rag_corpus");
+        // The optional paths are absent by default, and absence is a valid
+        // configuration for every one of them rather than a broken one.
+        assert_eq!(cfg.server.web_root, "");
+        assert_eq!(cfg.server.prompts_dir, "");
+        assert_eq!(cfg.server.reindex_trigger, "");
     }
 }

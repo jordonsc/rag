@@ -12,7 +12,7 @@ of Qdrant.
 | Qdrant | server | `qdrant.service` (Quadlet) | `docker.io/qdrant/qdrant:v1.18.2` | 6333/6334 |
 | Indexer (sync) | server | `rag-sync.{service,timer}` | `localhost/rag:latest` (`rag-ingest`) | — |
 | Ledger reconcile | server | `rag-ledger-sync.{service,timer}` + `rag-ledger-reindex.path` | `localhost/rag:latest` (`rag-ingest reconcile-ledger`) | — |
-| Retrieval API + ledger CRUD | server | `rag-serve.service` (Quadlet) | `localhost/rag:latest` (`rag-serve`) | 17793 |
+| Retrieval API + ledger CRUD + web UI | server | `rag-serve.service` (Quadlet) | `localhost/rag:latest` (`rag-serve`) | 17793 |
 | MCP gateway (Streamable HTTP) | server | `rag-mcp.service` (Quadlet) | `localhost/rag:latest` (`rag-mcp --transport http`) | 17794 |
 | MCP server (stdio) | **dev / client box** | none (stdio subprocess) | local release binary | — |
 
@@ -57,6 +57,65 @@ All agent surfaces — the HTTP gateway, the stdio binary, and the HTTP Skill
 (`skill/corpus-search`) — go through `rag-serve`, so the Voyage key lives only on
 the server.
 
+## Ledger web UI
+
+`rag-serve` also serves the ledger viewer at **`http://<server>:17793/`** — the same
+port and the same origin as the JSON API, so there is no CORS to configure and none
+should be added. The API paths (`/health`, `/info`, `/search`, `/reindex`, `/ledger*`)
+are excluded from the single-page fallback, so a mistyped endpoint still answers a
+JSON 404 rather than an HTML document. There is no auth on it, exactly as there is
+none on the API: it is a trusted-LAN tool, and anyone who can reach the port can
+write to the ledger.
+
+**The bundle is baked into the image.** The Node stage in `Containerfile` runs
+`npm ci && npm run build` over `web/` and the runtime stage copies the result to
+`/usr/local/share/rag/web`, which is what `RAG_SERVER__WEB_ROOT` in
+`rag-serve.container` points at. Two consequences worth internalising:
+
+- A UI change needs a **redeploy** (`./deploy/deploy.sh`, which rebuilds the image),
+  **not** a `systemctl --user restart` — a restart re-runs the same bundle.
+- An already-open browser tab does pick the new bundle up: assets are content-hashed
+  and served `immutable`, while `index.html` revalidates on every navigation. Nobody
+  needs to be told to press ctrl-shift-R.
+
+**To turn it off:** empty (or delete) the `Environment=RAG_SERVER__WEB_ROOT=…` line in
+**`deploy/rag-serve.container` in the repo** and redeploy. An empty web root disables
+static serving entirely and `rag-serve` runs as the JSON API alone. Editing the unit
+only on the server works until the next `deploy.sh`, which reinstalls it from the repo.
+
+The image itself needs no change to do that — the same one serves the API alone when
+the web root is empty. Nor is a missing bundle an error: `rag-serve` logs a warning at
+startup and carries on. `/health` is green either way, which is why `deploy.sh` reports
+a missing UI as a warning rather than failing the deploy.
+
+## Saved Summarise prompts
+
+The Summarise tab's system prompt can be chosen from a small library. **A prompt is a
+plain Markdown file**: `~/rag/prompts/Terse.md` is the prompt named "Terse", bind-mounted
+into the container at `/prompts` (`RAG_SERVER__PROMPTS_DIR`). There is no database and no
+metadata, so the UI's chooser and a text editor are two views of the same directory:
+
+```bash
+ssh "$DEPLOY_HOST" ls ~/rag/prompts                       # what the chooser will offer
+ssh "$DEPLOY_HOST" cat ~/rag/prompts/Terse.md             # one prompt
+ssh "$DEPLOY_HOST" rm ~/rag/prompts/Terse.md              # same as Delete in the UI
+```
+
+- **`~/rag/prompts`, not `~/.config/rag/prompts`** — that directory holds the secrets env
+  file, and bind-mounting it would put the secrets on the container filesystem for no gain.
+- **The built-in default prompt needs no file.** It is a constant in the binary served to
+  the UI by `/info`, always offered, never deletable, and never written here. An empty or
+  missing directory means the library is empty and only the built-in is offered — a
+  fallback, not something to seed.
+- **To turn the library off:** empty (or delete) the `Environment=RAG_SERVER__PROMPTS_DIR=…`
+  line in `deploy/rag-serve.container` **in the repo** and redeploy. The UI then offers the
+  built-in alone and `POST /prompts/save` / `/prompts/delete` answer 503. Nothing else
+  changes and no startup fails.
+- A name may hold only letters, digits, spaces, `-` and `_` (≤ 64 characters); bodies are
+  capped at 32 KiB and the library at 200 prompts. A file that breaks those rules — a
+  `.txt`, a dotted name, a symlink — is ignored by the listing rather than offered as
+  something the UI could not save back.
+
 ## Secrets + required config
 
 `~/.config/rag/env` on the server (chmod 600), delivered to units via `EnvironmentFile`
@@ -67,10 +126,24 @@ VOYAGE_API_KEY=...
 GITHUB_TOKEN=...
 RAG_GITHUB__ACCOUNT=your-github-account   # REQUIRED: the account whose repos are indexed
 RAG_EMAIL=you@example.com                 # ledger author for writes over the HTTP gateway
+ANTHROPIC_API_KEY=...                     # OPTIONAL: the web UI's Summarise tab
 ```
 
 `RAG_GITHUB__ACCOUNT` is not a secret but lives here because the containers ship no
 `rag.toml` — an empty account selects 0 repos and the reconcile purges the corpus.
+
+`ANTHROPIC_API_KEY` is the one **optional** entry. It enables
+`POST /ledger/{id}/summarise` and the Summarise tab in the web UI; without it that
+route answers 503 (`summarise_ready: false` on `/info`) and nothing else is affected.
+`rag-serve` logs which state it started in. Deliberately **not** in `deploy.sh`'s
+preflight guard: that guard is there because a missing `RAG_GITHUB__ACCOUNT` purges the
+corpus, and failing a deploy over a switched-off feature would be the wrong trade.
+Adding or removing it takes effect on `systemctl --user restart rag-serve.service`,
+with no re-index and no rebuild — the key is read once at startup.
+
+Nothing about a summary is stored: there is no cache, no summaries table and no
+backfill, so every press of Go is one billed call (~1p). The response carries its own
+token counts, and `journalctl --user -u rag-serve.service` logs them per run.
 
 ## Deploy a new version
 
@@ -83,7 +156,34 @@ prune → health-check):
 
 It rsyncs source to `$DEPLOY_HOST:~/rag/src`, builds `localhost/rag:latest`, installs the
 unit files, restarts `rag-serve`, reloads `rag-sync.timer`, prunes old images, and
-verifies `/health` + `/info`. Idempotent.
+verifies `/health` + `/info` + that `/` returns the UI. Idempotent.
+
+### When the dev box IS the server
+
+On a single-box estate there is nothing to ssh to — or rather, ssh-ing to yourself
+means the box must hold a key authorising a login to itself, an account added purely
+to arrive back where it started. Use the local entry point instead:
+
+```bash
+./deploy/deploy-local.sh
+```
+
+Same steps, no ssh/scp hop. It is **not** a second implementation: it sets
+`DEPLOY_HOST=local` and execs `deploy.sh`, whose `run`/`put` helpers then execute
+here rather than over a connection — one list of deploy steps, so the two paths
+cannot drift. `deploy.sh` also takes the local path on its own when `$DEPLOY_HOST`
+matches this machine's `hostname -s`/`-f`; the wrapper exists so the intent is
+explicit and so the deploy does not depend on `deploy.env` naming the right host.
+
+An explicit `DEPLOY_HOST` in the environment beats `deploy/deploy.env`.
+
+The rsync carries `web/` along with the crates but skips `node_modules/` and `dist/`
+(as it already skips `target/`) — the image builds the SPA itself, so shipping either
+would be megabytes of files the build discards. **The build therefore needs the npm
+registry as well as crates.io** from the server. Rust and Node are separate stages
+with separate inputs, so a crate-only change re-runs neither `npm ci` nor the bundle,
+and a UI-only change does not recompile the workspace; the first build after a
+dependency change is the expensive one.
 
 ## Rollback
 
@@ -112,6 +212,7 @@ ssh "$DEPLOY_HOST" journalctl --user -u rag-sync.service -n 50   # last sync's c
 ```bash
 ssh "$DEPLOY_HOST" curl -fsS http://localhost:17793/health    # -> ok
 ssh "$DEPLOY_HOST" curl -fsS http://localhost:17793/info      # collection, points, models, config (no secrets)
+ssh "$DEPLOY_HOST" curl -fsS http://localhost:17793/          # -> the UI's index.html (a JSON 404 means no bundle)
 ```
 
 `/info.points` should track the corpus. A sudden drop signals a bad sync —
@@ -218,8 +319,9 @@ ssh "$DEPLOY_HOST" du -sh ~/rag/corpus ~/rag/backups ~/rag/qdrant
 
 ## Bootstrap a fresh box (order)
 
-1. `loginctl enable-linger <user>`; create `~/rag/{qdrant/{storage,snapshots},corpus,backups,ledger,triggers}`.
+1. `loginctl enable-linger <user>`; create `~/rag/{qdrant/{storage,snapshots},corpus,backups,ledger,triggers,prompts}`. (`deploy.sh` creates the trigger, ledger and prompts dirs itself; the rest are yours.)
 2. Install + start Qdrant (see `README.md`), then `cargo run -p rag-ingest -- init` from dev to create the collection (incl. the ledger `type`/`status`/`topic_id` payload indexes).
-3. Populate `~/.config/rag/env` — `VOYAGE_API_KEY`, `GITHUB_TOKEN`, and **`RAG_GITHUB__ACCOUNT`** (required; an empty account purges the corpus), plus `RAG_EMAIL` for HTTP-gateway ledger attribution.
-4. `./deploy/deploy.sh` (builds the image, runs `init`, starts `rag-serve`, enables the corpus + ledger timers and trigger watchers).
+3. Populate `~/.config/rag/env` — `VOYAGE_API_KEY`, `GITHUB_TOKEN`, and **`RAG_GITHUB__ACCOUNT`** (required; an empty account purges the corpus), plus `RAG_EMAIL` for HTTP-gateway ledger attribution and, optionally, `ANTHROPIC_API_KEY` for the UI's Summarise tab.
+4. `./deploy/deploy.sh` (builds the image — Rust binaries **and** the web bundle, so the box needs crates.io and the npm registry — runs `init`, starts `rag-serve`, enables the corpus + ledger timers and trigger watchers).
 5. `ssh "$DEPLOY_HOST" systemctl --user start rag-sync.service` to fill the index (or wait for the timer). The ledger starts empty and fills as agents log to it.
+6. Open `http://<server>:17793/` — the ledger UI. It has nothing to show until step 5's ledger fills, but the shell loading confirms the bundle shipped.

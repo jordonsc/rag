@@ -1,0 +1,205 @@
+/*
+ * The Summarise tab and the drawer it opens.
+ *
+ * The tab is the only fixed-position affordance in the application, and it is
+ * fixed for the reason it exists: it pulls out of the right side of the screen,
+ * which is a property of the viewport rather than of the topic column. A button in the header would have been a different
+ * thing wearing the same label.
+ */
+
+.tab {
+  position: fixed;
+  right: 0;
+  top: 40%;
+  z-index: 50;
+
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--rag-space-2);
+
+  /* Reads bottom-to-top up the edge, which is the direction that puts the
+     first word nearest the top of the tab rather than upside down. */
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+
+  padding: var(--rag-space-3) var(--rag-space-1);
+  font: inherit;
+  font-size: var(--rag-text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+
+  color: var(--rag-onacc);
+  background: var(--rag-acc);
+  border: none;
+  /* Rounded on the edge away from the viewport wall only: the tab is meant to
+     look like something sticking out of the side, not a floating pill. */
+  border-radius: 0 var(--rag-radius-m) var(--rag-radius-m) 0;
+  box-shadow: 0 2px 10px var(--rag-shadow);
+  cursor: pointer;
+}
+
+.tab:hover {
+  background: var(--rag-acc2);
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--rag-bright);
+  outline-offset: 2px;
+}
+
+/* ---- the drawer ---- */
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-4);
+}
+
+/*
+ * A statement of fact, not a failure: a feature that was never switched on, a
+ * summary that stops early. Quiet, and in the flow rather than over it.
+ */
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--rag-space-2);
+  margin: 0;
+  padding: var(--rag-space-3);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+  background: var(--rag-surface2);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-s);
+}
+
+.waiting {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  margin: 0;
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+}
+
+/* The commit row: what the reader should know on the left, the button right —
+   the same arrangement as the append form, because it answers the same
+   question in the same place. */
+.commit {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--rag-space-3);
+}
+
+.commitSay {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--rag-space-1);
+  min-width: 0;
+  flex: 1 1 16rem;
+}
+
+.note {
+  margin: 0;
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+  max-width: var(--rag-measure);
+}
+
+/* A link in behaviour, so it is a link in appearance — it undoes an edit, it
+   does not submit anything. */
+.reset {
+  padding: 0;
+  font: inherit;
+  font-size: var(--rag-text-xs);
+  color: var(--rag-acc);
+  background: none;
+  border: none;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-3);
+  padding-top: var(--rag-space-3);
+  border-top: 1px solid var(--rag-border);
+}
+
+/*
+ * What the run cost.
+ *
+ * Below the summary rather than above it: it is the footnote to a thing the
+ * reader came for, and nothing is cached, so it is the only place the price of
+ * a press is ever stated.
+ */
+.usage {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  margin: 0;
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+}
+
+/* ---- the saved prompt library ---- */
+
+/*
+ * The chooser and its actions on one line: the Select takes the space, the
+ * buttons take what they need. They sit on the same baseline because the
+ * Select's own label is above it and the buttons have none — `flex-end` is
+ * what lines the controls up rather than the boxes.
+ */
+.library {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--rag-space-2);
+  flex-wrap: wrap;
+}
+
+.library > :first-child {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.libraryActions {
+  display: flex;
+  gap: var(--rag-space-2);
+}
+
+/*
+ * "This is not what the library holds." Quiet, and above the commit row rather
+ * than beside it: an unsaved edit runs perfectly well, so it is a statement of
+ * where the text came from, not a warning about pressing Go.
+ */
+.edited {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2);
+  margin: 0;
+  color: var(--rag-warn);
+  font-size: var(--rag-text-xs);
+}
+
+/* A write that did not land. Distinct from `.notice`, which is for things that
+   were never switched on — this one is a failure and says so in alert colour. */
+.failed {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--rag-space-2);
+  margin: 0;
+  color: var(--rag-crit);
+  font-size: var(--rag-text-s);
+}
+
+/* The body of the naming dialog: a field, and whatever it has to say. */
+.dialogBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-3);
+}

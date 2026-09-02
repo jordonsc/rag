@@ -1,7 +1,12 @@
 # RAG configuration — copy to `rag.toml` and adjust. NEVER put API keys here.
 # Secrets are read from the environment only:
-#   VOYAGE_API_KEY   (required when a Voyage client is constructed)
-#   QDRANT_API_KEY   (optional; only if your Qdrant requires auth)
+#   VOYAGE_API_KEY     (required when a Voyage client is constructed)
+#   QDRANT_API_KEY     (optional; only if your Qdrant requires auth)
+#   ANTHROPIC_API_KEY  (optional; enables POST /ledger/{id}/summarise and the web
+#                       UI's Summarise tab. Absent = that one route 503s, nothing else
+#                       changes. There is no model/prompt setting here on purpose:
+#                       the allow-listed models and the default system prompt are
+#                       constants in `core::anthropic`, served to the UI by /info.)
 #
 # Any field below can be overridden by an env var prefixed with `RAG_`, using
 # `__` for nesting, e.g.  RAG_QDRANT__URL=http://localhost:6334
@@ -54,3 +59,21 @@ default_top_k = 8
 # disables the endpoint. In the container deployment the unit sets this to
 # /triggers/reindex (a systemd .path unit watches it and starts rag-sync.service).
 reindex_trigger = ""
+# Directory holding the built ledger web UI (the `dist/` with index.html at its
+# root), served at / on the same port as the API. Empty disables it, and so does
+# a directory with no index.html — either way the JSON API is unaffected.
+web_root = ""
+# Directory of saved Summarise system prompts — one plain Markdown file per prompt
+# (`Terse.md` is the prompt named "Terse"), which the web UI's chooser reads and
+# writes and which an operator can equally manage with a text editor. Empty (the
+# default) means no library: only the built-in default prompt is offered and
+# POST /prompts/save and /prompts/delete answer 503. A configured directory that
+# does not exist yet is an empty library, created on the first save.
+#
+# The built-in default prompt is a constant in `core::anthropic` and is NEVER
+# written here: an empty directory is a fallback to it, not a missing file.
+#
+# In the container deployment the unit sets this to /prompts, bind-mounted from
+# ~/rag/prompts on the host — deliberately not ~/.config/rag/prompts, which is
+# where the secrets env file lives.
+prompts_dir = ""

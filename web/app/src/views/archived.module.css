@@ -1,0 +1,60 @@
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-4);
+  min-width: 0;
+}
+
+/* The panel is unpadded so the table can meet its edges; everything else in it
+   pays for its own gutter. */
+.note {
+  margin: 0;
+  padding: var(--rag-space-3) var(--rag-space-4);
+  max-width: var(--rag-measure);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+  border-bottom: 1px solid var(--rag-border);
+}
+
+.filterField {
+  width: 20rem;
+  max-width: 50vw;
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-3);
+  padding: var(--rag-space-5) var(--rag-space-4);
+  color: var(--rag-dim);
+}
+
+.stamp {
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Why the restore buttons would prompt instead of restoring. Part of the note
+   rather than a banner: nothing is broken while it shows. */
+.gate {
+  color: var(--rag-acc2);
+}
+
+/* The list is a window, and this is what says so. Styled as a warning rather
+   than as another line of the note above, because a reader who scans past it
+   is left believing a truncated list is the whole archive — which is exactly
+   the belief this view exists not to create. */
+.truncated {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--rag-space-2);
+  margin: 0;
+  padding: var(--rag-space-3) var(--rag-space-4);
+  max-width: var(--rag-measure);
+  color: var(--rag-text);
+  font-size: var(--rag-text-s);
+  border-bottom: 1px solid var(--rag-border);
+  border-left: 2px solid var(--rag-warn);
+}

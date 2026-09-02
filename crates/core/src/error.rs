@@ -13,6 +13,13 @@ pub enum Error {
     #[error("voyage API error: {0}")]
     Voyage(String),
 
+    /// A failed call to the Anthropic Messages API, or a response that could not
+    /// be made sense of. The message is shown to a reader, so it carries the
+    /// vendor's own wording where there is one — and never the API key, which
+    /// `anthropic::AnthropicClient::scrub` strips before it gets here.
+    #[error("anthropic API error: {0}")]
+    Anthropic(String),
+
     #[error("qdrant error: {0}")]
     Qdrant(String),
 

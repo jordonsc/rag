@@ -1,0 +1,194 @@
+/*
+ * Rendered ledger prose.
+ *
+ * Every value is a token: this sheet decides *shape* — measure, rhythm, what
+ * scrolls — and never a colour of its own.
+ *
+ * The rule the whole sheet is written around: **wide content scrolls inside
+ * its own box.** A code block with an 800-character line, or a table with nine
+ * columns, is normal in agent-written prose. Left alone either one widens the
+ * page, and a horizontally scrolling *page* takes the navigation and every
+ * other panel with it. So the two constructs that can exceed their column get
+ * their own `overflow-x`, and nothing else is allowed to grow.
+ */
+
+.prose {
+  color: var(--rag-text);
+  font-size: var(--rag-text-m);
+  line-height: 1.55;
+  /* No `--rag-measure` cap here, deliberately. That token is a *reading measure*
+     and it is right where it is used elsewhere — forms, status text, a heading —
+     but a ledger entry is not an essay. It is a working document: state blocks,
+     code fences, tables, command output, long paths. Capping it at 68ch left
+     roughly half the panel empty and pushed the wide constructs — the ones that
+     most need room — into their own scrollbars while whitespace sat beside them.
+     The container governs the width instead, so prose agrees with the panel it
+     is in rather than with a number chosen for a different kind of text. */
+  /* An unbroken 200-character token — a URL, a hash, a path — has nowhere to
+     wrap and would otherwise widen the block that holds it. */
+  overflow-wrap: anywhere;
+}
+
+/* The block owns the space *between* its children, not around itself: a panel
+   decides its own padding, and prose that added a top margin would put a gap
+   above the first line that nobody asked for. */
+.prose > :first-child {
+  margin-top: 0;
+}
+
+.prose > :last-child {
+  margin-bottom: 0;
+}
+
+.prose p {
+  margin: 0 0 var(--rag-space-3);
+}
+
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4,
+.prose h5,
+.prose h6 {
+  margin: var(--rag-space-4) 0 var(--rag-space-2);
+  color: var(--rag-bright);
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+/* Headings inside a ledger body sit *below* the panel's own heading, so they
+   step down from it rather than competing with it. */
+.prose h1 {
+  font-size: var(--rag-text-l);
+}
+
+.prose h2 {
+  font-size: var(--rag-text-l);
+}
+
+.prose h3,
+.prose h4,
+.prose h5,
+.prose h6 {
+  font-size: var(--rag-text-m);
+}
+
+.prose ul,
+.prose ol {
+  margin: 0 0 var(--rag-space-3);
+  padding-left: var(--rag-space-5);
+}
+
+.prose li {
+  margin: var(--rag-space-1) 0;
+}
+
+.prose li > ul,
+.prose li > ol {
+  margin-bottom: 0;
+}
+
+.prose a {
+  color: var(--rag-acc);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.prose strong {
+  color: var(--rag-bright);
+  font-weight: 600;
+}
+
+.prose em {
+  font-style: italic;
+}
+
+.prose blockquote {
+  margin: 0 0 var(--rag-space-3);
+  padding: var(--rag-space-1) 0 var(--rag-space-1) var(--rag-space-3);
+  border-left: 2px solid var(--rag-border);
+  color: var(--rag-dim);
+}
+
+.prose hr {
+  margin: var(--rag-space-4) 0;
+  border: 0;
+  border-top: 1px solid var(--rag-border);
+}
+
+/* ---- code ---- */
+
+.prose code {
+  font-family: var(--rag-font-mono);
+  font-size: var(--rag-text-s);
+  background: var(--rag-surface2);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-s);
+  padding: 0 4px;
+}
+
+.prose pre {
+  margin: 0 0 var(--rag-space-3);
+  padding: var(--rag-space-3);
+  background: var(--rag-surface2);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-m);
+  /* The block scrolls; the page does not. `max-width: 100%` is what stops the
+     widest line in the block from setting the width of everything above it. */
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* Inside a block the line is preserved as written — a wrapped command is a
+   command that cannot be copied — and the nested `code` drops the inline
+   chrome it would otherwise inherit. */
+.prose pre code {
+  display: block;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  white-space: pre;
+  overflow-wrap: normal;
+  line-height: 1.5;
+}
+
+/* ---- tables ---- */
+
+/*
+ * `display: block` is what makes a table scrollable: a `<table>` is otherwise
+ * sized by its content and cannot be given an overflow of its own. Its rows
+ * still lay out as a table — the browser re-establishes the internal table
+ * boxes around them — so this buys the scroll without costing the alignment.
+ */
+.prose table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 0 0 var(--rag-space-3);
+  border-collapse: collapse;
+  font-size: var(--rag-text-s);
+}
+
+.prose th,
+.prose td {
+  padding: var(--rag-space-1) var(--rag-space-3);
+  border: 1px solid var(--rag-border);
+  text-align: left;
+  vertical-align: top;
+  /* A cell may not wrap mid-word here: the table already scrolls, so severing
+     a token would be trading a readable scroll for an unreadable column. */
+  overflow-wrap: normal;
+}
+
+.prose th {
+  background: var(--rag-surface2);
+  color: var(--rag-bright);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.prose img {
+  max-width: 100%;
+  height: auto;
+}

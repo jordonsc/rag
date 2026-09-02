@@ -23,17 +23,23 @@ retrieval service; agents query it from anywhere on the network.
   and a Claude Skill — all sharing one pipeline.
 - **Records** decisions/incidents in a SQLite-backed ledger, indexed alongside the
   corpus (`corpus = ledger`) and reachable via MCP tools.
+- **Serves** a small web UI for that ledger — search, read and amend topics on the
+  same terms an agent gets — from the same origin as the API.
 
 ## Architecture
 
-A single Cargo workspace:
+A single Cargo workspace, plus an npm workspace for the UI:
 
 ```
 crates/
 ├── core/    # shared: data model, figment config, Qdrant + Voyage clients, retrieval pipeline, ledger store
 ├── ingest/  # corpus walk → chunk → embed → upsert  (binary: rag-ingest)
-├── serve/   # axum HTTP retrieval + ledger CRUD       (binary: rag-serve)
+├── serve/   # axum HTTP retrieval + ledger CRUD + web UI  (binary: rag-serve)
 └── mcp/      # stdio MCP server(s)                      (binary: rag-mcp)
+
+web/
+├── ui/      # @rag/ui  — design system: one theme, components, icon registry
+└── app/     # @rag/app — the ledger viewer (React + Vite); its dist/ is what rag-serve serves
 ```
 
 - **Vector DB:** Qdrant (self-hosted, rootless Podman), 1024-dim cosine, int8 quantization.
@@ -48,9 +54,19 @@ clients of it, so the key never reaches an agent's machine.
 ## Requirements
 
 - Rust 1.94+ (see `rust-toolchain.toml`).
+- Node 22+ / npm 10+ — to build the ledger web UI. The container build runs it in its
+  own Node stage, so the deployment box needs nothing beyond Podman; you need Node
+  locally only for `npm run dev`, the frontend tests, or a hand-built bundle.
 - A running Qdrant instance (a Quadlet unit is provided under `deploy/`).
 - A [Voyage AI](https://voyageai.com) API key.
 - For the GitHub source: a fine-grained `GITHUB_TOKEN` with read access to the repos you want indexed.
+- **Optional:** an `ANTHROPIC_API_KEY`. It enables one route — `POST /ledger/{id}/summarise`,
+  behind the web UI's *Summarise* tab — and nothing else depends on it. Without it that route
+  answers 503 (`/info` reports `summarise_ready: false`) and the rest of the system is
+  unchanged; a deployment that never wants an LLM in it needs no key and no configuration.
+- **Optional:** a **prompts directory** (`server.prompts_dir` / `RAG_SERVER__PROMPTS_DIR`) for
+  the Summarise tab's library of system prompts. See *Saved Summarise prompts* below. Unset =
+  only the built-in prompt is offered, which is a valid configuration, not a degraded one.
 
 ## Configuration
 
@@ -58,8 +74,8 @@ Two layers, both with committed examples and gitignored real files:
 
 | File | Purpose |
 |---|---|
-| `rag.toml` (from `rag.toml.example`) | Non-secret config: Qdrant URL, corpus roots, GitHub account, chunk sizes, server bind. Env overrides via `RAG_*` (e.g. `RAG_QDRANT__URL`). |
-| `.env` | Secrets only: `VOYAGE_API_KEY`, `GITHUB_TOKEN`, optional `QDRANT_API_KEY`. Never committed. |
+| `rag.toml` (from `rag.toml.example`) | Non-secret config: Qdrant URL, corpus roots, GitHub account, chunk sizes, server bind, web UI root, saved-prompts dir. Env overrides via `RAG_*` (e.g. `RAG_QDRANT__URL`). |
+| `.env` | Secrets only: `VOYAGE_API_KEY`, `GITHUB_TOKEN`, optional `QDRANT_API_KEY`, optional `ANTHROPIC_API_KEY`. Never committed. |
 | `deploy/deploy.env` (from `deploy/deploy.env.example`) | Deploy target: `DEPLOY_HOST` (SSH host of the server). |
 | `.mcp.json` (from `.mcp.json.example`) | Registers the MCP servers with Claude Code. |
 
@@ -70,6 +86,11 @@ Two layers, both with committed examples and gitignored real files:
 ```bash
 make all          # fmt-check + clippy (-D warnings) + tests
 make build        # cargo build --workspace
+
+cd web && npm install
+npm run typecheck # tsc --noEmit across both packages
+npm test          # vitest
+npm run build     # app/dist — the bundle rag-serve serves
 ```
 
 ## Run
@@ -88,6 +109,79 @@ cargo run -p rag-ingest -- query "where is retry/backoff implemented"
 # 4. Serve retrieval over HTTP (POST /search, /reindex; GET /health, /info)
 cargo run -p rag-serve
 ```
+
+### The ledger web UI
+
+`rag-serve` also serves the **ledger web UI** at `/` when `server.web_root`
+(`RAG_SERVER__WEB_ROOT`) points at a built bundle — same port, same origin, so no
+CORS. Left empty (the default) it serves the JSON API alone; the container
+deployment sets it, and an image built without the bundle just logs a warning.
+
+Two ways to run it, and they are not alternatives — one is the dev loop, the other is
+how it ships:
+
+```bash
+# Dev: Vite on :5173, hot reload, API calls proxied to a real rag-serve — so no
+# local Qdrant and no Voyage key are needed. See web/README.md.
+cd web && npm install
+RAG_SERVE=http://your-server:17793 npm run dev
+
+# Production: no Vite, no dev server. The Node stage in `Containerfile` builds
+# web/app/dist and bakes it into the image at /usr/local/share/rag/web, which is
+# where the Quadlet unit points RAG_SERVER__WEB_ROOT. rag-serve reads it off disk.
+./deploy/deploy.sh          # remote server
+./deploy/deploy-local.sh    # or, when this box is the server
+```
+
+To serve a bundle from a plain `cargo run -p rag-serve` — no container — build it and
+point the config at it: `cd web && npm run build`, then
+`RAG_SERVER__WEB_ROOT=$PWD/app/dist cargo run -p rag-serve`.
+
+Because the bundle is part of the image, **a UI change ships by redeploy, not by
+restart**.
+
+### Saved Summarise prompts
+
+The Summarise tab sends a system prompt with every run, and it is editable — *summarise
+this* and *list only what changed* are different questions of the same entry. Those
+instructions can be kept as a small library:
+
+- **A prompt is a plain Markdown file** in `server.prompts_dir`
+  (`RAG_SERVER__PROMPTS_DIR`; `~/rag/prompts` → `/prompts` in the container deployment).
+  `~/rag/prompts/Terse.md` *is* the prompt named "Terse". There is no database and no
+  metadata, so an operator can add, edit or delete one with a text editor and the UI
+  shows the result on its next read.
+- **The built-in default prompt is not a file and never becomes one.** It is a constant
+  in `core::anthropic`, served to the UI by `/info`, always offered and never deletable.
+  An empty or missing directory simply means the library is empty — it is a fallback,
+  not a missing file to be seeded.
+- Unset (the default) = no library: only the built-in is offered and the two write
+  routes answer 503. Nothing fails to start.
+- `~/rag/prompts`, deliberately **not** `~/.config/rag/prompts` — that directory holds
+  the secrets env file, and bind-mounting it into the container would put the secrets on
+  the container filesystem for no gain.
+
+| Route | |
+|---|---|
+| `GET /prompts` | `{ "configured": bool, "prompts": [ { "name", "body" } ] }` — bodies included, so the chooser needs one round trip |
+| `POST /prompts/save` | `{ "name", "body" }` → the saved prompt. An upsert. |
+| `POST /prompts/delete` | `{ "name" }` → `{ "name", "deleted": true }` |
+
+**These are the only routes in the service that write a file, and it has no
+authentication.** A name is checked against an allow-list — letters, digits, spaces, `-`
+and `_`, at most 64 characters — so it cannot be a path; the resolved path is re-checked
+to be inside the directory; only `.md` is ever written; symlinks are never followed; the
+body is capped at 32 KiB and the library at 200 prompts. See
+`crates/serve/src/prompts.rs`.
+
+The bundle is served with cache headers that make a redeploy actually take
+effect (content-hashed assets immutable, `index.html` revalidating on an `ETag`)
+and with `X-Content-Type-Options: nosniff` on every response plus a
+`Content-Security-Policy` on the document. The policy is the one barrier in
+front of client-written ledger prose that the browser enforces rather than the
+rendering code — see `crates/serve/src/web.rs`, which reasons through each
+directive, including why inline **styles** must be allowed and inline **script**
+must not.
 
 ### Agent surfaces
 

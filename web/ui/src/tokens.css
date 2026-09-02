@@ -1,0 +1,103 @@
+/*
+ * The design tokens: one CSS custom-property layer everything in this package
+ * themes against. A component names a token, never a colour.
+ *
+ * **One theme, deliberately.** No tone axis, no light/dark axis, nothing
+ * stamped on `<html>` at run time — so there is no provider, no
+ * `prefers-color-scheme` resolution and no state to get wrong. A second theme
+ * would be a second `:root` block and the machinery to choose between them;
+ * neither exists until something needs it.
+ *
+ * **The palette is sampled rather than invented.** The ground, the three
+ * surface levels and the accent family are read off a real editor, which is
+ * why they are only a point or two of lightness apart: that shallow stack is
+ * what makes the interface read as layered rather than as a stack of boxes.
+ * The accents are far enough apart to survive a colour-blind reader. Change
+ * a value here and you change it everywhere, which is the point — but the
+ * contrast ratios are known-good, so measure before you do.
+ */
+
+:root {
+  /* ---- type, space and metrics ---- */
+  --rag-font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --rag-font-mono:
+    ui-monospace, 'Cascadia Mono', 'Segoe UI Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  --rag-text-xs: 0.6875rem; /* 11px  */
+  --rag-text-s: 0.78125rem; /* 12.5px */
+  --rag-text-m: 0.875rem; /* 14px  */
+  --rag-text-l: 1rem; /* 16px  */
+  --rag-text-xl: 1.25rem; /* 20px  */
+
+  --rag-space-1: 4px;
+  --rag-space-2: 8px;
+  --rag-space-3: 12px;
+  --rag-space-4: 16px;
+  --rag-space-5: 24px;
+  --rag-space-6: 32px;
+
+  --rag-radius-s: 4px;
+  --rag-radius-m: 6px;
+  --rag-radius-l: 10px;
+
+  /* The measure: how wide a run of body text is allowed to get before it
+     becomes hard to read. Expressed in `ch` so it tracks the font-size of
+     whatever it caps, and kept here rather than re-chosen per component — a
+     component with a private measure looks like a bug, because nothing else
+     on the page agrees with it. */
+  --rag-measure: 68ch;
+
+  --rag-row-h: 32px; /* a compact table or control row */
+  --rag-row-h-comfy: 40px;
+  /* A control that has to fit *inside* a `--rag-row-h` row and still leave air
+     around itself — a table's row-action buttons. */
+  --rag-row-h-sm: 24px;
+  --rag-nav-h: 48px; /* top nav */
+  --rag-rail-w: 56px; /* the vertical nav rail */
+
+  /* ---- colour ---- */
+  color-scheme: dark;
+  --rag-bg: #121315;
+  --rag-surface: #191a1c;
+  --rag-surface2: #232527;
+  --rag-border: #34373a;
+  --rag-text: #c8cdd0;
+  --rag-dim: #8f9497;
+  --rag-bright: #f2f5f6;
+  --rag-acc: #74b8f3;
+  --rag-acc2: #74ecdf;
+  --rag-good: #93e9a0;
+  --rag-warn: #ebb353;
+  --rag-crit: #ed7477;
+  --rag-extra: #a975e0;
+  --rag-onacc: #101214;
+  --rag-shadow: rgba(0, 0, 0, 0.55);
+}
+
+/* ---- minimal base ---- */
+html {
+  background: var(--rag-bg);
+  color: var(--rag-text);
+  font-family: var(--rag-font);
+}
+
+body {
+  margin: 0;
+  background: var(--rag-bg);
+  color: var(--rag-text);
+  font-family: var(--rag-font);
+  font-size: var(--rag-text-m);
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+:focus-visible {
+  outline: 2px solid var(--rag-acc);
+  outline-offset: 2px;
+}

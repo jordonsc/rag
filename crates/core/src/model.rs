@@ -130,8 +130,8 @@ pub struct LedgerPoint {
 
 /// A retrieval result: a chunk with its similarity score and provenance.
 ///
-/// The `topic_*`/`status` fields are populated only for `corpus = ledger` hits;
-/// they are `None`/empty for code and wiki hits.
+/// The `topic_*`/`status`/`title` fields are populated only for `corpus = ledger`
+/// hits; they are `None`/empty for code and wiki hits.
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchHit {
     pub score: f32,
@@ -152,6 +152,11 @@ pub struct SearchHit {
     /// Ledger topic status (ledger hits only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// Ledger topic title (ledger hits only). Present on every point of a topic,
+    /// including its event points, so a hit can always be labelled — `text` can't
+    /// serve that purpose (an event hit is mid-monologue prose, not a heading).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// Payload filters narrowing a search. `corpus`/`repo`/`language` map to Qdrant
@@ -195,6 +200,9 @@ pub struct RankedHit {
     /// Ledger topic status (ledger hits only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// Ledger topic title (ledger hits only) — the display label for the hit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 impl RankedHit {
@@ -214,6 +222,7 @@ impl RankedHit {
             topic_id: h.topic_id.clone(),
             topic_type: h.topic_type.clone(),
             status: h.status.clone(),
+            title: h.title.clone(),
         }
     }
 }

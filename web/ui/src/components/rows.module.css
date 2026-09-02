@@ -1,0 +1,220 @@
+/*
+ * **The row primitive** — the one treatment every list of things is drawn
+ * from. It lives here, below any component, so that a second list cannot come
+ * to look different from the first by restating half of it.
+ *
+ * `Table.module.css` composes it. It is written for two structurally different
+ * forms because a list of rows and a `<table>` are not the same markup:
+ *
+ * * a **block-level row** (`.pill`) — one element is the whole row;
+ * * a **table row** (`.pillRow` + `.pillCell`) — the row is the `<tr>` and the
+ *   pill is the run of `<td>`s, because a `<tr>` cannot carry padding or a
+ *   radius and a cell cannot carry the row's hover on its own.
+ *
+ * The two cannot be one class, so where they share a value they share a
+ * *rule*: the grouped selectors below are what stops them drifting apart.
+ *
+ * Nothing here reads a colour literal. Every value is a token.
+ */
+
+/* ---- the box the rows sit in -------------------------------------------- */
+
+/* Rows are **inset** from the edge of whatever holds them, so a pill reads as
+   sitting on the surface rather than as a band cut out of it. */
+.surface {
+  padding: var(--rag-space-2);
+  min-width: 0;
+}
+
+/* A surface whose rows are block elements: a 2px channel between pills, which
+   is what replaces the hairline separator. A table gets the same channel from
+   `border-spacing` instead — see `Table.module.css`. */
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* **There is deliberately no scrolling class here.** A surface whose rows are
+   wider than it is has a width defect, not a missing scrollbar — see
+   `Table.module.css`'s header for the rule and how the fit is bought. */
+
+/* ---- the pill ------------------------------------------------------------ */
+
+/* The block-level form: one element is the whole row. */
+.pill {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-3);
+  width: 100%;
+  border: 0;
+  border-radius: var(--rag-radius-m);
+  color: var(--rag-text);
+  font: inherit;
+  text-align: left;
+}
+
+/* The table form: the row is the `<tr>`, the pill is the run of `<td>`s. */
+.pillRow {
+  background: transparent;
+}
+
+/* What the two forms share. Note the absence of a height: **a row is as tall
+   as what is in it.** A fixed row height is what forces a two-line identity and
+   a row-action button into one box, and what makes a table carrying controls
+   need a density flag at all. Do not put one back. */
+.pill,
+.pillCell {
+  font-size: var(--rag-text-m);
+  background: transparent;
+  vertical-align: middle;
+}
+
+/* The block pill keeps 12px: it is one element per row, so its padding is
+   counted once across the row and once down it. */
+.pill {
+  padding: var(--rag-space-3);
+}
+
+/* **A table cell takes 8px, and the divergence is structural rather than a
+   drift.** A pill's padding is paid once; a *cell's* is paid at every column
+   boundary, so 12px between two adjacent columns is 24px of gutter, and a
+   seven-column table spends 168px of its width on air before a single value is
+   drawn. 8px puts the visible gutter at 16px — still clearly a gutter — and
+   returns 4px per boundary to the columns and 8px of height to every row.
+
+   Vertical and horizontal are one number deliberately: a cell inset differently
+   on its two axes reads as a column that has been nudged, and `Table.module.css`
+   matches the header to this value for the same reason. */
+.pillCell {
+  padding: var(--rag-space-2);
+}
+
+/* A table row rounds at its ends, because its ends are cells. */
+.pillRow .pillCell:first-child {
+  border-top-left-radius: var(--rag-radius-m);
+  border-bottom-left-radius: var(--rag-radius-m);
+}
+
+.pillRow .pillCell:last-child {
+  border-top-right-radius: var(--rag-radius-m);
+  border-bottom-right-radius: var(--rag-radius-m);
+}
+
+.clickable {
+  cursor: pointer;
+}
+
+.pill:hover,
+.pillRow:hover .pillCell {
+  background: var(--rag-surface2);
+}
+
+/* The row whose detail is open beside the list. The rail carries it as well as
+   the tint, so the mark survives a theme where `--rag-surface2` is a hair away
+   from `--rag-surface`; `aria-selected` carries it for a reader looking at
+   neither. */
+.pillSelected {
+  background: transparent;
+}
+
+.pillSelected.pill,
+.pillSelected .pillCell {
+  background: var(--rag-surface2);
+}
+
+.pillSelected.pill,
+.pillSelected .pillCell:first-child {
+  box-shadow: inset 2px 0 0 var(--rag-acc);
+}
+
+/* ---- the identity cell --------------------------------------------------- */
+
+/* What a row *is*: a glyph, a name, and a quieter second line. At most one
+   column per table carries it (`Column.identity`), and it is the only part of a
+   row drawn in `--rag-bright` — everything else is body text, so the eye lands
+   on the name rather than on whichever column happens to be widest. */
+.identity {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-3);
+  min-width: 0;
+}
+
+.identityIcon {
+  flex: none;
+  color: var(--rag-dim);
+}
+
+/* The selected row's glyph takes the accent — the second half of the selection
+   mark, and the reason the leading icon is dim rather than accented always. */
+.pillSelected .identityIcon {
+  color: var(--rag-acc);
+}
+
+.identityText {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.identityName {
+  flex: 1;
+  min-width: 0;
+  color: var(--rag-bright);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.identitySecondary {
+  min-width: 0;
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* **Inside a table cell the identity wraps instead of ellipsising.**
+ *
+ * The two forms genuinely want different answers here, and this is the only
+ * place in this file where they get one. A block pill is a flex row of a known
+ * width: the name is given the slack, `text-overflow` fires, and one line is
+ * right. A *table cell* is sized by auto table layout from its contents, and
+ * `white-space: nowrap` makes a cell's min-content width the width of the whole
+ * string — so the longest name in the list becomes a width no column can shrink
+ * below, and the table overflows its box.
+ *
+ * Wrapping rather than ellipsising, and the choice is not incidental: an
+ * ellipsis in an auto-layout table needs the cell constrained
+ * (`max-width: 0`), which starves every sibling column — and a name is the one
+ * string on a row worth keeping whole, because two rows frequently differ only
+ * at the end of it. A second line costs 16px; an ambiguous name costs the
+ * reader the row.
+ *
+ * `text-overflow: clip` is restated rather than left inert: with wrapping on,
+ * `ellipsis` never fires, and a reader finding it here would reasonably think
+ * it did. */
+.pillCell .identityName,
+.pillCell .identitySecondary {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+}
+
+/* ---- the trailing slots -------------------------------------------------- */
+
+/* A **marker**: a property of the row, drawn as a glyph at its trailing edge.
+   Accented, because it is the one thing on the row asking to be noticed. */
+.marker {
+  flex: none;
+  color: var(--rag-acc);
+}
+
+/* Anything else at the trailing edge that must not be squeezed: a status, a
+   count, a control. The identity cell is the only one that gives ground. */
+.fixed {
+  flex: none;
+}

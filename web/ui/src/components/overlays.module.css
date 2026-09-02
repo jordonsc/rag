@@ -1,0 +1,122 @@
+.scrim {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--rag-shadow);
+  z-index: 100;
+}
+
+.scrimEnd {
+  justify-content: flex-end;
+  align-items: stretch;
+}
+
+.dialog {
+  max-width: calc(100vw - var(--rag-space-6));
+  max-height: calc(100vh - var(--rag-space-6));
+  display: flex;
+  flex-direction: column;
+  background: var(--rag-surface);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-l);
+  box-shadow: 0 8px 32px var(--rag-shadow);
+}
+
+.drawer {
+  max-width: 100vw;
+  display: flex;
+  flex-direction: column;
+  background: var(--rag-surface);
+  border-left: 1px solid var(--rag-border);
+  box-shadow: 0 0 32px var(--rag-shadow);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--rag-space-3);
+  padding: var(--rag-space-3) var(--rag-space-4);
+  border-bottom: 1px solid var(--rag-border);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--rag-text-m);
+  font-weight: 600;
+}
+
+.body {
+  padding: var(--rag-space-4);
+  overflow: auto;
+  font-size: var(--rag-text-s);
+}
+
+.drawerBody {
+  flex: 1;
+  padding: var(--rag-space-4);
+  overflow: auto;
+  font-size: var(--rag-text-s);
+}
+
+.footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--rag-space-2);
+  padding: var(--rag-space-3) var(--rag-space-4);
+  border-top: 1px solid var(--rag-border);
+}
+
+.tipWrap {
+  display: inline-flex;
+}
+
+.tipTrigger {
+  display: inline-flex;
+}
+
+/*
+ * Fixed, and rendered into the body through a React portal: the bubble is
+ * positioned in viewport
+ * coordinates by `placeTooltip`, so it can neither be clipped by an ancestor
+ * nor add to one's scrollable overflow. `top`/`left` are set inline.
+ */
+.tip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  /* A long label wraps rather than running off the edge. */
+  max-width: min(18rem, calc(100vw - 2 * var(--rag-space-2)));
+  padding: var(--rag-space-1) var(--rag-space-2);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-s);
+  background: var(--rag-surface2);
+  color: var(--rag-text);
+  font-size: var(--rag-text-xs);
+  line-height: 1.35;
+  box-shadow: 0 2px 8px var(--rag-shadow);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 100ms ease;
+  z-index: 110;
+}
+
+/*
+ * The tip's optional first line: what the thing *is*, above what it does.
+ * Block, so the hint always begins on the line beneath it however short the
+ * title is, and one step up the type scale so the two lines read as a heading
+ * and a sentence rather than as one wrapped paragraph.
+ */
+.tipTitle {
+  display: block;
+  margin-bottom: 1px;
+  color: var(--rag-text);
+  font-size: var(--rag-text-s);
+  font-weight: 600;
+}
+
+.tipOpen {
+  opacity: 1;
+}

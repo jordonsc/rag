@@ -1,0 +1,300 @@
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-4);
+  min-width: 0;
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-3);
+  padding: var(--rag-space-6) 0;
+  color: var(--rag-dim);
+}
+
+/* A standing fact about the record — moved, archived — rather than an alarm.
+   Stated once at the top, quietly, because it changes how everything below it
+   should be read. */
+.notice {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  margin: 0;
+  padding: var(--rag-space-2) var(--rag-space-3);
+  background: var(--rag-surface2);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-m);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+}
+
+.notice code {
+  font-family: var(--rag-font-mono);
+  color: var(--rag-text);
+}
+
+/* ---- header ---- */
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-2);
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2);
+  color: var(--rag-dim);
+}
+
+/* The id is what an agent quotes and what a person pastes, so it is drawn as
+   the machine string it is — monospaced, selectable, never truncated. */
+.topicId {
+  font-family: var(--rag-font-mono);
+  font-size: var(--rag-text-s);
+  color: var(--rag-dim);
+  user-select: all;
+}
+
+.title {
+  margin: 0;
+  max-width: var(--rag-measure);
+  color: var(--rag-bright);
+  font-size: var(--rag-text-xl);
+  font-weight: 600;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.hint {
+  margin: 0;
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2) var(--rag-space-5);
+  margin: var(--rag-space-1) 0 0;
+  font-size: var(--rag-text-s);
+}
+
+.meta > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.meta dt {
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.meta dd {
+  margin: 0;
+  color: var(--rag-text);
+}
+
+/* Agent or person. Dim, because it qualifies the address beside it rather than
+   competing with it — but always present, because "no agent" is the ledger's
+   way of saying a human wrote this and a blank would read as missing data. */
+.qualifier {
+  color: var(--rag-dim);
+}
+
+.tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--rag-space-1);
+  color: var(--rag-dim);
+}
+
+/* ---- summary ---- */
+
+/*
+ * The one block on the page that is not current. The rule down its left edge
+ * is what separates it from `current_state` at a glance; the label in the
+ * panel header says why.
+ */
+.summaryPanel {
+  border-left: 2px solid var(--rag-acc2);
+}
+
+.immutable {
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+}
+
+/* ---- links ---- */
+
+.links {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.link {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+}
+
+.relLabel {
+  min-width: 9rem;
+}
+
+.topicLink {
+  font-family: var(--rag-font-mono);
+  color: var(--rag-acc);
+  text-decoration: none;
+}
+
+.topicLink:hover {
+  text-decoration: underline;
+}
+
+/* ---- timeline ---- */
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/*
+ * A rail down the left with a marker per entry. The rule is drawn on the rail
+ * rather than on the row so it runs *through* the gap between entries, which
+ * is what makes a run of them read as one continuing log instead of a stack of
+ * separate cards.
+ */
+.event {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: var(--rag-space-3);
+  padding-bottom: var(--rag-space-4);
+}
+
+.event:last-child {
+  padding-bottom: 0;
+}
+
+.rail {
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+
+.rail::before {
+  content: '';
+  position: absolute;
+  top: 22px;
+  bottom: calc(var(--rag-space-4) * -1);
+  width: 1px;
+  background: var(--rag-border);
+}
+
+.event:last-child .rail::before {
+  display: none;
+}
+
+.dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--rag-border);
+  border-radius: 50%;
+  background: var(--rag-surface2);
+  color: var(--rag-dim);
+  flex: none;
+}
+
+.body {
+  min-width: 0;
+}
+
+.eventHead {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--rag-space-1) var(--rag-space-3);
+  margin-bottom: var(--rag-space-2);
+  font-size: var(--rag-text-xs);
+  color: var(--rag-dim);
+}
+
+.kind {
+  color: var(--rag-text);
+  font-weight: 600;
+}
+
+.who {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-1);
+}
+
+.when {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---- what an event changed ---- */
+
+.changes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-2);
+  margin-top: var(--rag-space-3);
+  padding-top: var(--rag-space-3);
+  border-top: 1px dashed var(--rag-border);
+}
+
+.change {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2);
+  font-size: var(--rag-text-s);
+}
+
+.changeLabel {
+  min-width: 7rem;
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.changeValue {
+  color: var(--rag-text);
+}
+
+/* A new state is a paragraph, not a value, so it gets its own row and its own
+   inset rather than being squeezed beside a label. */
+.stateChange {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-1);
+}
+
+.stateBody {
+  padding-left: var(--rag-space-3);
+  border-left: 2px solid var(--rag-border);
+}

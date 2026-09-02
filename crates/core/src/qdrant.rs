@@ -355,6 +355,7 @@ impl VectorStore {
                 topic_id: payload_str(&p.payload, "topic_id"),
                 topic_type: payload_str(&p.payload, "type"),
                 status: payload_str(&p.payload, "status"),
+                title: payload_str(&p.payload, "title"),
             })
             .collect())
     }

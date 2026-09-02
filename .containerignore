@@ -1,6 +1,19 @@
-# Keep the build context small and secret-free.
+# Keep the build context small and secret-free. Everything here is either
+# regenerable inside the build or has no business in an image.
+#
+# `target/` and `node_modules/` are the two that matter for speed: both run to
+# gigabytes on a working checkout, and the whole context is packed and sent to
+# the builder before the first instruction runs. `dist/` is excluded so a local
+# `npm run build` can never be what ends up in the image — the Node stage builds
+# the bundle itself, from the lockfile.
 target/
+**/node_modules
+**/dist
 .git/
 .env
 corpus/
 **/*.swp
+
+# Real config never belongs in a build context, even travelling to your own host.
+rag.toml
+deploy/deploy.env

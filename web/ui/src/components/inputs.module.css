@@ -1,0 +1,495 @@
+.input {
+  height: var(--rag-row-h);
+  padding: 0 var(--rag-space-2);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-m);
+  background: var(--rag-surface);
+  color: var(--rag-text);
+  font-family: var(--rag-font);
+  font-size: var(--rag-text-s);
+  min-width: 0;
+  width: 100%;
+}
+
+.input::placeholder {
+  color: var(--rag-dim);
+}
+
+.input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* A field that cannot be typed into looks like one that cannot be typed into.
+   Read-only-ness is a property of the *binding* — a prefilled value, a form's
+   subject — and every such case arrives here, at one attribute on one control.
+
+   **The cursor is `default`, not `not-allowed`.** A read-only subject is not
+   the form refusing; it is the form stating what it is about. `:disabled` above
+   is the refusal, and if the two read alike then every identifier on every page
+   looks like a control that has broken.
+
+   **Element-qualified deliberately.** `.select` and `.textarea` both compose
+   `.input`, and a `<select>` matches `:read-only` *unconditionally* — the HTML
+   specification only ever makes `<input>` and `<textarea>` read-write. A bare
+   `.input:read-only` would therefore grey out every select. The textarea needs
+   nothing of its own: it composes `.input`, so it is already here. */
+input.input:read-only,
+textarea.input:read-only {
+  color: var(--rag-dim);
+  background: var(--rag-surface2);
+  cursor: default;
+}
+
+.input.invalid {
+  border-color: var(--rag-crit);
+}
+
+.number {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.select {
+  appearance: auto;
+}
+
+/* ---- Segmented ---------------------------------------------------------
+
+   **A form control, sized to line up with the `Select` it replaces**: same
+   `--rag-row-h`, same `--rag-text-s`, same border and radius, so a form holding
+   one segmented field and three drop-downs reads as one form.
+
+   A filter-bar variant of the same picture — smaller type, tighter padding,
+   sized to sit above a table without taking a row from it — is a different
+   control on a different surface rather than a density knob on this one. */
+.segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-m);
+  background: var(--rag-surface2);
+  min-height: var(--rag-row-h);
+  align-items: stretch;
+  /* **The track ends at the last button**, rather than running the width of
+     the row.
+
+     An `inline-flex` track is content-sized in a flex *row*, where an item is
+     not stretched along the main axis. This one sits in `form.module.css`'s
+     `.field`, a flex *column*, whose default `align-items: stretch` sizes it
+     across to the field's whole measure — so it takes one declaration to put
+     it back where an inline control belongs.
+
+     Both axes are named because the caller decides which applies: `align-self`
+     is what a flex column reads, `justify-self` what a grid parent would, and a
+     control exported from `@rag/ui` does not get to assume. Neither applies in
+     a flex row, so a control in one is untouched either way. */
+  align-self: start;
+  justify-self: start;
+  /* A closed set of three to five, so it wraps rather than scrolls: a form is
+     a column and a control that overflowed sideways would be unreachable at a
+     narrow width. Keeping the set small is what makes this a safety net rather
+     than the normal case.
+
+     **`max-width` is what makes the shrink-to-fit above safe**, and it is also
+     the limit of it: once the buttons wrap, a flex container's shrink-to-fit
+     width is its cap rather than its widest line, so a wrapped track is full
+     width with space after its last button. There is no CSS that shrink-wraps
+     a wrapped flex container to its longest line, so that is accepted rather
+     than worked around. */
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.segmentedOption {
+  border: 0;
+  background: transparent;
+  color: var(--rag-dim);
+  font-family: var(--rag-font);
+  font-size: var(--rag-text-s);
+  padding: 0 var(--rag-space-3);
+  border-radius: var(--rag-radius-s);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.segmentedOption:hover:not(:disabled) {
+  color: var(--rag-text);
+}
+
+.segmentedOn {
+  background: var(--rag-surface);
+  color: var(--rag-acc);
+}
+
+.segmented:has(:disabled) {
+  opacity: 0.55;
+}
+
+.segmentedOption:disabled {
+  cursor: not-allowed;
+}
+
+.segmented.invalid {
+  border-color: var(--rag-crit);
+}
+
+.textarea {
+  height: auto;
+  padding: var(--rag-space-2);
+  resize: vertical;
+  line-height: 1.45;
+}
+
+/* Toggle */
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  border: 0;
+  padding: var(--rag-space-1);
+  background: transparent;
+  color: var(--rag-text);
+  font-family: var(--rag-font);
+  font-size: var(--rag-text-s);
+  cursor: pointer;
+}
+
+.toggle:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.track {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  width: 34px;
+  height: 18px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--rag-border);
+  transition: background-color 120ms ease;
+}
+
+.knob {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--rag-bg);
+  transition: transform 120ms ease;
+}
+
+.toggleOn .track {
+  background: var(--rag-acc);
+}
+
+.toggleOn .knob {
+  background: var(--rag-onacc);
+  transform: translateX(16px);
+}
+
+/* Slider */
+.slider {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-3);
+  width: 100%;
+}
+
+.sliderTrack {
+  /* The knob takes the room the field gives it; the reading never moves. */
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--rag-row-h);
+  accent-color: var(--rag-acc);
+  cursor: pointer;
+}
+
+.sliderTrack:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.sliderTrack.invalid {
+  accent-color: var(--rag-crit);
+}
+
+.sliderValue {
+  flex: none;
+  min-width: 5ch;
+  text-align: right;
+  font-size: var(--rag-text-s);
+  font-variant-numeric: tabular-nums;
+  color: var(--rag-text);
+}
+
+/* SecretInput */
+.secret {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-1);
+  width: 100%;
+}
+
+/* ChipList */
+.chipList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-2);
+}
+
+.chipList.invalid .input {
+  border-color: var(--rag-crit);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rag-space-1);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-1);
+  padding: 0 var(--rag-space-1) 0 var(--rag-space-2);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-l);
+  background: var(--rag-surface2);
+  font-size: var(--rag-text-s);
+  line-height: calc(var(--rag-row-h) - 8px);
+}
+
+.chipText {
+  font-family: var(--rag-font-mono);
+  font-size: var(--rag-text-xs);
+}
+
+.chipEntry {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-1);
+}
+
+/* CheckboxSet — a closed multi-select. */
+.checkboxSet {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2) var(--rag-space-4);
+  padding: var(--rag-space-2) 0;
+}
+
+.checkboxOption {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  color: var(--rag-text);
+  font-size: var(--rag-text-s);
+  cursor: pointer;
+}
+
+.checkboxSet.invalid {
+  outline: 1px solid var(--rag-crit);
+  outline-offset: var(--rag-space-1);
+  border-radius: var(--rag-radius-s);
+}
+
+/* DurationInput — a number and the unit it is in. */
+.duration {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+}
+
+.duration .number {
+  max-width: 8rem;
+}
+
+.duration .select {
+  max-width: 9rem;
+}
+
+/* Picker — a searchable chooser over a set the caller supplied. */
+.picker {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-1);
+}
+
+.picker.invalid {
+  outline: 1px solid var(--rag-crit);
+  outline-offset: var(--rag-space-1);
+  border-radius: var(--rag-radius-s);
+}
+
+/* The resting shape of a single-valued picker that holds a value: the value
+   where the search box was, and the clear button beside it. The trigger
+   composes `.input` so the field does not change height or border when the list
+   opens and the search box takes its place. */
+.pickerValue {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-1);
+}
+
+.pickerTrigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  flex: 1;
+  /* Both this and the text inside it are flex items holding data of unknown
+     length, so both give up their automatic minimum size. Without it the value
+     is a floor under whatever box holds the picker. */
+  min-width: 0;
+  text-align: start;
+  cursor: pointer;
+}
+
+.pickerTriggerText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pickerCaret {
+  flex: none;
+  color: var(--rag-dim);
+}
+
+.pickerStale {
+  color: var(--rag-warn);
+  font-size: var(--rag-text-xs);
+  margin-inline: var(--rag-space-1);
+}
+
+/* The list hovers over the surface rather than growing it.
+
+   Fixed and rendered into the body through a React portal, which is `Tooltip`'s
+   arrangement and is there for the same three reasons: in normal flow it
+   *expands the dialog it is in* and pushes every field below it down;
+   positioned absolutely inside the control it would instead be clipped by the
+   nearest `overflow: auto` ancestor — every dialog body and every scrolling
+   pane — and would inflate that ancestor into growing a scrollbar of its own.
+
+   `top`/`left`/`width`/`max-height` are set inline by `placeList`, in viewport
+   coordinates — the height cap among them, so that the one number deciding how
+   tall the list may be is the one that also decides which side it opens on.
+   The z-index clears the dialog scrim (100) and sits above the tooltip layer
+   (110): a picker inside a dialog is the ordinary case, and a tip covering the
+   list being chosen from would be the same fault one layer up. */
+.pickerOptions {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 120;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-m);
+  background: var(--rag-surface2);
+  box-shadow: 0 4px 16px var(--rag-shadow);
+}
+
+.pickerOption {
+  display: block;
+  width: 100%;
+  padding: var(--rag-space-2) var(--rag-space-3);
+  border: 0;
+  background: none;
+  color: var(--rag-text);
+  font: inherit;
+  font-size: var(--rag-text-s);
+  text-align: start;
+  cursor: pointer;
+}
+
+/* A picker option drawn as a **row** rather than a line.
+
+   The case is choosing one thing out of a list of similar things, where the
+   friendly name is ambiguous and an identifier is what settles it. So: the name
+   leads, its grouping sits to the right of it on the same line, and the id goes
+   underneath in monospace where a column of them is scannable.
+
+   These rules apply only where the caller gave a `detail` or a `code` — an
+   option with neither renders the bare label and never enters this grid. */
+.optionRow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.optionHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--rag-space-3);
+  min-width: 0;
+}
+
+/* Slightly larger than the row's own type: the name is what the reader is
+   choosing by, and the two lines beneath it are confirmation. Ellipsis idiom —
+   see `.optionDetail` for why every line in this row must be able to shrink. */
+.optionLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--rag-text-m);
+  white-space: nowrap;
+}
+
+/* Pushed to the right and quieter.
+
+   **Shrinkable, and that is deliberate rather than incidental.** The obvious
+   spelling is `flex: 0 0 auto`, so a long name truncates before a short detail
+   does — but the list's width is not its own: it is the width of the control it
+   hangs off, handed to it by `placeList`. An unshrinkable `nowrap` inside a box
+   whose width was decided elsewhere runs the data straight out of it. (In
+   normal flow the same `nowrap` is a *floor under the picker's box* instead — a
+   different failure with the same cause and the same fix.) So all three lines
+   here are the ellipsis idiom: nowrap is what makes the ellipsis fire, never
+   what makes the box wide. */
+.optionDetail {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--rag-text-xs);
+  color: var(--rag-dim);
+  white-space: nowrap;
+}
+
+.optionCode {
+  min-width: 0;
+  font-family: var(--rag-font-mono);
+  font-size: var(--rag-text-xs);
+  color: var(--rag-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pickerOption:hover,
+.pickerOption:focus-visible {
+  background: var(--rag-surface2);
+}
+
+.pickerChosen {
+  color: var(--rag-acc);
+}
+
+.pickerNote {
+  padding: var(--rag-space-2) var(--rag-space-3);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+}

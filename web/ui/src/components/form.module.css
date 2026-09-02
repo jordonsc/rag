@@ -1,0 +1,62 @@
+/* A control is capped at the shared measure rather than at a pixel width of
+   its own. A fixed width here is what produces "the panel is full-screen but
+   the controls are a fraction of it": a panel that caps itself at
+   `--rag-measure` gets controls that fill it exactly, because both sides are
+   the same number, and a surface that does not cap itself still gets a sane
+   line length rather than a 1900px text box. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-1);
+  max-width: var(--rag-measure);
+}
+
+.label {
+  font-size: var(--rag-text-s);
+  font-weight: 600;
+  color: var(--rag-text);
+}
+
+.help {
+  margin: 0;
+  font-size: var(--rag-text-xs);
+  color: var(--rag-dim);
+}
+
+.error {
+  margin: 0;
+  font-size: var(--rag-text-xs);
+  color: var(--rag-crit);
+}
+
+.fieldset {
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-m);
+  padding: var(--rag-space-3) var(--rag-space-4) var(--rag-space-4);
+  margin: 0;
+}
+
+.legend {
+  padding: 0 var(--rag-space-1);
+  font-size: var(--rag-text-s);
+  font-weight: 600;
+  color: var(--rag-dim);
+}
+
+.fieldsetBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-3);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-4);
+}
+
+.actions {
+  display: flex;
+  gap: var(--rag-space-2);
+  justify-content: flex-end;
+}

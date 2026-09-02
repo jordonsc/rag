@@ -1,0 +1,605 @@
+/* The table wears the shared row treatment. Everything below either composes
+   the row primitive (`rows.module.css`) or is the part of a *table* the
+   block-level pill has no equivalent for: the header row, sorting, and the
+   column that gives ground. */
+
+/* ---- the table fits, and there is no sideways at all --------------------
+ *
+ * **A table must fit its container.** There is no horizontal scrolling here
+ * and none is wanted: an affordance for not fitting is the wrong answer to a
+ * question that should never be asked, and one that costs a row its name the
+ * moment it is used. If a table overflows, the fault is a column that cannot
+ * shrink or a caller declaring too many of them — repair it where the width
+ * is, do not give the box a scrollbar back.
+ *
+ * The rule that buys it is one sentence, and § *how a column gets its width*
+ * below is the whole of it: **nothing in this file may contribute an
+ * unshrinkable width.** Text degrades inside its cell; controls are the one
+ * bounded exception and say why.
+ *
+ * **The rule is not a property of this file alone.** A rendered table wears
+ * classes from several stylesheets — this one, `rows.module.css`, and whatever
+ * component a cell renders — so a `min-width` or a `white-space: nowrap`
+ * introduced anywhere that reaches a cell puts the floor back that this sheet
+ * has just removed. There is deliberately no inline width hatch on `Column`:
+ * a style written onto the `<th>` bypasses every stylesheet at once.
+ *
+ * `Table.test.tsx` reads this sheet and `rows.module.css` as declarations and
+ * holds both to the rule — jsdom applies no CSS, so the rule is answerable
+ * only as a rule. Adding a `min-width` or a `nowrap` here fails there. */
+
+/* Inset from the panel edge, and clipping rather than scrolling.
+   `overflow-x: clip` is a statement of intent rather than a mechanism the table
+   is expected to need: nothing here may exceed the box, and `Panel` is
+   `overflow: hidden` anyway, so a stray unshrinkable child would already have
+   been cut off — silently, and outside this component's reckoning. Clipping it
+   here puts the boundary where the rule is written. `clip` rather than
+   `hidden` because `hidden` makes the box a scroll container — a keyboard or a
+   script can still scroll one — which is the sideways this table does not
+   have. */
+.wrap {
+  composes: surface from './rows.module.css';
+  overflow-x: clip;
+}
+
+/* `separate`, not `collapse`: the 2px channel between pills is `border-spacing`
+   (the table's equivalent of the stack's `gap`), and a cell cannot round its
+   corners in a collapsed table.
+
+   `table-layout: auto` is the initial value and is stated because it is
+   load-bearing: `fixed` would guarantee the fit by dividing the width equally
+   between the columns, which is exactly the apportionment § *how a column gets
+   its width* rejects. The fit is bought by making every column shrinkable
+   instead, so that auto layout's own minimum — the sum of the columns'
+   min-content widths — is never more than the box. */
+.table {
+  width: 100%;
+  table-layout: auto;
+  border-collapse: separate;
+  border-spacing: 0 2px;
+  font-size: var(--rag-text-m);
+}
+
+/* The header row stays — a multi-column table without column names is
+   unreadable, and the `columnheader`/`aria-sort` contract is what a keyboard
+   sorts by. What it does not do is shout: micro-caps at 11px were the loudest
+   thing on a surface whose rows are the quiet part. Dim, a rule under it, and
+   no more.
+
+   **No `white-space: nowrap`.** A column name is text, and an unwrappable name
+   sets the column's floor: a two-word heading holds ~90px open over a column of
+   short values, and seven such names are seven of the pixels the table has not
+   got. A header that wraps to two lines costs one line of a row drawn once; a
+   header that cannot wrap costs every row.
+
+   The horizontal padding is the cell's, not a number of its own — a header
+   inset differently from the values beneath it reads as a misaligned column. */
+.th {
+  padding: var(--rag-space-2);
+  text-align: left;
+  font-weight: 600;
+  font-size: var(--rag-text-xs);
+  letter-spacing: 0.02em;
+  color: var(--rag-dim);
+  border-bottom: 1px solid var(--rag-border);
+}
+
+.row {
+  composes: pillRow from './rows.module.css';
+}
+
+.td {
+  composes: pillCell from './rows.module.css';
+}
+
+/* **The whole of the fit, in one inherited property** — and narrowed from
+ * every cell to the cells that can afford to give ground.
+ *
+ * `overflow-wrap: anywhere` — not `break-word` — because only `anywhere`
+ * reduces a box's **min-content** size, and min-content is the number auto
+ * table layout adds up to decide whether the table fits. `break-word` breaks
+ * the same words on screen and contributes the unbroken width to the sizing, so
+ * a table using it looks wrapped and still overflows.
+ *
+ * # Why it is not on `.th` and `.td`
+ *
+ * The tempting sentence — *"a browser takes every soft-wrap opportunity first,
+ * so only a token wider than its column is ever broken"* — is true of a line
+ * box and **false of a column**. A column's width is decided from min-content,
+ * and `anywhere` makes every column's min-content **one character**: under
+ * pressure auto layout is then free to squeeze a column holding *Yes* down to
+ * the width of a `Y`, and it does, breaking the word across two and three
+ * lines. That is a width rule being wrong, not content being too long.
+ *
+ * So the property is confined to the cells for which severing a word is the
+ * **least bad** answer, and every other cell keeps its words whole:
+ *
+ * * **`.prose`** — a column whose values contain a space (`Column.prose`, set
+ *   by the caller from the values it is about to draw). It wraps at its spaces
+ *   long before it severs anything, so it is the one class of content that
+ *   gives ground gracefully, and it is what a table under pressure takes width
+ *   out of.
+ * * **`.grow`** — the identity column, whose whole job is already to give
+ *   ground (§ *how a column gets its width*).
+ * * **`.groupCell` / `.expandCell`** — the group header's cells, drawn with
+ *   `colSpan={columns.length}`. A cell spanning every column contributes its
+ *   min-content to the **whole table's** minimum, so one unbreakable token in a
+ *   group title is a floor under the entire table that no column can give
+ *   ground to. (`min-width: 0` on `.groupTitle` and `.disclosure` does not
+ *   touch it: a `min-width` caps what a box *may* shrink to, and min-content is
+ *   what it *asks* for.)
+ *
+ * Everything else falls back to `overflow-wrap: normal`, whose min-content is
+ * the **longest word** — so a one-word column (a boolean, an enum, an id, a
+ * status) cannot wrap at all, because there is no soft-wrap opportunity in it
+ * to take.
+ *
+ * # The residue, stated rather than hidden
+ *
+ * A content column now holds the table open at its longest token instead of
+ * collapsing to a character, so a table whose floors add up to more than its
+ * box overflows — and `.wrap` is `overflow-x: clip`, so that overflow is a
+ * column cut off in silence rather than a scrollbar. Two things bound it.
+ *
+ * **A table with nothing to give gives everywhere**: where no column is prose
+ * and none is the identity, the caller marks every column and the pre-narrowing
+ * behaviour is restored exactly.
+ *
+ * **What that does not close is arithmetic.** A table with many columns and a
+ * narrow box can still not fit, and the remedy is the one at the head of this
+ * file: repair it where the width is — fewer columns, or shorter values — not
+ * by giving the box a scrollbar. What makes the trade survivable is that the
+ * three cells an overflow was ever measured on — the identity column and the
+ * two spanning group cells — are the three that keep `anywhere`
+ * unconditionally. */
+.prose,
+.grow,
+.groupCell,
+.expandCell {
+  overflow-wrap: anywhere;
+}
+
+.clickable {
+  composes: clickable from './rows.module.css';
+}
+
+.selected {
+  composes: pillSelected from './rows.module.css';
+}
+
+/* A row the list has stopped returning, held on screen until the reader asks
+   for the list again (`TableProps.staleKeys`).
+
+   **Opacity, and only opacity.** The restraint is the point: the row is still
+   selectable, still the subject of the panel beside it, and still perfectly
+   legible — it is on its way out, not disabled and not in error. A colour would
+   say it had failed and a strike-through would say it had been deleted; neither
+   is true of a row that has merely fallen out of the current filter.
+
+   0.6 rather than something quieter because the row can be the *selected* one:
+   it has to stay readable against the accent rail it is still wearing. */
+.stale {
+  opacity: 0.6;
+}
+
+/* A row that is here and is not what the reader came for (`TableProps.quietKeys`).
+
+   **What 50% costs is stated rather than left to be discovered:** body text at
+   half opacity reads at roughly 2.3:1 against the row's ground, below every
+   contrast floor there is. That is the trade, made deliberately — these are
+   background rows on a list where most rows are background, and the ones the
+   reader came for are the ones at full strength.
+
+   **What it must not become is a way of hiding.** The row is still drawn, still
+   selectable, still clickable, and its hover and selected states are at full
+   strength below — so a row somebody is actually reading is legible. Removing
+   that trio would turn a de-emphasis into a filter the reader cannot see or
+   change.
+
+   **`:focus-within` is the third, and it is the keyboard's `:hover`.** A row
+   reached with the Tab key rather than a pointer gets the same restoration a
+   row under the cursor does; without it, the one route to a quiet row that
+   cannot also see the pointer highlight is the one left at 50%. */
+.quiet {
+  opacity: 0.5;
+}
+
+.quiet:hover,
+.quiet:focus-within,
+.quiet[aria-selected='true'] {
+  opacity: 1;
+}
+
+.right {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- how a column gets its width ---------------------------------------- */
+
+/* **Width is apportioned by what a column *is*, never by where it sits and
+ * never by equal division.** Every column is exactly one of three classes,
+ * decided by the caller:
+ *
+ * * **Identity** — the one column marked `Column.identity`: `.grow`. It gives
+ *   ground, so it is the one that wraps.
+ * * **Content** — every other column: no class at all. Auto table layout sizes
+ *   it between its min- and max-content width, which is the right answer as
+ *   long as nothing else is claiming the table.
+ * * **Controls** — a selection checkbox, a row's glyphs: `.controls`.
+ *   Shrink-to-fit, and never wrapped.
+ *
+ * **`.prose` is a fourth class and it is orthogonal to those three**, which is
+ * why it is not a fourth arm of the sentence above. Identity, content and
+ * controls answer *how much width does this column ask for*; `.prose` answers
+ * *may a word in it be severed to give width back*, and only a content column
+ * is ever asked. Conflating the two questions into one property is what lets a
+ * column of three-letter words be squeezed to the width of one letter — see
+ * § *the whole of the fit* above.
+ *
+ * **Do not give the identity column a claim of any size to make it take the
+ * slack.** `width: 100%` with a `max-width: 0` cell is not "take the spare
+ * width" in an auto-layout table, it is *take all of it*: every sibling is
+ * starved to its **min-content** width, so a sentence wraps at every space, an
+ * id breaks mid-token, and a cell of buttons compresses until its labels wrap
+ * inside them. A large percentage is the same fault wearing a smaller number,
+ * because a percentage column is still served before its auto siblings. Auto
+ * layout already spreads the surplus.
+ *
+ * **The floor is 6rem.** A `min-width` is the one thing in a column that auto
+ * layout may not shrink, so every rem of it is a rem the table can be forced to
+ * overflow by. 6rem is about a dozen characters at the row's type size — enough
+ * that a wrapped name reads as a name rather than as one word per line — and
+ * small enough that it plus every other column's min-content still fits a
+ * narrow surface. It is a floor, not a claim: the column asks for a minimum and
+ * lets auto layout distribute the rest.
+ *
+ * Below the floor the name wraps (`rows.module.css` § *the identity cell*),
+ * which is the correct degradation for the one column whose whole job is to
+ * say which row this is — an ellipsis hides the end of a name, and the end of a
+ * name is frequently the half that tells two rows apart. */
+.grow {
+  /* Stated rather than omitted: `width: auto` *is* the fix, and a future reader
+     finding no width here should know it was taken away on purpose. */
+  width: auto;
+  min-width: 6rem;
+}
+
+/* A cell holding controls — a selection checkbox, a row's glyphs.
+   `width: 1%` is the shrink-to-fit idiom for an auto-layout table: a percentage
+   too small to ever win the distribution, so the column settles at its content
+   width. With `white-space: nowrap` that content width is the *unwrapped* one,
+   which is the whole point — a control whose label has wrapped inside it is not
+   a smaller control, it is a broken one.
+
+   **This is the one unshrinkable width left in the file, and it is bounded by
+   what a controls cell may hold rather than by this rule.** A checkbox and a
+   run of glyphs are a fixed handful of pixels; *data* is what varies, and no
+   data goes in here. That bound is a coupling, not a property: put a run of
+   labelled buttons on every row and this rule is what will make that table
+   overflow. The repair then is to move the buttons off the row, not to let the
+   box scroll. */
+.controls {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.sortButton {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-1);
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+  /* The button is the header's whole content, so it has to be able to wrap
+     with it: an inline-flex that stayed on one line would put the floor back
+     that `.th` just took away. */
+  text-align: left;
+}
+
+.sortButton:hover {
+  color: var(--rag-text);
+}
+
+/* An empty table is the `EmptyState` block, the same one every other empty
+   surface draws — not a centred sentence in a cell, which reads as a row of
+   data that happens to say nothing. */
+.emptyCell {
+  padding: 0;
+}
+
+/* ---- grouped rows -------------------------------------------------------- */
+
+/* A group header is a row of the table spanning every column, and it is drawn
+   as a *heading* rather than as another pill: the rows beneath it are the data,
+   and a header that looked like one of them would read as a row whose columns
+   happened to be empty. It gets the surface's own ground and a rule under it,
+   the same treatment the column-name row gets, so the table reads as
+   [names] · [group] · [rows]. */
+.groupRow {
+  background: transparent;
+}
+
+.groupCell {
+  padding: var(--rag-space-2) var(--rag-space-2) var(--rag-space-1);
+  border-bottom: 1px solid var(--rag-border);
+}
+
+/* The header's parts wrap onto a second line rather than widening the cell. A
+   group header spans every column, so its content sets a floor under the *whole
+   table*: a title, a quieter line, a count and a button in one unwrappable row
+   is a table minimum nobody asked for. */
+.groupHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--rag-space-2);
+  /* The controls sit at the trailing edge, away from the disclosure: a button
+     under the reader's finger while they are aiming at a chevron is a press
+     they did not mean to make. */
+  justify-content: flex-start;
+}
+
+/* Only the disclosure is a button — the actions are siblings, not children, so
+   the keyboard reaches each of them on its own.
+
+   `min-width: 0` so the title inside it can shrink and wrap instead of holding
+   the cell open; nothing here is pinned, because nothing scrolls sideways. */
+.disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.disclosure:hover .groupTitle {
+  color: var(--rag-acc);
+}
+
+/* The group's glyph and its name. **A sibling of the disclosure where the
+   header selects, and a child of it where it does not**: a name inside the
+   disclosure is part of the fold's hit area, which is exactly what a selectable
+   header cannot have. The two arrangements share this box so the header's
+   rhythm does not change with which of them is drawn. */
+.groupLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  min-width: 0;
+}
+
+.groupTitle {
+  font-weight: 600;
+  font-size: var(--rag-text-m);
+  color: var(--rag-text);
+  min-width: 0;
+}
+
+.groupSecondary {
+  font-size: var(--rag-text-xs);
+  color: var(--rag-dim);
+}
+
+/* How much a folded group is hiding, which is the one fact a collapsed header
+   owes its reader beyond its name.
+
+   **Quieter than the line beside it.** It shares `--rag-dim` with
+   `.groupSecondary`, but that line carries content and this is chrome. The 10%
+   is small and the trade is stated rather than discovered: it takes the text
+   from 4.63:1 to 3.83:1, under AA's 4.5 for body text and above the 3.0 floor.
+   Deliberate for this string and no other — it duplicates a fact the reader can
+   see by looking at the rows, and it is the only text in this stylesheet
+   knowingly below AA. Do not copy the pattern. */
+.groupCount {
+  font-size: var(--rag-text-xs);
+  color: var(--rag-dim);
+  opacity: 0.9;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The run of verbs wraps as a *run* while each verb stays whole: `flex-wrap:
+   wrap` puts a second button on a second line rather than widening the header
+   cell, and `white-space: nowrap` keeps a label from breaking inside its own
+   button, which is the controls rule (§ *how a column gets its width*) and is
+   about the control rather than about the table.
+
+   **The nowrap here is worth defending, because this cell spans every column
+   and so, unlike `.controls`, its floor is not confined to one of them.** Two
+   things bound it. First, `flex-wrap: wrap` means the floor is the **widest
+   single button**, never the run: three buttons stack, they do not add up.
+   Second, a spanning cell's min-content is distributed across the columns it
+   spans, so a 110px button on a six-column table asks about 18px of each —
+   against a 96px identity floor on one of them, it is not what binds. It binds
+   only on a table of one or two columns, which is a table with room to spare.
+
+   So the nowrap survives on the same terms as `.controls`: a broken label is a
+   broken control, not a narrower one. The group **title** is the part of this
+   cell that is data, and it breaks (§ *the whole of the fit* above). If a
+   caller ever labels a group action with a sentence rather than a verb, the
+   repair is the label. */
+.groupActions {
+  margin-inline-start: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  flex-wrap: wrap;
+  white-space: nowrap;
+}
+
+/* A row that belongs to a group, indented so the eye can see where the group
+   ends without the header having to be repeated. The indent is read against the
+   cell's own padding, so it is one step of the scale rather than a number. */
+.member td:first-child {
+  padding-inline-start: var(--rag-space-4);
+}
+
+/* ---- the accordion group ------------------------------------------------- */
+
+/* With `TableGrouping.expand`, the header stops being a heading above the rows
+   and becomes **the row** — the selectable element, with the accent rail. So it
+   composes the shared row treatment rather than restating any of it: a header
+   that hand-rolled its own hover is how two lists come to look different. */
+.expandRow {
+  composes: pillRow from './rows.module.css';
+  composes: clickable from './rows.module.css';
+}
+
+.expandCell {
+  composes: pillCell from './rows.module.css';
+}
+
+/* **Open and *chosen* are two different states, and they get two different
+ * marks.**
+ *
+ * They coincide on an ordinary click, because choosing opens — so the accent is
+ * usually where it would be anyway. What the split buys is the other case: an
+ * open run nobody chose (the chevron pressed on its own) keeps the tint and
+ * gives up the rail, so the rail goes on saying which one thing on this list
+ * the panel beside it is about.
+ *
+ * The tint alone is stated here rather than composed, because `pillSelected` is
+ * the pair and this is deliberately half of it. It sits below the row hover in
+ * specificity on purpose: a pointer over an open header should still answer. */
+.expandOpen .expandCell {
+  background: var(--rag-surface2);
+}
+
+/* The chosen header: the same rail and tint an ordinary row takes when its
+   detail is open beside it. The rail carries the mark as well as the tint,
+   because `--rag-surface2` sits close enough to `--rag-surface` that a tint
+   alone is not a statement. */
+.expandSelected {
+  composes: pillSelected from './rows.module.css';
+}
+
+/* **An accordion header is the subject and it draws like one** — larger and
+   more prominent than the members beneath it, which are its contents.
+
+   **It cannot be done with a height and does not need to be.** A row is as tall
+   as what is in it (`rows.module.css`), so the extra height is bought with block
+   padding. `padding-block` rather than `padding` because this cell spans every
+   column, and its *inline* padding therefore contributes to the whole table's
+   min-content width: growing only the block axis costs the table no width at
+   all.
+
+   **Two classes rather than one, and that is not decoration.** `.expandCell`
+   composes `pillCell`, so a bare `.expandCell` override would sit at *equal*
+   specificity to the one it means to beat, and the winner would be whichever
+   the bundler emitted last.
+
+   **Scoped to `.expandRow` throughout**, because `.groupHeader`, `.groupLabel`,
+   `.groupTitle`, `.groupCount` and `.disclosure` are all drawn on the
+   heading-grouped path too. `.groupRow` is a caption above rows that are the
+   subject; this is a row that *is* one, and only the second moves. */
+.expandRow .expandCell {
+  padding-block: var(--rag-space-3);
+}
+
+/* The header's name gets the identity emphasis a row's name has — it is the
+   thing being selected, not a caption over the things that are.
+
+   **And it is one rung larger than its members' text**: `--rag-text-l` against
+   the `--rag-text-m` every cell in the run is drawn at. The next rung of the
+   shared scale in `../tokens.css`, not a value of its own. Size and colour
+   together are what let the header read as the subject before a word of it is
+   read. */
+.expandRow .groupTitle {
+  color: var(--rag-bright);
+  font-size: var(--rag-text-l);
+}
+
+.expandRow:hover .groupTitle {
+  color: var(--rag-acc);
+}
+
+/* The disclosed run's ground. A `<table>` has no element between the body and
+   a row, so "a container with a different background" is one ground shared by
+   the run — which is what the eye reads as a container anyway.
+
+   **The specificity is deliberate and is stated because it looks accidental.**
+   `rows.module.css`'s hover is `.pillRow:hover .pillCell`, three classes; a
+   member's ground and its own hover have to reach at least that, or the run
+   would either never be painted or never respond to the pointer. The element
+   qualifier is what buys the extra weight, honestly and in one place. */
+tr.expandMember .td {
+  background: var(--rag-surface2);
+}
+
+/* Hover inside the run: the ordinary row hover *is* `--rag-surface2`, which the
+   run is already sitting on, so a member under the pointer would otherwise show
+   nothing at all. `--rag-border` is one step further from the ground, which is
+   exactly what a hover wash wants. */
+tr.expandMember:hover .td {
+  background: var(--rag-border);
+}
+
+/* ---- the tree ------------------------------------------------------------ */
+
+/* **The ground says the run is one thing; the tree says these belong to that.**
+   Two different claims, which is why this composes with `.expandMember` above
+   rather than replacing it: a shared background groups the members with each
+   other and says nothing about the header they came from.
+
+   **Drawn in the sheet, not with characters.** A box-drawing glyph would be
+   sized by the font rather than by the theme's type scale, could not take a
+   colour token, and would land in the accessible name of every cell it sat in.
+
+   Neither offset is invented. The rule descends from the **disclosure's leading
+   edge** — the header cell's own `--rag-space-2` inset — and the branch reaches
+   the member indent, `--rag-space-4`. So the tree costs the first column
+   nothing: it is drawn inside padding that was already there. */
+tr.expandMember .td:first-child {
+  position: relative;
+}
+
+tr.expandMember .td:first-child::before,
+tr.expandMember .td:first-child::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+}
+
+/* **Both lines are borders on a zero-sized box, and that is not a flourish.**
+   A 1px line wants a 1px box, and the way to state that is `height: 1px` —
+   which this sheet does not contain, because a row is as tall as what is in it
+   and no height in this file may say otherwise. A border needs no height to be
+   one pixel tall, so the rule holds literally rather than gaining an exception.
+
+   The colour is a structural hairline rather than a border token, and **not
+   `--rag-border`**: that token is this run's own hover ground, so a rule painted
+   in it would disappear under the pointer. Mixed from `--rag-dim`, so it stays
+   a token. */
+
+/* The rule down the run. */
+tr.expandMember .td:first-child::before {
+  inset-block: 0;
+  inset-inline-start: var(--rag-space-2);
+  border-inline-start: 1px solid color-mix(in srgb, var(--rag-dim) 45%, transparent);
+}
+
+/* The branch to this member, at its middle. */
+tr.expandMember .td:first-child::after {
+  inset-block-start: 50%;
+  inset-inline-start: var(--rag-space-2);
+  width: var(--rag-space-2);
+  border-block-start: 1px solid color-mix(in srgb, var(--rag-dim) 45%, transparent);
+}
+
+/* The elbow: the last member's rule stops at its own branch instead of running
+   on past the run into whatever the table draws next. Equal specificity to the
+   rule above, so it must stay below it. */
+tr.expandLast .td:first-child::before {
+  inset-block-end: 50%;
+}

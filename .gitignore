@@ -7,6 +7,10 @@
 .env
 /.mcp.json
 
+# Frontend build output and dependencies
+node_modules/
+dist/
+
 # Editor / OS noise
 .idea/
 .vscode/
@@ -15,3 +19,8 @@
 
 # Deploy target (real values; example is committed)
 /deploy/deploy.env
+
+# An operator may point `server.work_dir` at a relative path; shallow clones of
+# every indexed repo must never become committable. `.containerignore` already
+# excludes this — the two should agree.
+/corpus/

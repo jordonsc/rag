@@ -1,0 +1,32 @@
+.shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  flex: none;
+  color: var(--rag-bright);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/*
+ * The reading column. Capped rather than fluid: the widest thing on a topic
+ * page is a paragraph, and a paragraph the width of a 34-inch monitor is
+ * unreadable. `min-width: 0` is the one that is easy to miss — without it a
+ * flex child refuses to shrink below its content, and a single wide code block
+ * inside a topic would push the whole page sideways despite everything in
+ * `markdown.module.css`.
+ */
+.main {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  max-width: 76rem;
+  margin: 0 auto;
+  padding: var(--rag-space-5) var(--rag-space-4) var(--rag-space-6);
+}

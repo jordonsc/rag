@@ -1,0 +1,119 @@
+.button,
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--rag-space-2);
+  height: var(--rag-row-h);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-m);
+  background: var(--rag-surface2);
+  color: var(--rag-text);
+  font-family: var(--rag-font);
+  font-size: var(--rag-text-s);
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+.button {
+  padding: 0 var(--rag-space-3);
+}
+
+.iconButton {
+  width: var(--rag-row-h);
+  padding: 0;
+}
+
+.button:hover:not(:disabled),
+.iconButton:hover:not(:disabled) {
+  border-color: var(--rag-dim);
+}
+
+.button:disabled,
+.iconButton:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.primary {
+  background: var(--rag-acc);
+  border-color: var(--rag-acc);
+  color: var(--rag-onacc);
+}
+
+.primary:hover:not(:disabled) {
+  border-color: var(--rag-bright);
+}
+
+.danger {
+  background: var(--rag-crit);
+  border-color: var(--rag-crit);
+  color: var(--rag-onacc);
+}
+
+.danger:hover:not(:disabled) {
+  border-color: var(--rag-bright);
+}
+
+/* The tinted pair. Both are built from a palette role mixed into the ground
+   rather than from a colour of their own, so they follow the tokens like
+   everything else. */
+.accent {
+  background: color-mix(in srgb, var(--rag-acc) 14%, transparent);
+  border-color: color-mix(in srgb, var(--rag-acc) 55%, transparent);
+  color: var(--rag-acc);
+}
+
+.accent:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--rag-acc) 24%, transparent);
+  border-color: var(--rag-acc);
+}
+
+.caution {
+  background: color-mix(in srgb, var(--rag-warn) 16%, transparent);
+  border-color: color-mix(in srgb, var(--rag-warn) 60%, transparent);
+  color: var(--rag-warn);
+}
+
+.caution:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--rag-warn) 26%, transparent);
+  border-color: var(--rag-warn);
+}
+
+/* Shorter than `--rag-row-h`, which is what gives a button inside a table row
+   space above and below it instead of filling the row edge to edge. */
+.small {
+  height: var(--rag-row-h-sm);
+  padding: 0 var(--rag-space-2);
+  font-size: var(--rag-text-xs);
+}
+
+.ghost {
+  background: transparent;
+  border-color: transparent;
+}
+
+.ghost:hover:not(:disabled) {
+  background: var(--rag-surface2);
+  border-color: transparent;
+}
+
+.pressed {
+  background: var(--rag-surface);
+  border-color: var(--rag-acc);
+  color: var(--rag-acc);
+}
+
+.label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+}
+
+.buttonSpinner {
+  border-top-color: currentColor;
+}

@@ -1,0 +1,3 @@
+# Build output. Vite writes it, Prettier has no business reformatting it, and
+# checking it makes `format:check` fail on a clean tree the moment anyone builds.
+dist/

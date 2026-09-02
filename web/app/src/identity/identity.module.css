@@ -1,0 +1,29 @@
+.control {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  height: var(--rag-row-h-sm);
+  padding: 0 var(--rag-space-2);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--rag-radius-s);
+  color: var(--rag-dim);
+  font: inherit;
+  font-size: var(--rag-text-s);
+  cursor: pointer;
+}
+
+.control:hover {
+  background: var(--rag-surface2);
+  border-color: var(--rag-border);
+  color: var(--rag-text);
+}
+
+/* An address is long and the top bar is not. It gives way before the
+   navigation does, and the tooltip carries the whole value either way. */
+.value {
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -3,6 +3,7 @@
 //!
 //! See `README.md` for an architecture overview.
 
+pub mod anthropic;
 pub mod config;
 pub mod error;
 pub mod hashing;

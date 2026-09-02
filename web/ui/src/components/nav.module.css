@@ -1,0 +1,125 @@
+.topNav {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-4);
+  height: var(--rag-nav-h);
+  padding: 0 var(--rag-space-3);
+  background: var(--rag-surface);
+  border-bottom: 1px solid var(--rag-border);
+}
+
+.itemLabel {
+  font-size: var(--rag-text-s);
+  font-weight: 600;
+  color: var(--rag-bright);
+  white-space: nowrap;
+}
+
+/*
+ * The strip scrolls only when the icons genuinely do not fit — a long
+ * destination list, or a narrow layout. `overflow-y` is pinned because `auto`
+ * on one axis otherwise computes `auto` on the other, which puts a phantom
+ * scrollbar on a three-icon nav.
+ */
+.items {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-1);
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.itemButton {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  height: calc(var(--rag-nav-h) - 12px);
+  padding: 0 var(--rag-space-2);
+  border: 0;
+  border-radius: var(--rag-radius-m);
+  background: transparent;
+  color: var(--rag-dim);
+  font-family: var(--rag-font);
+  font-size: var(--rag-text-s);
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.itemButton:hover {
+  color: var(--rag-text);
+  background: var(--rag-surface2);
+}
+
+.itemButton.active {
+  color: var(--rag-bright);
+  background: var(--rag-surface2);
+}
+
+.itemIcon {
+  position: relative;
+  display: inline-flex;
+}
+
+.end {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  flex: none;
+}
+
+/* Page rail */
+.rail {
+  width: var(--rag-rail-w);
+  flex: none;
+  /*
+   * The rail is the body's left edge, so its surface and border run the whole
+   * way down; sized to its buttons it leaves a stub of border ending mid-page.
+   * `align-self` covers a flex parent, `height` a block one.
+   */
+  align-self: stretch;
+  height: 100%;
+  /* Tooltips render through a React portal, so nothing here needs to escape. */
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  background: var(--rag-surface);
+  border-right: 1px solid var(--rag-border);
+  padding: var(--rag-space-2) 0;
+}
+
+.railList {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--rag-space-1);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.railButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: var(--rag-radius-m);
+  background: transparent;
+  color: var(--rag-dim);
+  cursor: pointer;
+}
+
+.railButton:hover {
+  color: var(--rag-text);
+  background: var(--rag-surface2);
+}
+
+.railButton.active {
+  color: var(--rag-acc);
+  background: var(--rag-surface2);
+}

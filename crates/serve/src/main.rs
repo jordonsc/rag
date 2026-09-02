@@ -5,6 +5,23 @@
 //! plus `GET /health` (liveness) and `GET /info` (collection stats + config echo,
 //! no secrets). The pipeline itself lives in `core` so the MCP server (Phase 06)
 //! reuses it rather than re-implementing it.
+//!
+//! When a web root is configured it also serves the ledger web UI on the same
+//! port and origin (see [`web`]), which is why no CORS handling exists here.
+//!
+//! One route talks to a *second* vendor API: `POST /ledger/{id}/summarise` asks
+//! Anthropic to summarise a topic. Its key is **optional** and its absence is
+//! not a failure — see [`AppState::summariser`].
+//!
+//! Three more routes — `GET /prompts`, `POST /prompts/save`, `POST /prompts/delete`
+//! — manage the small library of saved system prompts that endpoint chooses
+//! from (see [`prompts`]). They are the only routes here that **write a file**,
+//! on a service with no authentication, which is why the name validation in
+//! that module is as strict as it is.
+
+mod prompts;
+mod summarise;
+mod web;
 
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -20,10 +37,13 @@ use axum::{
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
+use rag_core::anthropic::{self, AnthropicClient};
 use rag_core::config::Config;
 use rag_core::ledger::{EventKind, LedgerStore, NewEvent, NewTopic, Status, TopicType};
 use rag_core::model::{Corpus, RankedHit, SearchFilters};
 use rag_core::retrieval::{RetrievalRequest, Retriever, Timings};
+
+use crate::prompts::{PromptError, PromptLibrary, SavedPrompt};
 
 #[derive(Parser)]
 #[command(name = "rag-serve", about = "RAG HTTP retrieval service", version)]
@@ -49,6 +69,23 @@ struct AppState {
     ledger: Option<LedgerStore>,
     /// File touched after a ledger write to trigger a reconcile; `None` disables it.
     ledger_trigger: Option<PathBuf>,
+    /// Anthropic client for `POST /ledger/{id}/summarise`.
+    ///
+    /// `None` whenever `ANTHROPIC_API_KEY` is unset — which is the **normal**
+    /// configuration, not a degraded one. The summarise route then answers 503
+    /// exactly as the retrieval routes do without a Voyage key, and nothing else
+    /// about the service changes. A missing key must never fail a startup: it
+    /// disables one feature, and a deployment that has never wanted an LLM in it
+    /// is a deployment that should still boot.
+    summariser: Option<AnthropicClient>,
+    /// The saved system-prompt library backing the Summarise drawer's chooser.
+    ///
+    /// `None` when `server.prompts_dir` is unset — the normal configuration for
+    /// a server nobody has given a prompts mount. `GET /prompts` then reports an
+    /// empty, unconfigured library rather than failing, because the built-in
+    /// default prompt is always available and needs no file; the two write
+    /// routes answer 503, the same shape as `/reindex` without a trigger.
+    prompts: Option<PromptLibrary>,
 }
 
 impl AppState {
@@ -57,6 +94,16 @@ impl AppState {
         self.ledger
             .as_ref()
             .ok_or_else(|| ApiError::Unavailable("ledger store unavailable".into()))
+    }
+
+    /// The prompt library, or a 503 if this server has no directory for one.
+    /// Only the *write* routes call this: a read reports an empty library.
+    fn prompt_library(&self) -> Result<&PromptLibrary, ApiError> {
+        self.prompts.as_ref().ok_or_else(|| {
+            ApiError::Unavailable(
+                "saved prompts are not configured on this server (no server.prompts_dir)".into(),
+            )
+        })
     }
 }
 
@@ -99,12 +146,47 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // Optional, and quietly so. Note the asymmetry with the Voyage key above:
+    // that one is fatal outside --check because retrieval is the service; this
+    // one is a feature that either exists or does not.
+    let summariser = match AnthropicClient::from_env() {
+        Ok(Some(client)) => {
+            tracing::info!(default_model = %anthropic::DEFAULT_MODEL, "summarise enabled");
+            Some(client)
+        }
+        Ok(None) => {
+            tracing::info!(
+                "no ANTHROPIC_API_KEY — /ledger/{{id}}/summarise will 503 (this is a valid configuration)"
+            );
+            None
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "summarise unavailable — /ledger/{{id}}/summarise will 503");
+            None
+        }
+    };
+
+    // Optional like the rest, and constructed without touching the disk: the
+    // directory is created on the first save, so a server pointed at a path
+    // that does not exist yet starts normally with an empty library.
+    let prompts = PromptLibrary::from_config(&cfg.server.prompts_dir);
+    match &prompts {
+        Some(library) => {
+            tracing::info!(dir = %library.dir().display(), "saved prompt library enabled")
+        }
+        None => {
+            tracing::info!("no server.prompts_dir — only the built-in Summarise prompt is offered")
+        }
+    }
+
     let state = Arc::new(AppState {
         retriever,
         cfg: cfg.clone(),
         reindex_trigger,
         ledger,
         ledger_trigger,
+        summariser,
+        prompts,
     });
 
     let app = Router::new()
@@ -118,7 +200,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/ledger/{id}/append", post(ledger_append))
         .route("/ledger/{id}/move", post(ledger_move))
         .route("/ledger/{id}/archive", post(ledger_archive))
+        .route("/ledger/{id}/summarise", post(ledger_summarise))
+        .route("/prompts", get(prompts_list))
+        .route("/prompts/save", post(prompts_save))
+        .route("/prompts/delete", post(prompts_delete))
         .with_state(state);
+
+    // The UI rides on the same port as the API — attached last, because it is a
+    // fallback: it answers only what the routes above did not.
+    let app = web::attach(app, &cfg.server.web_root);
 
     let listener = tokio::net::TcpListener::bind(&cfg.server.bind).await?;
     let addr = listener.local_addr()?;
@@ -245,6 +335,18 @@ struct InfoResponse {
     default_top_k: usize,
     qdrant_url: String,
     retrieval_ready: bool,
+    /// Whether `POST /ledger/{id}/summarise` will do anything but 503. The UI
+    /// keeps its Summarise tab visible either way and explains itself when this
+    /// is false — a control that vanishes teaches a reader the application
+    /// cannot do the thing at all.
+    summarise_ready: bool,
+    /// The models that endpoint accepts. Sent so the picker offers the server's
+    /// allow-list rather than a copy of it that can drift out of step.
+    summarise_models: &'static [&'static str],
+    summarise_default_model: &'static str,
+    /// The default instruction, so the editable prompt box is prefilled from the
+    /// single source of truth instead of a second copy written in TypeScript.
+    summarise_system_prompt: &'static str,
 }
 
 async fn info(State(state): State<Arc<AppState>>) -> Result<Json<InfoResponse>, ApiError> {
@@ -268,6 +370,10 @@ async fn info(State(state): State<Arc<AppState>>) -> Result<Json<InfoResponse>, 
         default_top_k: cfg.server.default_top_k,
         qdrant_url: cfg.qdrant.url.clone(),
         retrieval_ready: state.retriever.is_some(),
+        summarise_ready: state.summariser.is_some(),
+        summarise_models: anthropic::ALLOWED_MODELS,
+        summarise_default_model: anthropic::DEFAULT_MODEL,
+        summarise_system_prompt: anthropic::DEFAULT_SYSTEM_PROMPT,
     }))
 }
 
@@ -327,6 +433,13 @@ async fn ledger_create(
         return Err(ApiError::BadRequest(
             "title and summary are required".into(),
         ));
+    }
+    // `create_topic` interpolates the repo straight into the id (`{repo}-{seq:04}`),
+    // so a blank one mints `-0001` rather than failing. `ledger_move` has always
+    // guarded this; `ledger_create` did not, and the web UI is the first client
+    // where a human types the repo freehand.
+    if body.repo.trim().is_empty() {
+        return Err(ApiError::BadRequest("repo is required".into()));
     }
     let topic_type =
         TopicType::from_str(&body.topic_type).map_err(|e| ApiError::BadRequest(e.to_string()))?;
@@ -489,6 +602,126 @@ async fn ledger_archive(
     fire_trigger(&state.ledger_trigger).await;
     tracing::info!(topic_id = %id, archived = body.archived, "ledger topic archive flag set");
     Ok(Json(serde_json::to_value(&topic).unwrap_or_default()))
+}
+
+/// `POST /ledger/{id}/summarise` body — both fields optional.
+///
+/// **Note what is not here: the content.** The topic is read server-side from
+/// the id in the path. A body that carried the prose would be the client
+/// re-sending what the server already has, and would turn this route into a
+/// general-purpose LLM proxy for anyone who can reach the port.
+#[derive(Deserialize)]
+struct SummariseBody {
+    /// One of the allow-listed model ids. Absent or blank means the default.
+    #[serde(default)]
+    model: Option<String>,
+    /// The instruction. Absent or blank means `DEFAULT_SYSTEM_PROMPT`, which
+    /// `/info` also hands the UI so the editable box is prefilled with it.
+    #[serde(default)]
+    system_prompt: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SummariseUsage {
+    input_tokens: u64,
+    output_tokens: u64,
+}
+
+/// `POST /ledger/{id}/summarise` response.
+///
+/// The usage is returned because **nothing is cached**: every press costs a
+/// call, and the operator paying for it should be able to see what it cost
+/// rather than infer it from a bill.
+#[derive(Serialize)]
+struct SummariseResponse {
+    summary: String,
+    /// The model that actually served the request, as the API reported it.
+    model: String,
+    usage: SummariseUsage,
+    /// The summary ran into the output limit and stops mid-thought.
+    truncated: bool,
+}
+
+/// `POST /ledger/{id}/summarise` — ask a model to read one topic and compress it.
+///
+/// Deliberately uncached and un-backfilled: a summary is of the entry as it
+/// stands, and the entry is append-only prose that changes under it. A stored
+/// summary would go quietly stale, and the staleness would be invisible.
+///
+/// The summary comes back as Markdown written by a model that has just read
+/// unauthenticated, attacker-writable prose, so it is untrusted output and the
+/// UI renders it through the same DOMPurify path as every other ledger string.
+async fn ledger_summarise(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<SummariseBody>,
+) -> Result<Json<SummariseResponse>, ApiError> {
+    // The same shape as the retrieval routes' missing-Voyage-key 503, and for
+    // the same reason: the service is up, one dependency was never configured.
+    let client = state.summariser.as_ref().ok_or_else(|| {
+        ApiError::Unavailable(
+            "summarise unavailable: no Anthropic API key configured on this server".into(),
+        )
+    })?;
+    let ledger = state.ledger()?;
+
+    // Against the allow-list before anything else. What comes back is one of
+    // this crate's own `&'static str`s, so no client-supplied string can reach
+    // the vendor API even if the rest of this function is rewritten.
+    let model = anthropic::resolve_model(body.model.as_deref())
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+    let system = match body.system_prompt.as_deref().map(str::trim) {
+        Some(prompt) if !prompt.is_empty() => prompt,
+        _ => anthropic::DEFAULT_SYSTEM_PROMPT,
+    };
+
+    let record = match ledger
+        .get_topic(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+    {
+        Some(record) => record,
+        None => {
+            // A moved id is a redirect, not an absence. `GET /ledger/{id}` says
+            // where it went; a summarise of the same id should not be the one
+            // place that answers a bare 404.
+            if let Ok(Some(mv)) = ledger.lookup_move(&id).await {
+                return Err(ApiError::NotFound(format!(
+                    "topic {id} was moved to {}; summarise that id instead",
+                    mv.new_topic_id
+                )));
+            }
+            return Err(ApiError::NotFound(format!("no ledger topic {id:?}")));
+        }
+    };
+
+    let content = summarise::render_topic(&record);
+    let summary = client
+        .summarise(model, system, &content)
+        .await
+        .map_err(|e| ApiError::Upstream(e.to_string()))?;
+
+    // The prompt and the entry are not logged: one is a copy of the ledger and
+    // the other is long. What is worth keeping is what it cost.
+    tracing::info!(
+        topic_id = %id,
+        model = %summary.model,
+        input_tokens = summary.input_tokens,
+        output_tokens = summary.output_tokens,
+        truncated = summary.truncated,
+        "ledger topic summarised"
+    );
+
+    Ok(Json(SummariseResponse {
+        summary: summary.text,
+        model: summary.model,
+        usage: SummariseUsage {
+            input_tokens: summary.input_tokens,
+            output_tokens: summary.output_tokens,
+        },
+        truncated: summary.truncated,
+    }))
 }
 
 async fn ledger_get(
@@ -659,6 +892,102 @@ async fn ledger_search(
     .into_response())
 }
 
+// ---- Saved prompt handlers --------------------------------------------------
+//
+// The Summarise drawer's instruction box needs somewhere to keep more than one
+// instruction, so the operator can pick between "summarise this" and "list only
+// what changed" without retyping either. A prompt is a Markdown file in
+// `server.prompts_dir` (see [`prompts`]); these three routes are the browser's
+// view of that directory.
+//
+// **The built-in default is not one of them.** It is a Rust constant served by
+// `/info`, always offered, never deletable, and never written to disk — an
+// empty directory means the library is empty, not that a default needs seeding.
+//
+// These are the only routes in this service that write a file, and it has no
+// authentication, so read `prompts::validate_name` before changing them.
+
+/// `GET /prompts` response.
+#[derive(Serialize)]
+struct PromptsResponse {
+    /// Whether this server has a prompts directory at all. `false` means the
+    /// two write routes will 503 — the chooser should offer the built-in
+    /// default alone and not draw a Save it cannot honour. It is **not** an
+    /// error: a server without a prompts mount is a valid deployment.
+    configured: bool,
+    /// Every saved prompt, name and body, ordered by name. The bodies travel
+    /// with the list so switching between them in the chooser costs no request.
+    prompts: Vec<SavedPrompt>,
+}
+
+async fn prompts_list(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<PromptsResponse>, ApiError> {
+    let Some(library) = state.prompts.as_ref() else {
+        return Ok(Json(PromptsResponse {
+            configured: false,
+            prompts: Vec::new(),
+        }));
+    };
+    let prompts = library.list().await.map_err(api_error)?;
+    Ok(Json(PromptsResponse {
+        configured: true,
+        prompts,
+    }))
+}
+
+/// `POST /prompts/save` body — an upsert, keyed on the name.
+///
+/// The name is in the **body**, not the path, deliberately: a name in a URL is
+/// a name that has been through percent-decoding and a path router before this
+/// service sees it, and neither is a step worth having in front of a validator
+/// that decides which file gets written.
+#[derive(Deserialize)]
+struct PromptSaveBody {
+    name: String,
+    body: String,
+}
+
+async fn prompts_save(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<PromptSaveBody>,
+) -> Result<Json<SavedPrompt>, ApiError> {
+    let library = state.prompt_library()?;
+    let saved = library
+        .save(&body.name, &body.body)
+        .await
+        .map_err(api_error)?;
+    Ok(Json(saved))
+}
+
+/// `POST /prompts/delete` body.
+#[derive(Deserialize)]
+struct PromptDeleteBody {
+    name: String,
+}
+
+async fn prompts_delete(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<PromptDeleteBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let library = state.prompt_library()?;
+    let name = library.delete(&body.name).await.map_err(api_error)?;
+    Ok(Json(serde_json::json!({ "name": name, "deleted": true })))
+}
+
+/// Map a prompt-library failure onto the API's own error vocabulary.
+///
+/// A rejected name or body is the caller's fault (400) and its message is
+/// written to be shown to a person; a missing prompt is a 404; anything the
+/// filesystem refused is ours (500).
+fn api_error(error: PromptError) -> ApiError {
+    match error {
+        PromptError::Rejected(m) => ApiError::BadRequest(m),
+        PromptError::NotFound(m) => ApiError::NotFound(m),
+        PromptError::Io(m) => ApiError::Internal(m),
+    }
+}
+
 /// Parse an optional status string, mapping a bad value to a 400.
 fn parse_opt_status(s: Option<&str>) -> Result<Option<Status>, ApiError> {
     s.map(Status::from_str)
@@ -709,6 +1038,10 @@ enum ApiError {
     BadRequest(String),
     NotFound(String),
     Unavailable(String),
+    /// A dependency answered, and answered badly. Distinct from `Internal`
+    /// because it says where the fault is: a 500 invites someone to go looking
+    /// through this service's logs for a bug that is not in it.
+    Upstream(String),
     Internal(String),
 }
 
@@ -718,6 +1051,7 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             ApiError::NotFound(m) => (StatusCode::NOT_FOUND, m),
             ApiError::Unavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, m),
+            ApiError::Upstream(m) => (StatusCode::BAD_GATEWAY, m),
             ApiError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
         };
         let body = Json(serde_json::json!({ "error": message }));

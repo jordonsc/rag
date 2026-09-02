@@ -1,0 +1,93 @@
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-4);
+  min-width: 0;
+}
+
+/*
+ * The query and its filters on one line, wrapping to more where the window is
+ * narrow. The query field is the only one that grows; the filters stay at a
+ * legible fixed width rather than sharing the spare space, because a project
+ * name and a five-word question do not want the same box.
+ */
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rag-space-2);
+}
+
+.queryField {
+  flex: 1 1 22rem;
+  min-width: 12rem;
+}
+
+.filter {
+  flex: 0 1 11rem;
+  min-width: 8rem;
+}
+
+.hint {
+  margin: 0;
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-3);
+  color: var(--rag-dim);
+  padding: var(--rag-space-3) 0;
+}
+
+.meta {
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The matched chunk. Two lines and then it stops: the row is a pointer to the
+   topic, not a place to read it. */
+.match {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+}
+
+/*
+ * The direct-open strip: what to do when the "query" is an id.
+ *
+ * Tinted rather than quiet, because it is offering the thing the reader most
+ * likely came for — but a *strip above* the results rather than a redirect, so
+ * a search for what mentions the id still runs and is still readable beneath.
+ */
+.direct {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-3);
+  padding: var(--rag-space-2) var(--rag-space-3);
+  border: 1px solid color-mix(in srgb, var(--rag-acc) 55%, transparent);
+  border-radius: var(--rag-radius-m);
+  background: color-mix(in srgb, var(--rag-acc) 12%, transparent);
+  color: var(--rag-acc);
+  flex-wrap: wrap;
+}
+
+.directText {
+  flex: 1;
+  min-width: 12rem;
+  margin: 0;
+  color: var(--rag-text);
+  font-size: var(--rag-text-s);
+}
+
+.directText code {
+  font-family: var(--rag-font-mono);
+  color: var(--rag-bright);
+}

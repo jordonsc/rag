@@ -1,0 +1,167 @@
+.card {
+  background: var(--rag-surface);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-l);
+  padding: var(--rag-space-4);
+  box-shadow: 0 1px 3px var(--rag-shadow);
+}
+
+.cardTitle {
+  margin: 0 0 var(--rag-space-3);
+  font-size: var(--rag-text-m);
+  font-weight: 600;
+}
+
+.cardBody {
+  font-size: var(--rag-text-s);
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--rag-surface);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-l);
+  overflow: hidden;
+}
+
+.panelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--rag-space-3);
+  min-height: var(--rag-row-h-comfy);
+  padding: 0 var(--rag-space-4);
+  border-bottom: 1px solid var(--rag-border);
+  background: var(--rag-surface2);
+}
+
+/* A panel that keeps its own name on screen — `Panel`'s `stickyHeader`.
+ *
+ * **Two rules, and the first one is the whole trick.** `.panel` above sets
+ * `overflow: hidden` to clip its children to the rounded corners, and an
+ * `overflow: hidden` box *is a scroll container* — it simply has no scrollbar.
+ * A `position: sticky` header inside one therefore resolves its scrollport to
+ * the panel itself, which never scrolls, so it pins to a box that does not move
+ * and the header rides off screen exactly as it did before: the rule would run,
+ * pass review and do nothing. `overflow: clip` clips the same corners and is
+ * explicitly *not* a scroll container, so the header sticks to the page's own
+ * scroll pane, which is the box a reader is reading in.
+ *
+ * **No length decides anything here.** No breakpoint, no media query, no height
+ * threshold — the panel's own geometry answers the question: a panel shorter
+ * than the pane it is drawn in never scrolls its header out of view, so
+ * `sticky` never engages and the panel draws as it drew before.
+ *
+ * `z-index` because the header must paint *over* the body sliding beneath it;
+ * `.panelHeader`'s own opaque `--rag-surface2` background is the other half of
+ * that, and a transparent header would show the content through it.
+ *
+ * `--rag-sticky-offset` is what a *second* sticky bar above these headers sets
+ * on its own column, so the headers beneath come to rest under that bar rather
+ * than behind it. The `0` fallback is why every other sticky panel is
+ * unaffected: it inherits nothing and resolves the fallback. A variable rather
+ * than a measurement, deliberately — the bar's height is a number its own
+ * stylesheet derives from the type it sets, so nothing is read off the glass at
+ * run time. */
+.panel.panelFollows {
+  overflow: clip;
+}
+
+.panelHeaderFollows {
+  position: sticky;
+  top: var(--rag-sticky-offset, 0);
+  z-index: 1;
+}
+
+.panelTitle {
+  font-size: var(--rag-text-s);
+  font-weight: 600;
+}
+
+.panelActions {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+}
+
+.panelBody {
+  flex: 1;
+  min-height: 0;
+}
+
+.padded {
+  padding: var(--rag-space-4);
+}
+
+/* Disclosure */
+.disclosure {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-2);
+}
+
+.disclosureHeading {
+  margin: 0;
+}
+
+.disclosureToggle {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  width: 100%;
+  padding: var(--rag-space-1) 0;
+  border: 0;
+  background: transparent;
+  color: var(--rag-text);
+  font-family: var(--rag-font);
+  font-size: var(--rag-text-m);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.disclosureToggle:hover {
+  color: var(--rag-bright);
+}
+
+.disclosureNote {
+  margin: 0;
+  font-size: var(--rag-text-xs);
+  color: var(--rag-dim);
+  max-width: var(--rag-measure);
+}
+
+.disclosureBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-4);
+}
+
+.tabs {
+  display: flex;
+  gap: var(--rag-space-1);
+  border-bottom: 1px solid var(--rag-border);
+}
+
+.tab {
+  height: var(--rag-row-h);
+  padding: 0 var(--rag-space-3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--rag-dim);
+  font-family: var(--rag-font);
+  font-size: var(--rag-text-s);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--rag-text);
+}
+
+.tabActive {
+  color: var(--rag-bright);
+  border-bottom-color: var(--rag-acc);
+}

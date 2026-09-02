@@ -1,0 +1,149 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--rag-space-2);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-l);
+  background: var(--rag-surface2);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.badge_acc {
+  color: var(--rag-acc);
+  border-color: var(--rag-acc);
+  background: transparent;
+}
+
+.badge_good {
+  color: var(--rag-good);
+  border-color: var(--rag-good);
+  background: transparent;
+}
+
+.badge_warn {
+  color: var(--rag-warn);
+  border-color: var(--rag-warn);
+  background: transparent;
+}
+
+.badge_crit {
+  color: var(--rag-crit);
+  border-color: var(--rag-crit);
+  background: transparent;
+}
+
+/* StateDot */
+.stateDot {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-1);
+  font-size: var(--rag-text-s);
+  white-space: nowrap;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.dot_neutral .dot {
+  background: transparent;
+  border: 2px solid var(--rag-dim);
+}
+
+.dot_acc .dot {
+  background: var(--rag-acc);
+}
+
+.dot_good .dot {
+  background: var(--rag-good);
+}
+
+.dot_warn .dot {
+  background: var(--rag-warn);
+}
+
+.dot_crit .dot {
+  background: var(--rag-crit);
+}
+
+/* Emphasis: a filled pill, for the state that needs a person rather than a
+   retry. It has to read as heavier than a coloured dot. */
+.emphasis {
+  padding: 1px var(--rag-space-2);
+  border-radius: var(--rag-radius-l);
+  background: var(--rag-crit);
+  color: var(--rag-onacc);
+  font-weight: 600;
+}
+
+.emphasis.dot_warn {
+  background: var(--rag-warn);
+}
+
+.emphasis.dot_acc {
+  background: var(--rag-acc);
+}
+
+.stateLabel {
+  color: inherit;
+}
+
+/* SeverityIcon */
+.severity {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-1);
+  font-size: var(--rag-text-s);
+}
+
+.severity.info {
+  color: var(--rag-acc);
+}
+
+.severity.warning {
+  color: var(--rag-warn);
+}
+
+.severity.critical {
+  color: var(--rag-crit);
+}
+
+/* Empty / error states */
+.stateBlock {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--rag-space-2);
+  padding: var(--rag-space-6) var(--rag-space-4);
+  text-align: center;
+}
+
+.stateIcon {
+  color: var(--rag-dim);
+}
+
+.errorIcon {
+  color: var(--rag-crit);
+}
+
+.stateTitle {
+  margin: 0;
+  font-size: var(--rag-text-m);
+  font-weight: 600;
+}
+
+/* The measure comes from the token, not from a number chosen here: two
+   components capping body text at two different widths is how a page ends up
+   with text that looks arbitrarily narrow in one place and not another. */
+.stateMessage {
+  margin: 0;
+  font-size: var(--rag-text-s);
+  color: var(--rag-dim);
+  max-width: var(--rag-measure);
+}
