@@ -35,6 +35,24 @@ const INDEXED_FIELDS: &[&str] = &[
 
 const API_KEY_ENV: &str = "QDRANT_API_KEY";
 
+/// Stands in for a hash in [`VectorStore::index_file_hashes`] /
+/// [`VectorStore::ledger_topic_hashes`] when one path (or topic) carries points of
+/// more than one hash. That happens only when a run stopped between writing a
+/// file's new points and deleting its old ones; no real hash equals it, so the next
+/// diff sees the file as changed and finishes the job.
+pub const MIXED_HASH: &str = "<mixed>";
+
+/// Record `hash` for `key`, collapsing to [`MIXED_HASH`] on disagreement.
+fn note_hash(map: &mut HashMap<String, String>, key: String, hash: String) {
+    match map.get_mut(&key) {
+        Some(existing) if *existing != hash => *existing = MIXED_HASH.to_string(),
+        Some(_) => {}
+        None => {
+            map.insert(key, hash);
+        }
+    }
+}
+
 pub struct VectorStore {
     client: Qdrant,
     collection: String,
@@ -159,7 +177,8 @@ impl VectorStore {
 
     /// Snapshot of the index for incremental diffing: a map of `path -> file_hash`
     /// for every point, optionally restricted to one corpus and/or repo. Only the
-    /// `path` and `file_hash` payload fields are fetched — no vectors/text.
+    /// `path` and `file_hash` payload fields are fetched — no vectors/text. A path
+    /// whose points disagree maps to [`MIXED_HASH`].
     pub async fn index_file_hashes(
         &self,
         corpus: Option<Corpus>,
@@ -191,7 +210,7 @@ impl VectorStore {
                 let path = payload_str(&point.payload, "path");
                 let hash = payload_str(&point.payload, "file_hash");
                 if let (Some(p), Some(h)) = (path, hash) {
-                    map.insert(p, h);
+                    note_hash(&mut map, p, h);
                 }
             }
             match resp.next_page_offset {
@@ -205,6 +224,43 @@ impl VectorStore {
     /// Delete all points for a given source file path. Returns once committed.
     pub async fn delete_by_path(&self, path: &str) -> Result<()> {
         self.delete_by_field("path", path).await
+    }
+
+    /// Delete a file's points that do **not** carry `keep_hash` — the stale points
+    /// of an earlier version, removed only after the new version's points are
+    /// written. Point ids are `path#chunk_index`, so the new points have already
+    /// overwritten the old ones at the same indices; this removes the old tail and
+    /// any leftovers from an interrupted run.
+    pub async fn delete_path_except_hash(&self, path: &str, keep_hash: &str) -> Result<()> {
+        self.delete_except("path", path, "file_hash", keep_hash)
+            .await
+    }
+
+    /// Delete a ledger topic's points that do not carry `keep_hash` (its
+    /// `topic_hash`) — the same write-then-prune order as
+    /// [`Self::delete_path_except_hash`].
+    pub async fn delete_topic_except_hash(&self, topic_id: &str, keep_hash: &str) -> Result<()> {
+        self.delete_except("topic_id", topic_id, "topic_hash", keep_hash)
+            .await
+    }
+
+    async fn delete_except(
+        &self,
+        field: &str,
+        value: &str,
+        hash_field: &str,
+        keep_hash: &str,
+    ) -> Result<()> {
+        let filter = except_filter(field, value, hash_field, keep_hash);
+        self.client
+            .delete_points(
+                DeletePointsBuilder::new(&self.collection)
+                    .points(filter)
+                    .wait(true),
+            )
+            .await
+            .map_err(|e| Error::Qdrant(e.to_string()))?;
+        Ok(())
     }
 
     /// Delete all points belonging to a repo (used to purge archived/removed repos).
@@ -298,7 +354,7 @@ impl VectorStore {
                 let topic_id = payload_str(&point.payload, "topic_id");
                 let hash = payload_str(&point.payload, "topic_hash");
                 if let (Some(t), Some(h)) = (topic_id, hash) {
-                    map.insert(t, h);
+                    note_hash(&mut map, t, h);
                 }
             }
             match resp.next_page_offset {
@@ -387,6 +443,15 @@ fn payload_filter(f: &SearchFilters) -> Option<Filter> {
     }
 }
 
+/// `field == value AND hash_field != keep_hash`.
+fn except_filter(field: &str, value: &str, hash_field: &str, keep_hash: &str) -> Filter {
+    Filter {
+        must: vec![Condition::matches(field, value.to_string())],
+        must_not: vec![Condition::matches(hash_field, keep_hash.to_string())],
+        ..Default::default()
+    }
+}
+
 /// Build an optional Qdrant filter scoping to a corpus and/or repo.
 fn scope_filter(corpus: Option<Corpus>, repo: Option<&str>) -> Option<Filter> {
     let mut conds = Vec::new();
@@ -414,5 +479,35 @@ fn payload_int(p: &HashMap<String, Value>, key: &str) -> i64 {
     match p.get(key).and_then(|v| v.kind.as_ref()) {
         Some(Kind::IntegerValue(i)) => *i,
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disagreeing_hashes_for_one_path_collapse_to_mixed() {
+        let mut map = HashMap::new();
+        note_hash(&mut map, "a".into(), "h1".into());
+        note_hash(&mut map, "a".into(), "h1".into());
+        note_hash(&mut map, "b".into(), "h2".into());
+        assert_eq!(map["a"], "h1");
+        note_hash(&mut map, "a".into(), "h9".into());
+        assert_eq!(map["a"], MIXED_HASH);
+        // Once mixed, a later agreeing point does not un-mix it.
+        note_hash(&mut map, "a".into(), "h1".into());
+        assert_eq!(map["a"], MIXED_HASH);
+        assert_eq!(map["b"], "h2");
+    }
+
+    #[test]
+    fn except_filter_keeps_the_new_hash() {
+        let f = except_filter("path", "/r/x.rs", "file_hash", "new");
+        assert_eq!(f.must.len(), 1);
+        assert_eq!(f.must_not.len(), 1);
+        assert!(f.should.is_empty());
+        let dbg = format!("{f:?}");
+        assert!(dbg.contains("/r/x.rs") && dbg.contains("new") && dbg.contains("file_hash"));
     }
 }

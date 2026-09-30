@@ -13,6 +13,12 @@ pub enum Error {
     #[error("voyage API error: {0}")]
     Voyage(String),
 
+    /// Voyage refused a request for carrying too many tokens in one batch
+    /// (`400 TOO_MANY_TOKENS_IN_BATCH`). Distinct from [`Error::Voyage`] because it
+    /// is the one refusal a caller can fix by splitting the batch and retrying.
+    #[error("voyage API error (batch too large): {0}")]
+    VoyageBatchTooLarge(String),
+
     /// A failed call to the Anthropic Messages API, or a response that could not
     /// be made sense of. The message is shown to a reader, so it carries the
     /// vendor's own wording where there is one — and never the API key, which

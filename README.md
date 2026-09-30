@@ -16,7 +16,11 @@ retrieval service; agents query it from anywhere on the network.
   splitters.
 - **Embeds + stores** chunks in [Qdrant](https://qdrant.tech) using
   [Voyage AI](https://voyageai.com) embeddings, incrementally (only changed files
-  are re-embedded; removed/archived repos are purged).
+  are re-embedded; removed/archived repos are purged). Spend is bounded: batches
+  are sized by a hard per-request token bound, each file is persisted as soon as it
+  is embedded (a failed run keeps its progress), token-dense generated data is
+  skipped, and a circuit breaker stops re-attempting work that keeps failing — see
+  *Controlling what is indexed* below.
 - **Retrieves** via embed → ANN search → Voyage rerank → ranked, **citable** results
   (`repo` + `rel_path` + line range).
 - **Exposes** retrieval three ways: an HTTP API, an MCP server (`search_corpus`),
@@ -25,6 +29,38 @@ retrieval service; agents query it from anywhere on the network.
   corpus (`corpus = ledger`) and reachable via MCP tools.
 - **Serves** a small web UI for that ledger — search, read and amend topics on the
   same terms an agent gets — from the same origin as the API.
+
+## Controlling what is indexed
+
+Discovery honours `.gitignore`, skips build/vendor directories, lockfiles, minified,
+binary and over-size files, plus:
+
+- **`.ragignore`** — gitignore syntax, at a repo's root or in any directory. It
+  excludes paths from the index **without** excluding them from git: generated
+  data, recorded fixtures, anything committed but not worth retrieving. A path
+  that becomes ignored is removed from the index on the next sync.
+- **The density guard** — a file of at least `ingest.density_min_bytes` (4 KiB)
+  whose *estimated* characters per token fall below `ingest.min_chars_per_token`
+  (1.7) is skipped and logged. Generated SVG path data estimates at 1.3–1.6 and
+  hand-written source and prose at 1.8 and above; such data costs about three
+  times as much per byte to embed and is useless to search. `0` disables it.
+
+Embedding is guarded so that one bad input cannot become an open-ended bill:
+
+- **Batches** hold at most 128 inputs and 80 % of Voyage's 120k per-request token
+  ceiling, counted as one token per UTF-8 byte — a bound no content can exceed,
+  unlike a characters-per-token guess. A `TOO_MANY_TOKENS_IN_BATCH` refusal that
+  still happens is split in half and retried, a bounded number of times.
+- **Incremental persistence** — each file (or ledger topic) is written the moment
+  its last vector arrives, and its old points are deleted only after its new ones
+  are written. A failed run keeps everything it finished and never leaves a file
+  with fewer points than it had.
+- **Circuit breaker** — the pending work is fingerprinted; after
+  `ingest.breaker_threshold` (3) consecutive runs fail on the same work with the
+  same error, the indexer refuses to attempt it (exit non-zero, logged as
+  `CIRCUIT BREAKER OPEN`) until the pending files or the config change.
+  `rag-ingest run --force` overrides it once. State lives in
+  `<github.work_dir>/.rag-ingest-breaker.json` (ledger: beside `ledger.db`).
 
 ## Architecture
 

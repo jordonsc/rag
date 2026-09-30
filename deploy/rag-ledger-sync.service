@@ -11,7 +11,10 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/podman run --rm --name rag-ledger-sync \
+# `--replace`: a container left behind by a killed run (e.g. one stuck in
+# `Created`) otherwise holds the name, and every later run exits 125 without
+# doing anything. systemd serialises this oneshot, so nothing live is replaced.
+ExecStart=/usr/bin/podman run --rm --replace --name rag-ledger-sync \
     --pull=never \
     --network=host \
     --env-file=%h/.config/rag/env \

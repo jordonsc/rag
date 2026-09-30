@@ -61,6 +61,49 @@ pub struct ChunkConfig {
 pub struct IngestConfig {
     /// Files larger than this (bytes) are skipped during discovery.
     pub max_file_bytes: u64,
+    /// Skip a file whose *estimated* characters per token fall below this — the
+    /// signature of generated data (SVG path strings, base64, number tables),
+    /// which is useless to retrieve and costs three times as much to embed as
+    /// prose. `0` disables the guard. See `discovery::estimate_tokens`.
+    #[serde(default = "default_min_chars_per_token")]
+    pub min_chars_per_token: f64,
+    /// The density guard ignores files smaller than this many bytes: a small file
+    /// costs little whatever its density.
+    #[serde(default = "default_density_min_bytes")]
+    pub density_min_bytes: u64,
+    /// Consecutive identical failed runs (same pending work, same error) after
+    /// which the indexer stops attempting that work until its inputs change.
+    /// `0` disables the breaker.
+    #[serde(default = "default_breaker_threshold")]
+    pub breaker_threshold: u32,
+    /// Where the breaker's state is kept between runs. Empty (the default) means
+    /// `<github.work_dir>/.rag-ingest-breaker.json`, which is on the volume the
+    /// sync container mounts, so it survives the container.
+    #[serde(default)]
+    pub breaker_path: String,
+}
+
+fn default_min_chars_per_token() -> f64 {
+    1.7
+}
+
+fn default_density_min_bytes() -> u64 {
+    4096
+}
+
+fn default_breaker_threshold() -> u32 {
+    3
+}
+
+impl Config {
+    /// The resolved breaker state file (see [`IngestConfig::breaker_path`]).
+    pub fn breaker_path(&self) -> PathBuf {
+        if self.ingest.breaker_path.trim().is_empty() {
+            self.github.work_dir.join(".rag-ingest-breaker.json")
+        } else {
+            PathBuf::from(&self.ingest.breaker_path)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,6 +196,10 @@ impl Default for Config {
             },
             ingest: IngestConfig {
                 max_file_bytes: 1_000_000,
+                min_chars_per_token: default_min_chars_per_token(),
+                density_min_bytes: default_density_min_bytes(),
+                breaker_threshold: default_breaker_threshold(),
+                breaker_path: String::new(),
             },
             github: GithubConfig {
                 account: String::new(),
@@ -212,5 +259,33 @@ mod tests {
         assert_eq!(cfg.server.web_root, "");
         assert_eq!(cfg.server.prompts_dir, "");
         assert_eq!(cfg.server.reindex_trigger, "");
+        // The cost guards are on by default.
+        assert_eq!(cfg.ingest.breaker_threshold, 3);
+        assert!(cfg.ingest.min_chars_per_token > 1.0);
+        assert!(cfg
+            .breaker_path()
+            .ends_with("rag/corpus/.rag-ingest-breaker.json"));
+    }
+
+    #[test]
+    fn a_toml_without_the_new_ingest_keys_still_loads() {
+        // Existing rag.toml files predate the guards and must keep loading.
+        let dir = std::env::temp_dir().join(format!("rag-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rag.toml");
+        std::fs::write(
+            &path,
+            "[ingest]\nmax_file_bytes = 5\n[github]\nwork_dir = \"/w\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(&path).expect("loads");
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(cfg.ingest.max_file_bytes, 5);
+        assert_eq!(cfg.ingest.breaker_threshold, 3);
+        assert_eq!(cfg.ingest.density_min_bytes, 4096);
+        assert_eq!(
+            cfg.breaker_path(),
+            PathBuf::from("/w/.rag-ingest-breaker.json")
+        );
     }
 }

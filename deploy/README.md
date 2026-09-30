@@ -5,8 +5,8 @@ Linux box reached over SSH; set its host in `deploy/deploy.env`).
 
 > **Day-to-day ops live in [`RUNBOOK.md`](RUNBOOK.md)** — deploy, rollback, restart, re-index, key rotation, backup/
 > restore, disk reclaim. This file is the per-component reference. **One-command deploy: `./deploy/deploy.sh`** (from
-> the dev repo root) ships source, builds the unified image on the server, installs units, restarts `rag-serve`, prunes
-> old images, and health-checks.
+> the dev repo root) ships source, builds the unified image on the server, installs units, restarts `rag-serve`, retires
+> its own superseded image (keeping one as `:previous`), and health-checks.
 
 The deploy target host comes from `$DEPLOY_HOST` — copy `deploy/deploy.env.example` to `deploy/deploy.env` (gitignored)
 and set it, or pass it inline (`DEPLOY_HOST=myhost ./deploy/deploy.sh`); an inline value beats the file.
@@ -51,7 +51,8 @@ journalctl --user -u qdrant.service -f
 
 ### Disk hygiene
 
-Run `deploy/prune-images.sh` on the server after deploying a new image version.
+`deploy.sh` retires rag's own superseded image itself. `deploy/prune-images.sh`
+removes **every** unused image on the host — run it only on a box dedicated to rag.
 
 ## The image
 

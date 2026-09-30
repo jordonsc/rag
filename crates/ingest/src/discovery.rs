@@ -4,6 +4,16 @@
 //! Each top-level directory under the code root is a `repo`; the wiki root is a
 //! single `wiki` repo. `.gitignore` is honoured (via the `ignore` crate), plus a
 //! hard skip-list for build/vendor dirs that plain (non-git) repos won't gitignore.
+//!
+//! A repo can also exclude paths from the index **without** excluding them from
+//! git: a `.ragignore` file (gitignore syntax, at the root or in any directory)
+//! is honoured like a `.gitignore` — the place for generated data, recorded
+//! fixtures and anything else that is committed but not worth retrieving.
+//!
+//! Independently of any ignore file, a **density guard** skips a file whose
+//! estimated characters per token are pathologically low ([`estimate_tokens`]):
+//! generated SVG path data tokenises at ~1.3 chars/token against ~4 for code, so it
+//! costs three times as much to embed and is useless to search.
 
 use std::path::{Path, PathBuf};
 
@@ -31,7 +41,13 @@ pub enum SkipReason {
     Generated,
     Empty,
     Unreadable,
+    /// Estimated characters per token below `ingest.min_chars_per_token` —
+    /// generated/encoded data (see [`estimate_tokens`]).
+    Dense,
 }
+
+/// Name of the per-directory ignore file that excludes paths from the index only.
+pub const RAGIGNORE: &str = ".ragignore";
 
 /// Files with any line longer than this are treated as generated/minified.
 const MAX_LINE_BYTES: usize = 50_000;
@@ -153,6 +169,7 @@ fn walk_repo(
         .git_ignore(true)
         .git_global(false)
         .parents(false)
+        .add_custom_ignore_filename(RAGIGNORE)
         .filter_entry(|entry| {
             // Prune skip-listed directories by name.
             let name = entry.file_name().to_string_lossy();
@@ -165,14 +182,24 @@ fn walk_repo(
             continue;
         }
         let path = entry.path();
-        match classify_skip(path, cfg.ingest.max_file_bytes) {
-            Some(reason) => skips.add(reason),
+        let rel_path = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned();
+        match classify_skip(path, &Limits::from(cfg)) {
+            Some((SkipReason::Dense, ratio)) => {
+                tracing::info!(
+                    repo,
+                    rel_path,
+                    chars_per_token = format!("{ratio:.2}"),
+                    min = cfg.ingest.min_chars_per_token,
+                    "skipping token-dense file (generated data?); add it to a .ragignore to silence this"
+                );
+                skips.add(SkipReason::Dense);
+            }
+            Some((reason, _)) => skips.add(reason),
             None => {
-                let rel_path = path
-                    .strip_prefix(root)
-                    .unwrap_or(path)
-                    .to_string_lossy()
-                    .into_owned();
                 out.push(DiscoveredFile {
                     corpus,
                     repo: repo.to_string(),
@@ -184,39 +211,136 @@ fn walk_repo(
     }
 }
 
-/// Returns `Some(reason)` if the file should be skipped, `None` if it's ingestable.
-fn classify_skip(path: &Path, max_bytes: u64) -> Option<SkipReason> {
+/// The discovery thresholds, lifted out of the config so the classifier is
+/// testable on its own.
+struct Limits {
+    max_bytes: u64,
+    min_chars_per_token: f64,
+    density_min_bytes: u64,
+}
+
+impl From<&Config> for Limits {
+    fn from(cfg: &Config) -> Self {
+        Limits {
+            max_bytes: cfg.ingest.max_file_bytes,
+            min_chars_per_token: cfg.ingest.min_chars_per_token,
+            density_min_bytes: cfg.ingest.density_min_bytes,
+        }
+    }
+}
+
+/// Returns `Some((reason, chars_per_token))` if the file should be skipped (the
+/// ratio is meaningful only for [`SkipReason::Dense`]), `None` if it's ingestable.
+fn classify_skip(path: &Path, limits: &Limits) -> Option<(SkipReason, f64)> {
+    let skip = |r| Some((r, 0.0));
     let name = path.file_name()?.to_string_lossy();
     if LOCKFILES.contains(&name.as_ref()) || name.ends_with(".lock") {
-        return Some(SkipReason::Lockfile);
+        return skip(SkipReason::Lockfile);
     }
     if name.ends_with(".min.js") || name.ends_with(".min.css") {
-        return Some(SkipReason::Minified);
+        return skip(SkipReason::Minified);
     }
     let meta = std::fs::metadata(path).ok()?;
     if meta.len() == 0 {
-        return Some(SkipReason::Empty);
+        return skip(SkipReason::Empty);
     }
-    if meta.len() > max_bytes {
-        return Some(SkipReason::TooLarge);
+    if meta.len() > limits.max_bytes {
+        return skip(SkipReason::TooLarge);
     }
     // Binary sniff: NUL byte in the first 8 KiB.
     let bytes = std::fs::read(path).ok();
     match bytes {
-        None => Some(SkipReason::Unreadable),
+        None => skip(SkipReason::Unreadable),
         Some(b) => {
             let head = &b[..b.len().min(8192)];
-            if head.contains(&0) || std::str::from_utf8(&b).is_err() {
-                return Some(SkipReason::Binary);
+            let Ok(text) = std::str::from_utf8(&b) else {
+                return skip(SkipReason::Binary);
+            };
+            if head.contains(&0) {
+                return skip(SkipReason::Binary);
             }
             // Longest run of bytes between newlines.
             let longest = b.split(|&c| c == b'\n').map(<[u8]>::len).max().unwrap_or(0);
             if longest > MAX_LINE_BYTES {
-                return Some(SkipReason::Generated);
+                return skip(SkipReason::Generated);
+            }
+            if limits.min_chars_per_token > 0.0 && meta.len() >= limits.density_min_bytes {
+                let ratio = chars_per_token(text);
+                if ratio < limits.min_chars_per_token {
+                    return Some((SkipReason::Dense, ratio));
+                }
             }
             None
         }
     }
+}
+
+/// Estimated characters per token for `text` (`f64::INFINITY` for text with no
+/// estimated tokens, e.g. only spaces).
+pub fn chars_per_token(text: &str) -> f64 {
+    let tokens = estimate_tokens(text);
+    if tokens == 0 {
+        return f64::INFINITY;
+    }
+    text.chars().count() as f64 / tokens as f64
+}
+
+/// A cheap, tokenizer-free **estimate** of how many tokens `text` costs. It is a
+/// density signal, not a bill: it only has to rank generated data below source.
+///
+/// Rules, modelled on how BPE tokenizers treat each character class: a run of
+/// ASCII letters costs one token per five letters (at least one); a run of digits
+/// one per three; a run of whitespace one if it contains a newline and nothing
+/// otherwise (a space merges into the next word); every other character — ASCII
+/// punctuation or anything non-ASCII — one each. On real repositories this puts
+/// generated icon path data at 1.3–1.6 and hand-written source, prose and JSON at
+/// 1.8 and above, which is what the default `min_chars_per_token` of 1.7 sits
+/// between.
+pub fn estimate_tokens(text: &str) -> usize {
+    #[derive(PartialEq, Clone, Copy)]
+    enum Class {
+        Alpha,
+        Digit,
+        Space,
+        Other,
+    }
+    fn class(c: char) -> Class {
+        if c.is_ascii_alphabetic() {
+            Class::Alpha
+        } else if c.is_ascii_digit() {
+            Class::Digit
+        } else if c.is_whitespace() {
+            Class::Space
+        } else {
+            Class::Other
+        }
+    }
+
+    let mut tokens = 0usize;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match class(c) {
+            Class::Other => tokens += 1,
+            k => {
+                let mut len = 1usize;
+                let mut newline = c == '\n';
+                while let Some(&n) = chars.peek() {
+                    if class(n) != k {
+                        break;
+                    }
+                    newline |= n == '\n';
+                    len += 1;
+                    chars.next();
+                }
+                tokens += match k {
+                    Class::Alpha => len.div_ceil(5),
+                    Class::Digit => len.div_ceil(3),
+                    _ => usize::from(newline),
+                };
+            }
+        }
+    }
+    tokens
 }
 
 #[derive(Default)]
@@ -228,6 +352,7 @@ struct SkipTally {
     generated: u64,
     empty: u64,
     unreadable: u64,
+    dense: u64,
 }
 
 impl SkipTally {
@@ -240,6 +365,7 @@ impl SkipTally {
             SkipReason::Generated => self.generated += 1,
             SkipReason::Empty => self.empty += 1,
             SkipReason::Unreadable => self.unreadable += 1,
+            SkipReason::Dense => self.dense += 1,
         }
     }
 
@@ -252,9 +378,131 @@ impl SkipTally {
             (SkipReason::Generated, self.generated),
             (SkipReason::Empty, self.empty),
             (SkipReason::Unreadable, self.unreadable),
+            (SkipReason::Dense, self.dense),
         ]
         .into_iter()
         .filter(|(_, n)| *n > 0)
         .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scratch repo under the system temp dir, removed on drop.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "rag-discovery-{name}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Scratch(dir)
+        }
+
+        fn write(&self, rel: &str, body: &str) {
+            let p = self.0.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, body).unwrap();
+        }
+
+        fn walk(&self, cfg: &Config) -> (Vec<String>, Vec<(SkipReason, u64)>) {
+            let mut out = Vec::new();
+            let mut skips = SkipTally::default();
+            walk_repo(cfg, Corpus::Code, "r", &self.0, &mut out, &mut skips);
+            let mut rels: Vec<String> = out.into_iter().map(|f| f.rel_path).collect();
+            rels.sort();
+            (rels, skips.into_vec())
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Generated icon path data, shaped like argus-v2's `MdiData*.kt`.
+    fn icon_data(bytes: usize) -> String {
+        let line =
+            "    \"M12,2C6.48,2 2,6.48 2,12s4.48,10 10,10 10,-4.48 10,-10S17.52,2 12,2z\",\n";
+        line.repeat(bytes / line.len() + 1)
+    }
+
+    /// Ordinary source code.
+    fn source(bytes: usize) -> String {
+        let block = "fn render(panel: &Panel, entities: &[Entity]) -> Result<Frame> {\n    \
+                     let mut frame = Frame::new(panel.width, panel.height);\n    \
+                     for entity in entities.iter().filter(|e| e.visible) {\n        \
+                     frame.draw(entity.card())?;\n    }\n    Ok(frame)\n}\n\n";
+        block.repeat(bytes / block.len() + 1)
+    }
+
+    #[test]
+    fn estimator_ranks_generated_path_data_below_source_and_prose() {
+        let icons = chars_per_token(&icon_data(20_000));
+        let code = chars_per_token(&source(20_000));
+        let prose = chars_per_token(
+            &"The indexer embeds each changed file once and keeps its progress.\n".repeat(300),
+        );
+        assert!(icons < 1.7, "icon data estimated at {icons:.2}");
+        assert!(code > 1.7, "source estimated at {code:.2}");
+        assert!(prose > 3.0, "prose estimated at {prose:.2}");
+        assert_eq!(estimate_tokens(""), 0);
+        assert_eq!(chars_per_token("   "), f64::INFINITY);
+        // Runs: "abcdefghij" = 2, "1234" = 2, "," = 1, "\n" = 1.
+        assert_eq!(estimate_tokens("abcdefghij 1234,\n"), 6);
+    }
+
+    #[test]
+    fn density_guard_skips_generated_data_and_keeps_source() {
+        let repo = Scratch::new("dense");
+        repo.write("mobile/icons/generated/MdiData0.kt", &icon_data(20_000));
+        repo.write("src/render.rs", &source(20_000));
+        // Small files are exempt however dense: they cost little.
+        repo.write("src/tiny_icon.kt", &icon_data(500));
+        let (files, skips) = repo.walk(&Config::default());
+        assert_eq!(files, vec!["src/render.rs", "src/tiny_icon.kt"]);
+        assert_eq!(skips, vec![(SkipReason::Dense, 1)]);
+    }
+
+    #[test]
+    fn density_guard_can_be_disabled() {
+        let repo = Scratch::new("dense-off");
+        repo.write("gen/MdiData0.kt", &icon_data(20_000));
+        let mut cfg = Config::default();
+        cfg.ingest.min_chars_per_token = 0.0;
+        let (files, skips) = repo.walk(&cfg);
+        assert_eq!(files, vec!["gen/MdiData0.kt"]);
+        assert!(skips.is_empty());
+    }
+
+    #[test]
+    fn ragignore_excludes_paths_from_the_index_only() {
+        let repo = Scratch::new("ragignore");
+        repo.write(RAGIGNORE, "**/icons/generated/\ntests/recorded/*.json\n");
+        repo.write("mobile/shared/icons/generated/Small.kt", "val a = 1\n");
+        repo.write("tests/recorded/fixture.json", "{\"a\": 1}\n");
+        repo.write("tests/recorded/README.md", "# recorded\n");
+        repo.write("src/lib.rs", "pub fn f() {}\n");
+        let (files, _) = repo.walk(&Config::default());
+        assert_eq!(files, vec!["src/lib.rs", "tests/recorded/README.md"]);
+    }
+
+    #[test]
+    fn without_a_ragignore_nothing_is_excluded() {
+        let repo = Scratch::new("no-ragignore");
+        repo.write("mobile/shared/icons/generated/Small.kt", "val a = 1\n");
+        repo.write("src/lib.rs", "pub fn f() {}\n");
+        let (files, _) = repo.walk(&Config::default());
+        assert_eq!(
+            files,
+            vec!["mobile/shared/icons/generated/Small.kt", "src/lib.rs"]
+        );
     }
 }

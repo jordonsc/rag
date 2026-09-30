@@ -2,11 +2,13 @@
 //!
 //! Subcommands: `init` (Phase 02), `scan` (Phase 03), `run` + `query` (Phase 04).
 
+mod breaker;
 mod chunker;
 mod discovery;
 mod github;
 mod language;
 mod ledger_reconcile;
+mod pipeline;
 mod query;
 mod run;
 mod scan;
@@ -60,6 +62,10 @@ enum Command {
         /// Corpus source: local filesystem or GitHub clones.
         #[arg(long, value_enum, default_value_t = Source::Local)]
         source: Source,
+        /// Attempt the work even if the circuit breaker has stopped it after
+        /// repeated identical failures (each attempt may be billed).
+        #[arg(long)]
+        force: bool,
     },
     /// Embed a query and run a raw vector search (debug; no rerank).
     Query {
@@ -119,6 +125,7 @@ async fn main() -> anyhow::Result<()> {
             repo,
             full,
             source,
+            force,
         }) => {
             run::run(
                 &cfg,
@@ -127,6 +134,7 @@ async fn main() -> anyhow::Result<()> {
                     repo,
                     full,
                     source,
+                    force,
                 },
             )
             .await

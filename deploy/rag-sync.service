@@ -18,8 +18,11 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+# `--replace`: a container left behind by a killed run (e.g. one stuck in
+# `Created`) otherwise holds the name, and every later run exits 125 without
+# doing anything. systemd serialises this oneshot, so nothing live is replaced.
 # Pull the image only if missing; never block on a registry for `localhost/` images.
-ExecStart=/usr/bin/podman run --rm --name rag-sync \
+ExecStart=/usr/bin/podman run --rm --replace --name rag-sync \
     --pull=never \
     --network=host \
     --env-file=%h/.config/rag/env \

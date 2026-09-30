@@ -7,8 +7,8 @@
 # Ships the source — Rust crates and the `web/` SPA sources, minus anything the
 # build regenerates (target/, node_modules/, dist/) — builds the unified image
 # `localhost/rag:latest` on the host, installs/refreshes the systemd units,
-# restarts the HTTP service, reloads the sync timer, and prunes old images so disk
-# doesn't bloat. Idempotent — safe to re-run.
+# restarts the HTTP service, reloads the sync timer, and keeps exactly one previous
+# image (`localhost/rag:previous`) so disk doesn't bloat. Idempotent — safe to re-run.
 #
 # Target host comes from $DEPLOY_HOST (set it in deploy/deploy.env — copy
 # deploy/deploy.env.example — or pass it inline: DEPLOY_HOST=myhost ./deploy/deploy.sh).
@@ -106,6 +106,13 @@ rsync -a --delete \
     ./ "$(rsync_target)"
 
 echo "== 2/6  build $IMAGE on $TARGET =="
+# The image being replaced becomes `:previous` (a one-step rollback), and the one
+# that was `:previous` until now is removed after the restart — by id, so nothing
+# but rag's own superseded image is ever touched. This box may be shared: a blanket
+# `podman image prune -a` here deleted every other project's unused images too.
+PREV_IMAGE="localhost/rag:previous"
+old_previous="$(run "podman image inspect --format '{{.Id}}' $PREV_IMAGE 2>/dev/null" || true)"
+run "podman image exists $IMAGE && podman tag $IMAGE $PREV_IMAGE || true"
 run "cd ~/$SRC_DIR && podman build -t $IMAGE -f Containerfile ."
 
 # ---- preflight: the corpus-purge guard -------------------------------------
@@ -171,8 +178,13 @@ echo "== 5/6  (re)start services =="
 run "systemctl --user restart rag-serve.service rag-mcp.service && systemctl --user enable --now \
     rag-sync.timer rag-reindex.path rag-ledger-sync.timer rag-ledger-reindex.path rag-backup.timer"
 
-echo "== 6/6  prune old images =="
-run "podman image prune -af >/dev/null && podman image ls | grep -E 'rag|qdrant' || true"
+echo "== 6/6  remove the superseded rag image =="
+# Only the image that was `:previous` before this deploy, and only if nothing still
+# tags or uses it (podman refuses otherwise, which is the right answer).
+if [ -n "$old_previous" ]; then
+    run "podman rmi $old_previous >/dev/null 2>&1 || true"
+fi
+run "podman image ls | grep -E 'localhost/rag' || true"
 
 echo
 echo "== health =="

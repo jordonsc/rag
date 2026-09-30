@@ -148,14 +148,16 @@ token counts, and `journalctl --user -u rag-serve.service` logs them per run.
 ## Deploy a new version
 
 From the dev repo root — one command (ship → build → install units → restart →
-prune → health-check):
+retire the superseded image → health-check):
 
 ```bash
 ./deploy/deploy.sh
 ```
 
 It rsyncs source to `$DEPLOY_HOST:~/rag/src`, builds `localhost/rag:latest`, installs the
-unit files, restarts `rag-serve`, reloads `rag-sync.timer`, prunes old images, and
+unit files, restarts `rag-serve`, reloads `rag-sync.timer`, keeps the replaced image as
+`localhost/rag:previous` (removing the one before it, by id — never a blanket
+`podman image prune`, which on a shared box deletes other projects' images), and
 verifies `/health` + `/info` + that `/` returns the UI. Idempotent.
 
 ### When the dev box IS the server
@@ -187,15 +189,19 @@ dependency change is the expensive one.
 
 ## Rollback
 
-Podman keeps the previous image as a dangling layer **until pruned**. To roll back
-quickly, redeploy the previous git revision:
+Each deploy keeps the image it replaced as `localhost/rag:previous`. The fast
+rollback is to re-point `:latest` at it and restart:
+
+```bash
+podman tag localhost/rag:previous localhost/rag:latest
+systemctl --user restart rag-serve.service rag-mcp.service   # the sync units pick it up per run
+```
+
+Only one step back is kept. Further back, redeploy the prior git revision:
 
 ```bash
 git checkout <prev-sha> && ./deploy/deploy.sh && git checkout -
 ```
-
-(There's no in-place image tag history once pruned — a rebuild from the prior
-revision is the reliable rollback. The build is a few minutes.)
 
 ## Restart / status / logs
 
@@ -242,6 +248,27 @@ ssh "$DEPLOY_HOST" 'podman run --rm --network=host --pull=never \
 
 A full re-embed spends Voyage tokens; a snapshot restore (below) is cheaper if you
 only need to recover a lost index.
+
+### The sync keeps failing: the circuit breaker
+
+When the same pending work fails the same way three runs in a row, the indexer
+stops attempting it and every later run exits non-zero with `CIRCUIT BREAKER OPEN`
+in the journal — **no embedding spend** until the pending files or the config
+change. Removed files and archived repos are still purged; only paid work waits.
+
+```bash
+journalctl --user -u rag-sync.service -n 50 | grep -iE 'breaker|error'
+cat ~/rag/corpus/.rag-ingest-breaker.json            # the work's fingerprint + the error
+```
+
+Fix the cause (a file to add to that repo's `.ragignore`, a config value, a key),
+then either push — changed inputs close the breaker — or retry by hand with
+`rag-ingest run --source github --force` (the full-re-embed `podman run` above
+with `--force` in place of `--full`), or delete the state file. A failed run
+keeps every file it finished, so a retry pays only for what is left.
+
+The ledger reconcile has its own breaker, `~/rag/ledger/.rag-ledger-breaker.json`;
+delete it to retry immediately.
 
 ## Ledger: reconcile now
 
@@ -311,7 +338,7 @@ ssh "$DEPLOY_HOST" systemctl --user restart rag-serve.service    # serve picks u
 ## Reclaim disk
 
 ```bash
-ssh "$DEPLOY_HOST" bash ~/rag/src/deploy/prune-images.sh   # dangling + unused images
+ssh "$DEPLOY_HOST" bash ~/rag/src/deploy/prune-images.sh   # ALL unused images — only on a box nothing else uses
 ssh "$DEPLOY_HOST" podman system df                         # what's using space
 # corpus clones (re-clonable) and old backups are the other big consumers:
 ssh "$DEPLOY_HOST" du -sh ~/rag/corpus ~/rag/backups ~/rag/qdrant
