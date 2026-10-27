@@ -5,9 +5,13 @@ the corpus (the MCP path is `rag-mcp`).
 
 ## `corpus-search`
 
-Semantic search over the whole indexed corpus (every indexed repo + the wiki).
+Semantic search over the whole indexed corpus: every indexed repo, the wiki, the
+ledger and the tracker (`--corpus code|wiki|ledger|tracker`, as `POST /search` takes).
 Bundles `scripts/rag_search.py`, which `POST`s to `rag-serve` `/search` and prints
-ranked, cited results. No API key in the skill — Voyage auth is server-side.
+ranked, cited results: `repo/path:lines` for code and wiki, the topic id for a ledger
+hit, and the hit's `citation` for a tracker hit. No API key in the skill — Voyage auth
+is server-side. `scripts/test_rag_search.py` holds its offline tests
+(`python3 -I corpus-search/scripts/test_rag_search.py`).
 
 ### Install
 
