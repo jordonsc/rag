@@ -27,8 +27,11 @@ retrieval service; agents query it from anywhere on the network.
   and a Claude Skill — all sharing one pipeline.
 - **Records** decisions/incidents in a SQLite-backed ledger, indexed alongside the
   corpus (`corpus = ledger`) and reachable via MCP tools.
+- **Tracks** each project's work queue, specs and concepts in a second SQLite-backed
+  store, also indexed alongside the corpus (`corpus = tracker`).
 - **Serves** a small web UI for that ledger — search, read and amend topics on the
-  same terms an agent gets — from the same origin as the API.
+  same terms an agent gets — and for the tracker's queue (`/projects/<project>`) and its
+  specs and concepts (`/projects/<project>/docs`), from the same origin as the API.
 
 ## Controlling what is indexed
 
@@ -68,9 +71,9 @@ A single Cargo workspace, plus an npm workspace for the UI:
 
 ```
 crates/
-├── core/    # shared: data model, figment config, Qdrant + Voyage clients, retrieval pipeline, ledger store
+├── core/    # shared: data model, figment config, Qdrant + Voyage clients, retrieval pipeline, ledger + tracker stores
 ├── ingest/  # corpus walk → chunk → embed → upsert  (binary: rag-ingest)
-├── serve/   # axum HTTP retrieval + ledger CRUD + web UI  (binary: rag-serve)
+├── serve/   # axum HTTP retrieval + ledger CRUD + tracker API + web UI  (binary: rag-serve)
 └── mcp/      # stdio MCP server(s)                      (binary: rag-mcp)
 
 web/
@@ -82,7 +85,8 @@ web/
 - **Embeddings:** Voyage `voyage-4-large` (`input_type=document` at ingest, `query` at search).
 - **Reranking:** Voyage `rerank-2.5`.
 - **Chunking:** Rust `text-splitter` + tree-sitter grammars, character-sized (calibrated to a token target).
-- **Ledger:** SQLite (`sqlx`, WAL) as source of truth, reconciled into Qdrant.
+- **Ledger:** SQLite (`sqlx`, WAL) as source of truth, reconciled into Qdrant (`rag-ingest reconcile-ledger`).
+- **Tracker:** a second SQLite file (`tracker.db`) plus a content-addressed attachments directory, served under `/tracker/…` by `rag-serve`, reconciled into Qdrant (`rag-ingest reconcile-tracker`).
 
 `rag-serve` holds the Voyage API key server-side; `rag-mcp` and the Skill are thin
 clients of it, so the key never reaches an agent's machine.
@@ -110,7 +114,7 @@ Two layers, both with committed examples and gitignored real files:
 
 | File | Purpose |
 |---|---|
-| `rag.toml` (from `rag.toml.example`) | Non-secret config: Qdrant URL, corpus roots, GitHub account, chunk sizes, server bind, web UI root, saved-prompts dir. Env overrides via `RAG_*` (e.g. `RAG_QDRANT__URL`). |
+| `rag.toml` (from `rag.toml.example`) | Non-secret config: Qdrant URL, corpus roots, GitHub account, chunk sizes, server bind, web UI root, saved-prompts dir, tracker DB and attachments dir. Env overrides via `RAG_*` (e.g. `RAG_QDRANT__URL`). |
 | `.env` | Secrets only: `VOYAGE_API_KEY`, `GITHUB_TOKEN`, optional `QDRANT_API_KEY`, optional `ANTHROPIC_API_KEY`. Never committed. |
 | `deploy/deploy.env` (from `deploy/deploy.env.example`) | Deploy target: `DEPLOY_HOST` (SSH host of the server). |
 | `.mcp.json` (from `.mcp.json.example`) | Registers the MCP servers with Claude Code. |
@@ -144,7 +148,19 @@ cargo run -p rag-ingest -- query "where is retry/backoff implemented"
 
 # 4. Serve retrieval over HTTP (POST /search, /reindex; GET /health, /info)
 cargo run -p rag-serve
+
+# 5. Index the ledger and the tracker (each an incremental diff of its SQLite store)
+cargo run -p rag-ingest -- reconcile-ledger
+cargo run -p rag-ingest -- reconcile-tracker
 ```
+
+`GET /info` describes the server: the collection and its `points`, the model ids, the
+non-secret config and the readiness flags (`retrieval_ready`, `summarise_ready`,
+`tracker_ready`). It always answers 200. When Qdrant cannot be reached, `points` is
+`null` and `qdrant_error` says why (and `rag-serve` logs a warning), so the flags stay
+readable during a Qdrant outage — the ledger and the tracker work without Qdrant.
+`points` is also `null`, with no error, when the server has no retriever (`--check`
+without a Voyage key); it is never a guessed `0`.
 
 ### The ledger web UI
 
@@ -223,14 +239,15 @@ must not.
 
 - **MCP** — two transports, both thin HTTP clients of `rag-serve` (`RAG_SERVE_URL`; no key
   on the client). See `.mcp.json.example`.
-  - *stdio* (per-client subprocess): `cargo build --release -p rag-mcp`, then register two
-    servers from the one binary — `--server corpus` (`search_corpus`, `reindex_corpus`) and
-    `--server ledger` (`ledger_search`/`get`/`create`/`append`/`move`/`archive`). Captures the
-    client's git identity automatically.
-  - *Streamable HTTP* (`--transport http`): one long-lived **shared server** exposing both
-    tool sets under `/corpus` and `/ledger`, so remote clients register two URLs and need no
-    local binary (`claude mcp add --transport http rag http://host:17794/corpus`). Run it on
-    the server via `rag-mcp.container` (see `deploy/`).
+  - *stdio* (per-client subprocess): `cargo build --release -p rag-mcp`, then register three
+    servers from the one binary — `--server corpus` (`search_corpus`, `reindex_corpus`),
+    `--server ledger` (`ledger_search`/`get`/`create`/`append`/`move`/`archive`) and
+    `--server tracker` (the `tracker_*` tools, see *Tracker*). Captures the client's git
+    identity automatically.
+  - *Streamable HTTP* (`--transport http`): one long-lived **shared server** exposing every
+    tool set under `/corpus`, `/ledger` and `/tracker`, so remote clients register URLs and
+    need no local binary (`claude mcp add --transport http rag http://host:17794/corpus`). Run
+    it on the server via `rag-mcp.container` (see `deploy/`).
 - **Skill** *(optional)* — copy `skill/corpus-search/` into `~/.claude/skills/`; it `POST`s to
   `rag-serve`. See `skill/README.md`. Only needed if you'd rather not use the MCP server — don't
   install both (they overlap and waste context). Prefer the MCP alone unless you specifically want
@@ -262,6 +279,112 @@ the reconciler purges the old points and indexes the new), and `ledger_archive`
 soft-deletes a topic — retained in SQLite but excluded from `all_for_index` so the
 reconciler drops it from the index entirely, hidden from `ledger_search` unless
 `archived = true` (a substring search over the soft-deleted set), and restorable.
+
+## Tracker
+
+An agent-first task tracker beside the ledger (`specs/tracker/master.md`; ledger
+rag-0033, rag-0034): per project, the **development queue** (items of type `dev`,
+`design`, `recon`, `analysis` and `gate`), the **specs** with their milestones, and the
+**concept documents**, all with their history. It is the source of truth for all three:
+specs and concepts move out of the project's repository into it, keeping their paths
+(`specs/<spec>/master.md`, `specs/<spec>/m03-music.md`, `concepts/<slug>.md`).
+
+- **Store:** `core::tracker`, its own SQLite file (`[tracker] db_path`, default
+  `~/rag/tracker/tracker.db`) and an attachments directory (`[tracker] attachments_dir`)
+  storing each file once by sha256. Typed enums at the boundary; every change appends an
+  event (who, which agent, `web` or `mcp`). A note is optional on every change (without one
+  the history records the change itself, `Status: pending → done.`); only *Add note* needs
+  text.
+- **The queue is a doubly linked list**, reordered by `before` / `after` / `top` /
+  `bottom` moves, never by position numbers. Done and cancelled items leave it; a reopen
+  goes back in at the top; a blocked or deferred item keeps its place (`deferred`, work put
+  aside on purpose, is a status apart from the blocked flag and has its own section; a
+  resume puts it back where it was; rag-t0017), and so does a `review` item (work waiting on
+  the owner to confirm or review it, shown red above the queue; confirmed it is done, sent
+  back it is in progress where it was; rag-t0024, which retired the block reason `approval`).
+  An item blocked with reason `dependency`
+  names what it waits on (`depends_on`, items of its project) and unblocks itself when the
+  last of them is done (rag-t0018); a `parallel` item may start before the gates above it
+  and still lands after them (rag-t0013). `GET /tracker/{project}/check` proves the list
+  sound.
+- **Labels** (rag-t0027): free-text subject tags on an item (`Physics`, `Biomes`), at most
+  10, matched case-insensitively within a project whose existing casing wins, set wholesale;
+  `GET /tracker/{project}/labels` lists a project's vocabulary with counts and
+  `…/items?label=` filters by one. They show on the dashboard's rows (a filter in the URL),
+  in `tracker_queue` / `tracker_next` as `[Physics, Biomes]`, and in tracker search.
+- **Documents are revisioned**: an edit names the revision it read and is refused (409)
+  when that is stale, never merged; a rename leaves a redirect; any revision can be diffed
+  or restored.
+- **Approval is a track record** (`unapproved`, `agent`, `ratified`, `owner`), not a lock.
+- **HTTP API:** `/tracker/…` on `rag-serve`, documented route by route, with every request
+  and response body, in [`specs/tracker/api.md`](specs/tracker/api.md). The routes answer
+  503 when the store cannot open; `/info` reports `tracker_ready`.
+
+- **MCP tools** (m02): `rag-mcp --server tracker` (stdio) or `/tracker` on the gateway, each
+  forwarding to the API (`crates/mcp/src/tracker.rs`): `tracker_queue` (the dashboard as
+  compact text: review first, then the queue with gate markers, blocked and deferred, bounded by `limit` (default 20),
+  `until_gate` and `sections`, done only counted unless asked for, a `Not shown:` count
+  footer), `tracker_next` (the next `n` dispatchable items in full, stopping at the first
+  gate; rag-t0006; then any `parallel` items below the gate, which may start now and land
+  after it, rag-t0013), `tracker_list`, `tracker_get`,
+  `tracker_create`, `tracker_update`, `tracker_move`, `tracker_doc_get`, `tracker_doc_edit`,
+  `tracker_attach`, `tracker_attachment_get` and `tracker_ack_done`. Every write carries
+  `surface: mcp`, the git email and the `agent` passed. Who may write what (the manager
+  writes the queue; a sub-agent edits documents and notes its own task) is in the tool
+  descriptions, not enforced. Over stdio, attachments are local files; over the gateway,
+  base64 of at most 10 MB.
+
+- **The dashboard** (m03) in the web UI, at `/projects/<project>` (never `/tracker/…`, the
+  API's prefix): the owner's view of the queue, read like the manager's status report.
+  **Done** (green, oldest first and the latest just above the queue, until *Acknowledge all done*), **Review** (red, a diamond,
+  *Confirm* and *Send back*; rag-t0024), **the queue** in list order
+  (blue in progress, white pending, red failed, each colour beside its word; gates as
+  full-width markers labelled with their intensity and *release*), and **Blocked** (amber,
+  with reason, note and *Unblock*). Rows are two lines (status, id, title, approval; then
+  type, assignee and labels; rag-t0026; no link chips, which are on the item's page,
+  rag-t0031), an in-progress row filled with
+  the owner's blue, its text lightened to read on it (rag-t0023, rag-t0029).
+  Rows and markers are dragged to reorder, by mouse or
+  touch (each drop one `move`), or moved with Alt+↑ / Alt+↓ and the row menu's *Move to
+  top* / *Move to bottom*; *Add item* and *Add gate* join the bottom, *Remove* cancels (a
+  note optional). A filter shows the agent approvals not yet ratified. It refreshes every 10 s while
+  the tab is visible (a conditional request, 304 when nothing changed). Each item has a page,
+  `/projects/<project>/item/<id>`: its body rendered (`att:` images resolved), links, history
+  with the surface and agent on every entry, and the writes: note, status, block or unblock,
+  approve or ratify, edit. The bar's **Tracker** opens the project last used. See
+  `web/README.md` § *The tracker*.
+
+- **The documents pages** (m04) in the web UI: `/projects/<project>/docs` lists the
+  **concepts** by state (open, refining, refined; archived folded), with **New concept**, the
+  **specs** with their milestones (code, title, state, approval), other documents and the
+  project's **attachments** (a preview, the uploader, the `att:` reference to copy). Each
+  document is at `/projects/<project>/doc/<path>`: rendered (`att:` images resolved; a link to
+  another document's path, relative or from `specs/`/`concepts/`, opens it in place), its
+  record's state, approval and links with their writes, a rename's redirect followed, and
+  **Edit**: markdown beside a live preview, where a pasted or dropped image uploads and its
+  `att:` reference lands at the cursor. Save sends the whole body against the revision it
+  read; a **stale save** (an agent edited meanwhile) keeps the owner's text and shows the
+  newer revision's diff against it, with *Overwrite* and *Discard mine*. An unsaved draft is
+  kept in the browser and survives a reload. **History** lists the revisions (author, agent,
+  surface, message), each one's line diff and body, and *Restore* (with a message). The
+  search view's **Corpus** filter searches the tracker (`corpus=tracker`).
+
+- **Search** (m05): every document (at its current revision, chunked) and every item (its
+  title, type, status, body and notes, done and cancelled ones included) is indexed as
+  `corpus = tracker` by `rag-ingest reconcile-tracker`, a pull-based incremental reconcile in
+  the ledger's style. `rag-serve` touches a trigger file after each successful tracker write
+  (`server.tracker_reindex_trigger`), so a change is searchable within seconds; a 15-minute
+  timer is the backstop. `search_corpus` takes `corpus: "tracker"` (and `repo` for the
+  project), as does `POST /search` (`"filters": {"corpus": "tracker"}`). A tracker hit
+  carries `repo` (the project), `rel_path` (the document path, or the item id), `title`,
+  `kind` (`spec`, `milestone`, `concept`, `doc` or `item`), `tracker_id` (what `tracker_get`
+  takes), `revision`, `type` and `status` (items), a line range (documents), and
+  **`citation`**: `<project>:<path>@r<revision>` for a document chunk, the item id for an
+  item. The corpus sync never purges tracker or ledger points.
+
+Built so far: the store and the API (m01), the MCP tools (m02), the dashboard (m03), the
+documents pages (m04) and search (m05). Off-box backups (m06) are to come; until then the
+only copy beyond the live file is the nightly same-box one in `~/rag/backups`.
 
 ## Deployment
 

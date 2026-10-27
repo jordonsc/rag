@@ -37,7 +37,7 @@ This file is the **quick-start**: what you need and how to stand up a fresh syst
 Full detail is in `deploy/RUNBOOK.md` ("Bootstrap a fresh box"); the short version:
 
 1. **Server prep.** `sudo loginctl enable-linger <user>`, create the data dirs
-   (`~/rag/{qdrant/{storage,snapshots},corpus,backups,ledger,triggers,prompts}`), and install Qdrant
+   (`~/rag/{qdrant/{storage,snapshots},corpus,backups,ledger,triggers,prompts,tracker/attachments}`), and install Qdrant
    (`deploy/qdrant.container` — see `deploy/README.md`).
 2. **Env file** `~/.config/rag/env` on the server (chmod 600) — config + secrets, never committed:
    ```
@@ -46,7 +46,16 @@ Full detail is in `deploy/RUNBOOK.md` ("Bootstrap a fresh box"); the short versi
    RAG_GITHUB__ACCOUNT=your-github-account   # REQUIRED — an empty account purges the corpus
    RAG_EMAIL=you@example.com                 # ledger author for writes over the HTTP gateway
    ANTHROPIC_API_KEY=...                     # OPTIONAL — enables the web UI's Summarise tab
+   RAG_BACKUP__S3_URI=s3://your-bucket/prefix   # the nightly off-box backup's destination
+   RAG_BACKUP__AWS_PROFILE=default           # the host's AWS CLI profile it uploads with
+   RAG_BACKUP__AWS_REGION=ap-southeast-4     # the bucket's region
    ```
+
+   The `RAG_BACKUP__*` keys drive `deploy/backup-offbox.sh` (tracker m06): nightly, the tracker and ledger
+   databases (`sqlite3 .backup`, compressed) and the tracker's attachments go to S3, 7 daily and 4 weekly copies
+   kept. **No AWS key goes in this file**: the script runs on the host as your user and the AWS CLI reads the
+   credentials of the named profile from `~/.aws`. The host needs `aws` (v2), `sqlite3` and `zstd`. Without
+   `RAG_BACKUP__S3_URI` the off-box timer is simply not enabled. Bucket setup and restore: `deploy/RUNBOOK.md`.
 
    The Summarise tab's system prompt can also be picked from a small library of saved
    prompts — plain `.md` files in `~/rag/prompts` (`RAG_SERVER__PROMPTS_DIR=/prompts` in
@@ -65,8 +74,8 @@ Full detail is in `deploy/RUNBOOK.md` ("Bootstrap a fresh box"); the short versi
    creates the vector collection + payload indexes, pointing `RAG_QDRANT__URL` at the server).
 5. **Deploy** everything with one command: `./deploy/deploy.sh` — or `./deploy/deploy-local.sh`
    if this box *is* the server, which runs the same steps without the ssh hop (ships source → builds the image
-   on the server → installs units → starts `rag-serve` + the MCP gateway → enables the corpus +
-   ledger timers → health-checks). The image build now covers **both** the Rust binaries and the
+   on the server → installs units → starts `rag-serve` + the MCP gateway → enables the corpus,
+   ledger and tracker timers, the same-box backup timer and, with `RAG_BACKUP__S3_URI` set, the off-box one → health-checks). The image build now covers **both** the Rust binaries and the
    ledger web UI, so the first one on a fresh box pulls two toolchain images and a dependency
    tree; later builds reuse the layers.
 6. **Fill the index:** `ssh "$DEPLOY_HOST" systemctl --user start rag-sync.service` (or wait for
@@ -84,13 +93,15 @@ Non-container / local dev (index a local filesystem tree, run the service by han
 Configure `rag.toml` (from `rag.toml.example`) and register the MCP servers via
 `.mcp.json` (from `.mcp.json.example`). Two transports — pick one:
 
-- **stdio** (per-client subprocess): `cargo build --release -p rag-mcp`, then register two servers
-  from the one binary — `--server corpus` and `--server ledger`. Captures the client's git identity
-  automatically (best for a workstation that writes a lot of ledger entries).
+- **stdio** (per-client subprocess): `cargo build --release -p rag-mcp`, then register three servers
+  from the one binary — `--server corpus`, `--server ledger` and `--server tracker`. Captures the
+  client's git identity automatically (best for a workstation that writes a lot of ledger entries),
+  and the tracker's project defaults to the current repository and its attachments are local files.
 - **Streamable HTTP gateway** (no local binary): point the client at the `rag-mcp` gateway on the
-  server (`http://your-server:17794/corpus` and `.../ledger`).
+  server (`http://your-server:17794/corpus`, `.../ledger` and `.../tracker`). Tracker calls then
+  need an explicit `project`, and attachments travel as base64 (at most 10 MB).
 
-Then teach the agent to actually *use* it: add the corpus-first + ledger guidance to your
+Then teach the agent to actually *use* it: add the corpus-first, ledger and tracker guidance to your
 user-level `~/.claude/CLAUDE.md`. A ready-to-adapt example is in
 [`user-claude.md`](user-claude.md).
 
@@ -113,5 +124,12 @@ unless you explicitly want the Skill instead.
 | Serving the ledger web UI (`server.web_root` / `RAG_SERVER__WEB_ROOT`) | `crates/serve/src/web.rs`, `deploy/rag-serve.container` |
 | Saved Summarise prompts (`server.prompts_dir` / `RAG_SERVER__PROMPTS_DIR`) | `crates/serve/src/prompts.rs`, `deploy/rag-serve.container` |
 | Building the ledger web UI (dev loop, design system, tests) | `web/README.md`, the Node stage in `Containerfile` |
+| The tracker store (`[tracker] db_path`, `attachments_dir`; queue, specs, concepts, attachments) | `crates/core/src/tracker/`, `deploy/rag-serve.container` |
+| The tracker HTTP API (`/tracker/…`) and its contract | `crates/serve/src/tracker.rs`, `specs/tracker/api.md` |
+| The tracker's design and milestones | `specs/tracker/master.md` |
+| The tracker MCP tools (`--server tracker`, `/tracker` on the gateway) | `crates/mcp/src/tracker.rs` |
+| Tracker search (`corpus = tracker`: the reconcile, its trigger and units, the citation) | `crates/ingest/src/tracker_reconcile.rs`, `crates/core/src/tracker/index.rs`, `deploy/rag-tracker-*`, `deploy/RUNBOOK.md` § *Tracker: reconcile now* |
+| A project's manager loading its work into the tracker (the trial brief) | `specs/tracker/trial-brief.md` |
+| The tracker dashboard, item page and documents pages (web UI at `/projects/…`: docs, a document, its editor, drafts, history, attachments; its client for every `/tracker/…` route) | `web/app/src/tracker/`, `web/README.md` § *The tracker* |
 | MCP registration | `.mcp.json.example` |
 | Example user-level agent instructions | `user-claude.md` |
