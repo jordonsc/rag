@@ -1,0 +1,77 @@
+/*
+ * The History page (rag-t0008): finished items in a table, in the style of
+ * the ledger's Archived view (views/archived.module.css). The panel is
+ * unpadded so the table meets its edges; everything else in it pays for its
+ * own gutter.
+ */
+
+.note {
+  margin: 0;
+  padding: var(--rag-space-3) var(--rag-space-4);
+  max-width: var(--rag-measure);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+  border-bottom: 1px solid var(--rag-border);
+}
+
+.filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--rag-space-3);
+  padding: var(--rag-space-3) var(--rag-space-4);
+  border-bottom: 1px solid var(--rag-border);
+}
+
+.typeField {
+  display: inline-flex;
+  width: 11rem;
+  max-width: 100%;
+}
+
+.filterField {
+  width: 20rem;
+  max-width: 50vw;
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-3);
+  padding: var(--rag-space-5) var(--rag-space-4);
+  color: var(--rag-dim);
+}
+
+.identity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.itemTitle {
+  color: var(--rag-bright);
+  overflow-wrap: anywhere;
+}
+
+.itemId {
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+}
+
+.stamp {
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.stampNote {
+  font-style: italic;
+}
+
+.unacked {
+  color: var(--rag-text);
+  font-size: var(--rag-text-s);
+  white-space: nowrap;
+}

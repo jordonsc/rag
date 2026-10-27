@@ -70,7 +70,27 @@
   --rag-warn: #ebb353;
   --rag-crit: #ed7477;
   --rag-extra: #a975e0;
+  /* Teal, deeper and greener than `--rag-acc2`, so it stays apart from the
+     blue of `--rag-acc` and the green of `--rag-good` beside it in a list of
+     statuses (the tracker's deferred, rag-t0017). Always drawn beside a word. */
+  --rag-teal: #2fbfae;
   --rag-onacc: #101214;
+  /* The in-progress row (the tracker's dashboard, rag-t0029): the owner's
+     blue as a solid fill, and its hover a step deeper (1.3:1 against it, more
+     than a plain row's surface-to-surface2 step). A mid blue, so the palette's
+     foregrounds fail on it (WCAG, against #0b61ac: --rag-text 4.0:1, --rag-acc
+     3.0, --rag-warn 3.4, --rag-dim 2.1); a row filled with it re-points them
+     at the `--rag-on-inprogress-*` family below, which keeps each hue but
+     lightens it to at least 4.5:1 on the fill (more on the deeper hover). */
+  --rag-inprogress: #0b61ac;
+  --rag-inprogress-hover: #094e8a;
+  --rag-on-inprogress-bright: #ffffff; /* 6.3:1 */
+  --rag-on-inprogress-text: #f2f5f6; /* 5.8:1 */
+  --rag-on-inprogress-dim: #d3e3f2; /* 4.8:1 */
+  --rag-on-inprogress-acc: #d4ebff; /* 5.2:1 */
+  --rag-on-inprogress-good: #b8f5c2; /* 5.1:1 */
+  --rag-on-inprogress-warn: #ffdb9c; /* 4.8:1 */
+  --rag-on-inprogress-crit: #ffd4d5; /* 4.7:1 */
   --rag-shadow: rgba(0, 0, 0, 0.55);
 }
 

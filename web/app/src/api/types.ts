@@ -210,7 +210,14 @@ export interface ArchivedSearchResponse {
 
 export interface InfoResponse {
   collection: string;
-  points: number;
+  /**
+   * Points in the collection, or `null` when the server could not ask Qdrant
+   * (unreachable, or no retriever). `/info` still answers 200 then, so the
+   * readiness flags below stay readable during a Qdrant outage.
+   */
+  points: number | null;
+  /** Why `points` is `null` when Qdrant was asked and failed; `null` otherwise. */
+  qdrant_error: string | null;
   embed_model: string;
   rerank_model: string;
   dimensions: number;

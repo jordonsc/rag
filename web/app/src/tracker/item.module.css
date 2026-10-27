@@ -1,0 +1,245 @@
+/*
+ * The item page (D15). The ledger topic page's shape — identity row, title,
+ * meta, panels, a timeline — so the two read as one application; the timeline
+ * itself is `views/topic.module.css`'s, imported rather than copied.
+ */
+
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-4);
+  min-width: 0;
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-3);
+  padding: var(--rag-space-6) 0;
+  color: var(--rag-dim);
+}
+
+.crumbs {
+  margin: 0;
+}
+
+.crumbs a {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-1);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+  text-decoration: none;
+}
+
+.crumbs a:hover {
+  color: var(--rag-text);
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-2);
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2) var(--rag-space-3);
+  color: var(--rag-dim);
+}
+
+.underlying {
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+}
+
+.id {
+  font-family: var(--rag-font-mono);
+  font-size: var(--rag-text-s);
+  color: var(--rag-dim);
+  user-select: all;
+}
+
+.title {
+  margin: 0;
+  max-width: var(--rag-measure);
+  color: var(--rag-bright);
+  font-size: var(--rag-text-xl);
+  font-weight: 600;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.hint {
+  margin: 0;
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2) var(--rag-space-5);
+  margin: var(--rag-space-1) 0 0;
+  font-size: var(--rag-text-s);
+}
+
+.meta > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.meta dt {
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.meta dd {
+  margin: 0;
+  color: var(--rag-text);
+  overflow-wrap: anywhere;
+}
+
+.meta a,
+.neighbours a {
+  color: var(--rag-acc);
+  text-decoration: none;
+}
+
+.meta a:hover {
+  text-decoration: underline;
+}
+
+.neighbours code {
+  font-family: var(--rag-font-mono);
+  font-size: var(--rag-text-s);
+}
+
+/* Blocked is a standing fact about the item, said once above everything. */
+.blocked {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--rag-space-2);
+  margin: 0;
+  padding: var(--rag-space-2) var(--rag-space-3);
+  background: var(--rag-surface2);
+  border: 1px solid var(--rag-border);
+  border-left: 3px solid var(--rag-warn);
+  border-radius: var(--rag-radius-m);
+  color: var(--rag-text);
+  font-size: var(--rag-text-s);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.blocked strong {
+  color: var(--rag-warn);
+}
+
+.empty {
+  margin: 0;
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+}
+
+/* ---- links ---- */
+
+.links {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.link {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+}
+
+.linkKind {
+  min-width: 6rem;
+}
+
+.linkTarget {
+  font-family: var(--rag-font-mono);
+  color: var(--rag-acc);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.linkTarget:hover {
+  text-decoration: underline;
+}
+
+.link code,
+.linkEdit code {
+  font-family: var(--rag-font-mono);
+  color: var(--rag-text);
+  overflow-wrap: anywhere;
+}
+
+/* ---- the history: which surface wrote each entry ---- */
+
+.surface {
+  margin-left: var(--rag-space-1);
+  padding: 0 var(--rag-space-1);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-s);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ---- the edit dialog's links ---- */
+
+.linkEditor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-2);
+  width: 100%;
+}
+
+.linkList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.linkEdit {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  font-size: var(--rag-text-s);
+}
+
+.linkEdit code {
+  flex: 1;
+  min-width: 0;
+}
+
+.linkAdd {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2);
+}
+
+.linkAdd > :nth-child(2) {
+  flex: 1 1 10rem;
+  min-width: 0;
+}

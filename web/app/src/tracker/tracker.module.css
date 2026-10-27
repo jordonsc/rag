@@ -1,0 +1,1103 @@
+/*
+ * The dashboard: done, review, the queue with its gate markers, blocked,
+ * deferred.
+ *
+ * Read like the manager's status report it is modelled on (R12): two lines per
+ * item (rag-t0026), the status first and in colour, the colour always beside
+ * its word. Green done, blue in progress (its row tinted blue, rag-t0023),
+ * white pending, red failed, amber blocked, teal deferred, red review (a
+ * diamond, not failed's disc: rag-t0024); the gates a full-width rule across
+ * the list, in the one accent no status uses.
+ * Every colour is a token.
+ */
+
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-4);
+  min-width: 0;
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-3);
+  padding: var(--rag-space-6) 0;
+  color: var(--rag-dim);
+}
+
+/* ---- the page head: name, picker, filter ---- */
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--rag-space-3);
+}
+
+.headTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  min-width: 0;
+  color: var(--rag-dim);
+}
+
+.title {
+  margin: 0;
+  color: var(--rag-bright);
+  font-size: var(--rag-text-xl);
+  font-weight: 600;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.headControls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--rag-space-3);
+  min-width: 0;
+}
+
+.picker {
+  display: inline-flex;
+  width: 12rem;
+  max-width: 100%;
+}
+
+/* ---- notices: a refused move, an interrupted drag, a failed refresh ---- */
+
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--rag-space-2);
+  margin: 0;
+  padding: var(--rag-space-2) var(--rag-space-3);
+  background: var(--rag-surface2);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-m);
+  color: var(--rag-text);
+  font-size: var(--rag-text-s);
+}
+
+.notice > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.notice code {
+  font-family: var(--rag-font-mono);
+  color: var(--rag-bright);
+}
+
+.notice_warn {
+  border-left: 2px solid var(--rag-warn);
+}
+
+.notice_crit {
+  border-left: 2px solid var(--rag-crit);
+}
+
+.noticeClose {
+  display: inline-flex;
+  padding: 2px;
+  border: 0;
+  border-radius: var(--rag-radius-s);
+  background: none;
+  color: var(--rag-dim);
+  cursor: pointer;
+}
+
+.noticeClose:hover {
+  color: var(--rag-text);
+  background: var(--rag-border);
+}
+
+/* ---- sections ---- */
+
+/*
+ * A section is drawn like a panel but without its clipping, so a dragged row
+ * can lift over the edge it is crossing. The coloured left edge is what says
+ * which section a row is in when the header has scrolled away.
+ */
+.section {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--rag-surface);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-l);
+}
+
+.section_done {
+  border-left: 3px solid var(--rag-good);
+}
+
+.section_blocked {
+  border-left: 3px solid var(--rag-warn);
+}
+
+.section_deferred {
+  border-left: 3px solid var(--rag-teal);
+}
+
+.section_review {
+  border-left: 3px solid var(--rag-crit);
+}
+
+.sectionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2) var(--rag-space-3);
+  min-height: var(--rag-row-h-comfy);
+  padding: var(--rag-space-1) var(--rag-space-4);
+  border-bottom: 1px solid var(--rag-border);
+  background: var(--rag-surface2);
+  border-radius: var(--rag-radius-l) var(--rag-radius-l) 0 0;
+}
+
+.sectionTitle {
+  margin: 0;
+  color: var(--rag-bright);
+  font-size: var(--rag-text-m);
+  font-weight: 600;
+}
+
+.count {
+  margin-left: var(--rag-space-1);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+  font-weight: 400;
+}
+
+.sectionActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2);
+}
+
+.gateNote {
+  margin: 0;
+  padding: var(--rag-space-2) var(--rag-space-4);
+  border-top: 1px solid var(--rag-border);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+}
+
+/* ---- the queue's grid ---- */
+
+/*
+ * One grid for the whole list, each row a subgrid of it, so the status and id
+ * columns line up from the first row to the last however long a title is: a
+ * column of statuses is what the eye runs down first. A row is two lines
+ * (rag-t0026): the subgrid's first holds the grip, status, id, title, approval
+ * and menu, its second (`cellLine2`) the type, the assignee and the labels
+ * (rag-t0031: a row draws no link chips; they are on the item's page).
+ */
+.queue {
+  display: grid;
+  grid-template-columns:
+    [grip] 28px [status] max-content [id] max-content
+    [title] minmax(0, 1fr) [meta] auto [menu] 32px;
+  margin: 0;
+  padding: var(--rag-space-1) 0;
+  list-style: none;
+}
+
+.row,
+.marker {
+  grid-column: 1 / -1;
+  position: relative;
+  min-height: 40px;
+  transition: transform 140ms ease;
+  border-radius: var(--rag-radius-m);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: subgrid;
+  grid-template-rows: auto auto;
+  align-items: center;
+  column-gap: var(--rag-space-3);
+  row-gap: 2px;
+  padding: var(--rag-space-1) var(--rag-space-2) var(--rag-space-1) var(--rag-space-1);
+  border-bottom: 1px solid var(--rag-border);
+}
+
+.row > * {
+  grid-row: 1;
+}
+
+.row > .cellLine2 {
+  grid-row: 2;
+  grid-column: status / menu;
+}
+
+.row:last-child {
+  border-bottom: 0;
+}
+
+.row:hover,
+.marker:hover {
+  background: var(--rag-surface2);
+}
+
+/*
+ * An in-progress row is filled with the owner's blue across both its lines
+ * (rag-t0023; the colour rag-t0029's, `--rag-inprogress`, which replaced a
+ * light tint of `--rag-acc`). Its hover is the same blue a step deeper, never
+ * the grey a plain row takes, so the fill does not flicker off under the
+ * pointer. A lifted row keeps the lifted look.
+ *
+ * The palette's foregrounds fail on that blue, so the row re-points them at
+ * the `--rag-on-inprogress-*` family: every word, badge, chip and button in
+ * it (and the focus ring, which is `--rag-acc`) keeps its hue and reads at
+ * 4.5:1 or better. Only foregrounds move; the row's fill is the owner's.
+ */
+.rowInProgress {
+  --rag-bright: var(--rag-on-inprogress-bright);
+  --rag-text: var(--rag-on-inprogress-text);
+  --rag-dim: var(--rag-on-inprogress-dim);
+  --rag-acc: var(--rag-on-inprogress-acc);
+  --rag-good: var(--rag-on-inprogress-good);
+  --rag-warn: var(--rag-on-inprogress-warn);
+  --rag-crit: var(--rag-on-inprogress-crit);
+}
+
+.rowInProgress:not(.lifted) {
+  background: var(--rag-inprogress);
+}
+
+.rowInProgress:not(.lifted):hover {
+  background: var(--rag-inprogress-hover);
+}
+
+/*
+ * A tinted control is a share of its colour over what lies under it. Over the
+ * blue, that share is a lighter blue its own text fails on (the pale accent
+ * at 14 % reads 4.0:1), so on an in-progress row the row's buttons (Approve,
+ * Unblock) and the ratify pill mix their colour into the panel's dark instead:
+ * 8.7:1 at rest and 5.6:1 at the deeper hover share, the pill set off from
+ * the blue and outlined in its pale colour.
+ */
+.rowInProgress .cellMeta button:not(.approvalButton) {
+  background: color-mix(in srgb, var(--rag-acc) 16%, var(--rag-surface));
+  border-color: var(--rag-acc);
+}
+
+.rowInProgress .cellMeta button:not(.approvalButton):hover:not(:disabled) {
+  background: color-mix(in srgb, var(--rag-acc) 30%, var(--rag-surface));
+}
+
+.rowInProgress .approvalButton > span {
+  background: color-mix(in srgb, var(--rag-warn) 16%, var(--rag-surface));
+}
+
+.rowInProgress .approvalButton:hover > span,
+.rowInProgress .approvalButton:focus-visible > span {
+  background: color-mix(in srgb, var(--rag-warn) 30%, var(--rag-surface));
+}
+
+.row:focus-visible,
+.marker:focus-visible {
+  outline: 2px solid var(--rag-acc);
+  outline-offset: -2px;
+}
+
+.dragging {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* The row in the hand: lifted, opaque, and not animated — it follows the
+   pointer exactly while the rows it passes slide out of its way. */
+.lifted {
+  z-index: 2;
+  transition: none;
+  background: var(--rag-surface2);
+  box-shadow: 0 6px 18px var(--rag-shadow);
+  outline: 1px solid var(--rag-acc);
+}
+
+.grip {
+  grid-column: grip;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--rag-radius-s);
+  background: none;
+  color: var(--rag-dim);
+  cursor: grab;
+  /* A finger on the grip drags the row rather than scrolling the page. */
+  touch-action: none;
+}
+
+.grip:hover:not(:disabled) {
+  color: var(--rag-text);
+  background: var(--rag-border);
+}
+
+.dragging .grip {
+  cursor: grabbing;
+}
+
+.grip:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* Flex, not inline: an inline badge sits on a text baseline and rides high. */
+.cellStatus {
+  grid-column: status;
+  display: flex;
+  align-items: center;
+}
+
+.cellId {
+  grid-column: id;
+  color: var(--rag-dim);
+  font-family: var(--rag-font-mono);
+  font-size: var(--rag-text-s);
+  white-space: nowrap;
+  user-select: all;
+}
+
+.cellTitle {
+  grid-column: title;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--rag-text);
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cellTitle:hover {
+  color: var(--rag-bright);
+  text-decoration: underline;
+}
+
+.cellMeta {
+  grid-column: meta;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2);
+  min-width: 0;
+}
+
+.menuAnchor {
+  grid-column: menu;
+  display: inline-flex;
+  justify-content: center;
+}
+
+/*
+ * A row's second line (rag-t0026): the type, the assignee and the section's
+ * detail at the left, under the status word (the indent is the dot and its
+ * gap), the link chips at the right. It wraps rather than widening the page.
+ */
+.cellLine2 {
+  grid-column: status / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 2px var(--rag-space-3);
+  min-width: 0;
+  padding-left: calc(10px + var(--rag-space-2));
+}
+
+.line2Start,
+.line2End {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--rag-space-1) var(--rag-space-3);
+  min-width: 0;
+}
+
+.line2End {
+  margin-left: auto;
+  justify-content: flex-end;
+}
+
+/* The labels at the line's right end (rag-t0031) wrap from the right. */
+.line2End > .labels {
+  justify-content: flex-end;
+}
+
+/* In-progress work reads brighter than what is waiting behind it. */
+.row:has([data-state='in_progress']) .cellTitle {
+  color: var(--rag-bright);
+}
+
+.assignee {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-1);
+  color: var(--rag-acc);
+  font-size: var(--rag-text-s);
+  white-space: nowrap;
+}
+
+/* ---- the gate marker ---- */
+
+/*
+ * A gate is a line across the list, not a row in it (D6, D14): what is above
+ * it ships in that gate. Drawn in `--rag-extra`, the one accent no status
+ * uses, so a marker never reads as an item's state.
+ */
+.marker {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  padding: var(--rag-space-1) var(--rag-space-2) var(--rag-space-1) var(--rag-space-1);
+  border-bottom: 1px solid var(--rag-border);
+}
+
+.marker:last-child {
+  border-bottom: 0;
+}
+
+/*
+ * A done gate under Done is the same line in the done status's green
+ * (rag-t0021): `--marker-colour` is set on the rules and the label, so the
+ * one marker component draws either.
+ */
+.markerDone {
+  --marker-colour: var(--rag-good);
+}
+
+/* Done is a flat list with its own separators: the marker brings no second one. */
+.flat > .marker {
+  border-bottom: 0;
+  padding-left: var(--rag-space-3);
+  padding-right: var(--rag-space-3);
+}
+
+.rule {
+  flex: 1;
+  min-width: var(--rag-space-3);
+  border-top: 2px dashed var(--marker-colour, var(--rag-extra));
+  opacity: 0.6;
+}
+
+.markerLabel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--rag-space-2);
+  min-width: 0;
+  max-width: 100%;
+  padding: 2px var(--rag-space-3);
+  border: 1px solid var(--marker-colour, var(--rag-extra));
+  border-radius: var(--rag-radius-l);
+  color: var(--marker-colour, var(--rag-extra));
+  font-size: var(--rag-text-s);
+  text-decoration: none;
+}
+
+.markerLabel:hover {
+  background: var(--rag-surface);
+}
+
+.markerName {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  font-size: var(--rag-text-xs);
+}
+
+.markerLabel > * {
+  flex-shrink: 0;
+}
+
+/*
+ * The gate's own title (rag-t0015): one line, cut with an ellipsis, whole in
+ * its tooltip. It alone gives way, so the name, Release and the id stay.
+ */
+.markerLabel > .markerTitle {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 48ch;
+  overflow: hidden;
+  color: var(--rag-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.release {
+  display: inline-flex;
+}
+
+.markerId {
+  color: var(--rag-dim);
+  font-family: var(--rag-font-mono);
+  font-size: var(--rag-text-xs);
+}
+
+/* ---- done, blocked and deferred: the same columns, without grip or menu ---- */
+
+.flat {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: var(--rag-space-1) 0;
+  list-style: none;
+}
+
+.flatRow {
+  display: grid;
+  grid-template-columns: [status] 7.5rem [id] max-content [title] minmax(0, 1fr) [meta] auto;
+  align-items: center;
+  column-gap: var(--rag-space-3);
+  row-gap: 2px;
+  min-height: 38px;
+  padding: var(--rag-space-1) var(--rag-space-3);
+}
+
+.flatRow > * {
+  grid-row: 1;
+}
+
+.flatRow > .cellLine2 {
+  grid-row: 2;
+}
+
+.flat > li + li {
+  border-top: 1px solid var(--rag-border);
+}
+
+/* A block note is a third line, under the status word as the second is. */
+.flatRow > .blockNote {
+  grid-row: 3;
+  grid-column: status / -1;
+}
+
+.blockNote {
+  margin: var(--rag-space-1) 0 var(--rag-space-1) calc(10px + var(--rag-space-2));
+  padding-left: var(--rag-space-3);
+  border-left: 2px solid var(--rag-warn);
+  color: var(--rag-text);
+  font-size: var(--rag-text-s);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.when {
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---- status, type, approval, chips ---- */
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  font-size: var(--rag-text-s);
+  white-space: nowrap;
+}
+
+.statusDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--status-colour);
+  box-shadow: 0 0 0 2px var(--rag-surface);
+}
+
+.statusLabel {
+  color: var(--status-colour);
+  font-weight: 600;
+}
+
+.statusLabelCompact {
+  font-size: var(--rag-text-xs);
+}
+
+.status_done {
+  --status-colour: var(--rag-good);
+}
+
+.status_in_progress {
+  --status-colour: var(--rag-acc);
+}
+
+.status_pending {
+  --status-colour: var(--rag-bright);
+}
+
+.status_pending .statusLabel {
+  color: var(--rag-text);
+  font-weight: 500;
+}
+
+.status_failed {
+  --status-colour: var(--rag-crit);
+}
+
+.status_blocked {
+  --status-colour: var(--rag-warn);
+}
+
+.status_deferred {
+  --status-colour: var(--rag-teal);
+}
+
+/* Review shares failed's red (the owner's choice, rag-t0024); its dot is a
+   diamond and its word is its own, so the two never read as one. */
+.status_review {
+  --status-colour: var(--rag-crit);
+}
+
+.status_review .statusDot {
+  width: 9px;
+  height: 9px;
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
+
+.status_cancelled {
+  --status-colour: var(--rag-dim);
+}
+
+.status_cancelled .statusDot {
+  background: transparent;
+  border: 2px solid var(--rag-dim);
+}
+
+.type {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-1);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.approval {
+  display: inline-flex;
+}
+
+/* The Agent-approved badge as the ratify control (rag-t0009): the badge's
+   pill, filled so it reads as a button at rest (rag-t0025), the way the design
+   system's tinted `caution` button is: amber over the ground, deeper on hover.
+   Its hover was the grey a row turns under the pointer, so it vanished; amber
+   is neither that grey nor the in-progress row's blue. The ring is for the
+   keyboard. */
+.approvalButton {
+  display: inline-flex;
+  padding: 0;
+  border: none;
+  border-radius: var(--rag-radius-l);
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.approvalButton > span {
+  background: color-mix(in srgb, var(--rag-warn) 16%, transparent);
+  transition: background-color 120ms ease;
+}
+
+.approvalButton:hover > span,
+.approvalButton:focus-visible > span {
+  background: color-mix(in srgb, var(--rag-warn) 30%, transparent);
+}
+
+.approvalButton:focus-visible {
+  outline: 2px solid var(--rag-acc);
+  outline-offset: 2px;
+}
+
+.chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--rag-space-1);
+  min-width: 0;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 12rem;
+  padding: 0 var(--rag-space-2);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-s);
+  background: var(--rag-bg);
+  color: var(--rag-dim);
+  font-family: var(--rag-font-mono);
+  font-size: var(--rag-text-xs);
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chipLink {
+  color: var(--rag-acc);
+  text-decoration: none;
+}
+
+.chipLink:hover {
+  border-color: var(--rag-acc);
+}
+
+/* What a dependency-blocked item waits on (rag-t0018): a word, then item chips. */
+.waitsOn {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rag-space-1);
+  min-width: 0;
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+}
+
+/*
+ * An item's labels (rag-t0027): rounded tags in the body face, so they read
+ * as words about the item, not as the mono link chips at the line's end.
+ */
+.labels {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--rag-space-1);
+  min-width: 0;
+}
+
+.label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: min(14rem, 100%);
+  padding: 0 var(--rag-space-2);
+  border: 1px solid var(--rag-border);
+  border-radius: 999px;
+  background: var(--rag-surface2);
+  color: var(--rag-text);
+  font-size: var(--rag-text-xs);
+  line-height: 18px;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.label > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.label:hover {
+  border-color: var(--rag-acc);
+}
+
+.label:focus-visible {
+  outline: 2px solid var(--rag-acc);
+  outline-offset: 1px;
+}
+
+/* The label editor: the chip list, then the project's labels to add in a click. */
+.labelEditor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-2);
+  min-width: 0;
+}
+
+.labelQuick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rag-space-1);
+}
+
+.labelAdd {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 var(--rag-space-2);
+  border: 1px dashed var(--rag-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--rag-dim);
+  font: inherit;
+  font-size: var(--rag-text-xs);
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.labelAdd:hover:not(:disabled) {
+  border-color: var(--rag-acc);
+  color: var(--rag-text);
+}
+
+.labelAdd:focus-visible {
+  outline: 2px solid var(--rag-acc);
+  outline-offset: 1px;
+}
+
+/* The dashboard's label filter. */
+.labelFilter {
+  min-width: 9rem;
+}
+
+/* The Parallel badge (rag-t0013). */
+.parallel {
+  display: inline-flex;
+}
+
+.chipMore {
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+}
+
+/* ---- the row menu (portalled to <body>) ---- */
+
+.menu {
+  position: fixed;
+  z-index: 50;
+  margin: 0;
+  padding: var(--rag-space-1);
+  list-style: none;
+  background: var(--rag-surface2);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-m);
+  box-shadow: 0 8px 24px var(--rag-shadow);
+}
+
+.menuItem {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  width: 100%;
+  min-height: 32px;
+  padding: 0 var(--rag-space-3);
+  border: 0;
+  border-radius: var(--rag-radius-s);
+  background: none;
+  color: var(--rag-text);
+  font: inherit;
+  font-size: var(--rag-text-s);
+  text-align: left;
+  cursor: pointer;
+}
+
+.menuItem:hover:not(:disabled),
+.menuItem:focus-visible {
+  background: var(--rag-border);
+  color: var(--rag-bright);
+  outline: none;
+}
+
+.menuItem:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.menuDanger {
+  color: var(--rag-crit);
+}
+
+/* ---- the project list ---- */
+
+.openProject {
+  display: flex;
+  gap: var(--rag-space-2);
+  width: min(22rem, 100%);
+}
+
+.openProject > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.fieldError {
+  margin: 0;
+  color: var(--rag-crit);
+  font-size: var(--rag-text-s);
+}
+
+.projects {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: var(--rag-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.projectCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-1);
+  padding: var(--rag-space-4);
+  background: var(--rag-surface);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-l);
+  color: var(--rag-text);
+  text-decoration: none;
+}
+
+.projectCard:hover {
+  border-color: var(--rag-acc);
+}
+
+.projectName {
+  color: var(--rag-bright);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.projectCounts {
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+}
+
+/* ---- a phone's width ---- */
+
+/*
+ * Below 40rem a row becomes four lines: the status and the id, the title in
+ * full (wrapped), the approval and the actions, then the second line's type,
+ * assignee and labels (the labels wrapping, each cut short with an ellipsis
+ * rather than wider than the row). The grip and the menu stay at the edges so a thumb
+ * finds them where it found them on every other row. No horizontal scroll at
+ * 375 px (acceptance 4).
+ */
+@media (max-width: 40rem) {
+  .queue {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .row {
+    grid-template-columns: [grip] 28px [status] auto [mid] minmax(0, 1fr) [menu] 32px;
+    grid-template-rows: none;
+    grid-template-areas:
+      'grip status id menu'
+      'grip title title menu'
+      'grip meta meta menu'
+      'grip line2 line2 menu';
+    row-gap: 2px;
+  }
+
+  .row .grip {
+    grid-area: grip;
+  }
+
+  .row .cellStatus {
+    grid-area: status;
+  }
+
+  .row .cellId {
+    grid-area: id;
+  }
+
+  .row .cellLine2 {
+    grid-area: line2;
+    padding-left: 0;
+  }
+
+  .row .cellTitle {
+    grid-area: title;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .row .cellMeta {
+    grid-area: meta;
+    justify-content: flex-start;
+  }
+
+  .row .menuAnchor {
+    grid-area: menu;
+  }
+
+  .flatRow {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      'status id'
+      'title title'
+      'meta meta'
+      'line2 line2'
+      'note note';
+    row-gap: 2px;
+  }
+
+  .flatRow .cellStatus {
+    grid-area: status;
+  }
+
+  .flatRow .cellId {
+    grid-area: id;
+  }
+
+  .flatRow .cellLine2 {
+    grid-area: line2;
+    padding-left: 0;
+  }
+
+  .flatRow .blockNote {
+    grid-area: note;
+  }
+
+  .flatRow .cellTitle {
+    grid-area: title;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .flatRow .cellMeta {
+    grid-area: meta;
+    justify-content: flex-start;
+  }
+
+  .blockNote {
+    margin-left: 0;
+  }
+
+  /*
+   * On a phone the label takes the row between the grip and the menu, its
+   * rules shrunk to a stub, and wraps (rag-t0019): the name, Release, the
+   * state and the id on the first line (the id never hidden), the gate's own
+   * title on a line of its own, cut with an ellipsis. Before this the title
+   * shrank to 0 px and the id was hidden, so only the tooltip had them.
+   */
+  .marker .rule {
+    flex: 0 0 var(--rag-space-2);
+    min-width: var(--rag-space-2);
+  }
+
+  .markerLabel {
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    row-gap: 2px;
+    border-radius: var(--rag-radius-m);
+  }
+
+  .markerLabel > .markerTitle {
+    order: 1;
+    flex: 1 1 100%;
+    max-width: 100%;
+  }
+}

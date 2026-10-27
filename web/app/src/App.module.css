@@ -30,3 +30,19 @@
   margin: 0 auto;
   padding: var(--rag-space-5) var(--rag-space-4) var(--rag-space-6);
 }
+
+/*
+ * A phone's width. The bar holds the brand, three destinations, the id box and
+ * the identity, and at 375 px that is more than there is: the brand gives way
+ * to its glyph and the main column's gutters narrow, so no page scrolls
+ * sideways (the tracker's acceptance 4).
+ */
+@media (max-width: 40rem) {
+  .brandName {
+    display: none;
+  }
+
+  .main {
+    padding: var(--rag-space-4) var(--rag-space-3) var(--rag-space-5);
+  }
+}

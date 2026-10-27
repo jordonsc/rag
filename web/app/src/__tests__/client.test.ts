@@ -259,6 +259,22 @@ describe('getInfo', () => {
     await expect(getInfo()).resolves.toMatchObject({ retrieval_ready: true });
     expect(sent()).toMatchObject({ path: '/info', method: 'GET' });
   });
+
+  it('reads a Qdrant outage as null points, not a failure', async () => {
+    // rag-t0001: the server answers 200 with `points: null` and a reason, so
+    // the readiness flags survive the outage.
+    answer(200, {
+      collection: 'corpus',
+      points: null,
+      qdrant_error: 'connection refused',
+      retrieval_ready: true,
+    });
+    await expect(getInfo()).resolves.toMatchObject({
+      points: null,
+      qdrant_error: 'connection refused',
+      retrieval_ready: true,
+    });
+  });
 });
 
 // ---- Failure ----------------------------------------------------------------

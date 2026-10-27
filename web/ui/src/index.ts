@@ -51,6 +51,7 @@ export {
   Toggle,
   SecretInput,
   ChipList,
+  Checkbox,
   CheckboxSet,
   DurationInput,
   Picker,
@@ -70,6 +71,7 @@ export {
   type SecretInputProps,
   type ChipListHandle,
   type ChipListProps,
+  type CheckboxProps,
   type CheckboxSetProps,
   type SliderProps,
 } from './components/inputs';

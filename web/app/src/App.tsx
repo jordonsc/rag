@@ -9,10 +9,30 @@ import { CreateView } from './views/CreateView';
 import { NotFoundView } from './views/NotFoundView';
 import { SearchView } from './views/SearchView';
 import { TopicView } from './views/TopicView';
+import {
+  DocView,
+  DocsView,
+  HistoryView,
+  ItemView,
+  NewConceptView,
+  PROJECTS_PATH,
+  ProjectsView,
+  QueueView,
+  projectPath,
+  readLastProject,
+} from './tracker';
 
+/**
+ * Two applications in one bar: the **ledger** (Search, Archived) and the
+ * **tracker** (specs/tracker, m03). The brand names the one you are in; every
+ * destination of both stays in the bar, so either is one press away. The
+ * tracker's later pages (m04's documents) add their item here and their
+ * routes below.
+ */
 const NAV: readonly TopNavItem[] = [
   { id: 'search', icon: 'search', label: 'Search' },
   { id: 'archived', icon: 'archive', label: 'Archived' },
+  { id: 'tracker', icon: 'list-todo', label: 'Tracker' },
 ];
 
 /**
@@ -32,6 +52,20 @@ const PATH_FOR: Record<string, string> = {
   archived: '/archived',
 };
 
+/** Whether a URL belongs to the tracker's pages (`/projects…`). */
+function inTracker(pathname: string): boolean {
+  return pathname === PROJECTS_PATH || pathname.startsWith(`${PROJECTS_PATH}/`);
+}
+
+/**
+ * Where **Tracker** goes: the project last opened, else the project list. The
+ * last project is remembered in this browser only (`tracker/paths.ts`).
+ */
+function trackerHome(): string {
+  const last = readLastProject();
+  return last === null ? PROJECTS_PATH : projectPath(last);
+}
+
 /**
  * Which destination the current URL belongs to.
  *
@@ -40,6 +74,9 @@ const PATH_FOR: Record<string, string> = {
  * having navigated out of the application.
  */
 function activeNav(pathname: string): string | undefined {
+  if (inTracker(pathname)) {
+    return 'tracker';
+  }
   if (pathname.startsWith('/archived')) {
     return 'archived';
   }
@@ -62,26 +99,28 @@ function activeNav(pathname: string): string | undefined {
 export function App() {
   const navigate = useNavigate();
   const location = useLocation();
+  const tracker = inTracker(location.pathname);
 
   return (
     <div className={styles.shell}>
       <TopNav
         start={
           <span className={styles.brand}>
-            <Icon name="book-open" size={18} />
-            <span>Ledger</span>
+            <Icon name={tracker ? 'list-todo' : 'book-open'} size={18} />
+            <span className={styles.brandName}>{tracker ? 'Tracker' : 'Ledger'}</span>
           </span>
         }
         items={NAV}
         activeId={activeNav(location.pathname)}
         onSelect={(id) => {
-          const path = PATH_FOR[id];
+          const path = id === 'tracker' ? trackerHome() : PATH_FOR[id];
           if (path !== undefined) {
             navigate(path);
           }
         }}
-        onAction={() => navigate('/new')}
-        actionLabel="New topic"
+        // The "+" is the ledger's New topic. The tracker adds from its own
+        // dashboard (Add item, Add gate), where the project is in hand.
+        {...(tracker ? {} : { onAction: () => navigate('/new'), actionLabel: 'New topic' })}
         end={
           <>
             {/* **The id box lives in the shell, not on a page.** Opening a
@@ -90,7 +129,7 @@ export function App() {
                 find by first getting lost. In the bar it is on screen from
                 every view, including the topic page, where the next thing a
                 reader does with an id is usually to follow another one. */}
-            <OpenTopic label="Open a topic by id" actionLabel="Open topic" compact />
+            {!tracker && <OpenTopic label="Open a topic by id" actionLabel="Open topic" compact />}
             <IdentityControl />
           </>
         }
@@ -102,6 +141,15 @@ export function App() {
           <Route path="/archived" element={<ArchivedView />} />
           <Route path="/topic/:id" element={<TopicView />} />
           <Route path="/new" element={<CreateView />} />
+          {/* The tracker: `/projects/…`, never `/tracker/…`, which is the
+              API's and never falls back to this bundle (rag-0035). */}
+          <Route path="/projects" element={<ProjectsView />} />
+          <Route path="/projects/:project" element={<QueueView />} />
+          <Route path="/projects/:project/item/:id" element={<ItemView />} />
+          <Route path="/projects/:project/docs" element={<DocsView />} />
+          <Route path="/projects/:project/docs/new" element={<NewConceptView />} />
+          <Route path="/projects/:project/doc/*" element={<DocView />} />
+          <Route path="/projects/:project/history" element={<HistoryView />} />
           <Route path="*" element={<NotFoundView />} />
         </Routes>
       </main>

@@ -4,6 +4,7 @@ import { useRef, useState } from 'react';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {
+  Checkbox,
   ChipList,
   DurationInput,
   Picker,
@@ -81,6 +82,30 @@ describe('Toggle', () => {
   });
 });
 
+describe('Checkbox', () => {
+  it('is a labelled native checkbox carrying its state', () => {
+    render(<Checkbox checked onChange={() => {}} label="Create it approved" />);
+    const box = screen.getByRole('checkbox', { name: 'Create it approved' });
+    expect(box).toBeChecked();
+  });
+
+  it('reports the new state when the box or its label is clicked', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Checkbox checked onChange={onChange} label="Create it approved" />);
+    await user.click(screen.getByText('Create it approved'));
+    expect(onChange).toHaveBeenCalledWith(false);
+  });
+
+  it('does not fire when disabled', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Checkbox checked={false} onChange={onChange} label="Create it approved" disabled />);
+    await user.click(screen.getByRole('checkbox'));
+    expect(onChange).not.toHaveBeenCalled();
+  });
+});
+
 function ChipHarness({ maxItems }: { maxItems?: number }) {
   const [values, setValues] = useState<string[]>(['alpha']);
   return (
@@ -110,6 +135,31 @@ function ChipFormHarness() {
 }
 
 describe('ChipList', () => {
+  it('offers its suggestions in a datalist, leaving out values already chosen', () => {
+    const { container } = render(
+      <ChipList
+        values={['alpha']}
+        onChange={() => undefined}
+        suggestions={['alpha', 'beta', 'gamma']}
+        maxLength={12}
+      />,
+    );
+    const input = screen.getByRole('combobox');
+    const list = container.querySelector('datalist')!;
+    expect(input).toHaveAttribute('list', list.id);
+    expect(input).toHaveAttribute('maxlength', '12');
+    expect(Array.from(list.querySelectorAll('option')).map((o) => o.value)).toEqual([
+      'beta',
+      'gamma',
+    ]);
+  });
+
+  it('draws no datalist without suggestions', () => {
+    const { container } = render(<ChipList values={[]} onChange={() => undefined} />);
+    expect(container.querySelector('datalist')).toBeNull();
+    expect(screen.getByRole('textbox')).not.toHaveAttribute('list');
+  });
+
   it('adds an entry on Enter and trims it', async () => {
     const user = userEvent.setup();
     render(<ChipHarness />);

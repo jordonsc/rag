@@ -14,7 +14,10 @@ import react from '@vitejs/plugin-react';
  */
 const target = process.env.RAG_SERVE ?? 'http://localhost:17793';
 
-const api = ['/search', '/ledger', '/health', '/info', '/reindex'];
+// The same prefixes `rag-serve` keeps out of its SPA fallback (`API_PREFIXES`
+// in `crates/serve/src/web.rs`). `/projects` is deliberately absent: it is the
+// tracker's pages, not its API.
+const api = ['/search', '/ledger', '/health', '/info', '/reindex', '/prompts', '/tracker'];
 
 export default defineConfig({
   plugins: [react()],

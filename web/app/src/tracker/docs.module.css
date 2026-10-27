@@ -1,0 +1,619 @@
+/*
+ * The documents pages (m04): the documents page, a document, its editor, its
+ * history, and the attachments. The page frame, notices and sections are the
+ * dashboard's (`tracker.module.css`), imported where they are used; this sheet
+ * adds what only documents have. Every colour is a token; the design system
+ * has one (dark) theme and this sheet adds none.
+ */
+
+/* ---- Queue / Documents ---- */
+
+.projectTabs {
+  display: inline-flex;
+  gap: var(--rag-space-1);
+  padding: 2px;
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-m);
+  background: var(--rag-surface);
+}
+
+.projectTab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-1);
+  height: calc(var(--rag-row-h) - 6px);
+  padding: 0 var(--rag-space-3);
+  border-radius: var(--rag-radius-s);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.projectTab:hover {
+  color: var(--rag-text);
+}
+
+.projectTabActive {
+  background: var(--rag-surface2);
+  color: var(--rag-bright);
+}
+
+.state {
+  display: inline-flex;
+}
+
+/* ---- lists of documents ---- */
+
+.tabBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-4);
+  min-width: 0;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2) var(--rag-space-3);
+}
+
+.toolbarNote {
+  margin: 0;
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.docRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--rag-space-1) var(--rag-space-3);
+  min-height: 40px;
+  padding: var(--rag-space-2) var(--rag-space-4);
+  border-bottom: 1px solid var(--rag-border);
+}
+
+.docRow:last-child {
+  border-bottom: 0;
+}
+
+.docRow:hover {
+  background: var(--rag-surface2);
+}
+
+.docTitle {
+  flex: 1 1 14rem;
+  min-width: 0;
+  color: var(--rag-bright);
+  font-weight: 500;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.docTitle:hover {
+  color: var(--rag-acc);
+  text-decoration: underline;
+}
+
+.docPath {
+  font-family: var(--rag-font-mono);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+  overflow-wrap: anywhere;
+}
+
+.docMeta {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+}
+
+.code {
+  min-width: 2.5rem;
+  font-family: var(--rag-font-mono);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+}
+
+/* A row's write controls (Edit title, Move up / down; rag-t0003). */
+.rowActions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-1);
+  margin-left: auto;
+}
+
+.milestones {
+  margin: 0;
+  padding: 0 0 var(--rag-space-1);
+  list-style: none;
+  border-top: 1px solid var(--rag-border);
+}
+
+.milestones .docRow {
+  padding-left: var(--rag-space-6);
+}
+
+.empty {
+  margin: 0;
+  padding: var(--rag-space-3) var(--rag-space-4);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+}
+
+/* ---- a document ---- */
+
+.docHead {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-2);
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2) var(--rag-space-3);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+}
+
+.kind {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-1);
+}
+
+.mono {
+  font-family: var(--rag-font-mono);
+  font-size: var(--rag-text-s);
+  color: var(--rag-dim);
+  overflow-wrap: anywhere;
+}
+
+.record {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-3);
+}
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2) var(--rag-space-5);
+  margin: 0;
+  font-size: var(--rag-text-s);
+}
+
+.facts > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.facts dt {
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.facts dd {
+  margin: 0;
+  color: var(--rag-text);
+  overflow-wrap: anywhere;
+}
+
+.facts a {
+  color: var(--rag-acc);
+  text-decoration: none;
+}
+
+.facts a:hover {
+  text-decoration: underline;
+}
+
+/* ---- the editor ---- */
+
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-3);
+  min-width: 0;
+}
+
+/* Side by side where there is room for two readable columns; stacked below. */
+.panes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--rag-space-3);
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .panes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-l);
+  background: var(--rag-surface);
+}
+
+.paneHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--rag-space-2);
+  min-height: var(--rag-row-h);
+  padding: 0 var(--rag-space-3);
+  border-bottom: 1px solid var(--rag-border);
+  background: var(--rag-surface2);
+  border-radius: var(--rag-radius-l) var(--rag-radius-l) 0 0;
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.source {
+  flex: 1;
+  min-height: 28rem;
+  padding: var(--rag-space-3);
+  border: 0;
+  border-radius: 0 0 var(--rag-radius-l) var(--rag-radius-l);
+  background: var(--rag-bg);
+  color: var(--rag-text);
+  font-family: var(--rag-font-mono);
+  font-size: var(--rag-text-s);
+  line-height: 1.55;
+  resize: vertical;
+  tab-size: 2;
+}
+
+.source:focus-visible {
+  outline: 2px solid var(--rag-acc);
+  outline-offset: -2px;
+}
+
+.sourceDropping {
+  outline: 2px dashed var(--rag-acc);
+  outline-offset: -4px;
+}
+
+.preview {
+  flex: 1;
+  min-height: 28rem;
+  max-height: 80vh;
+  padding: var(--rag-space-3) var(--rag-space-4);
+  overflow: auto;
+}
+
+.commit {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2) var(--rag-space-3);
+}
+
+.commitMessage {
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+
+.commitButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2);
+}
+
+.fields {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: var(--rag-space-3);
+}
+
+@media (max-width: 640px) {
+  .fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.status {
+  margin: 0;
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+}
+
+/* ---- a stale save ---- */
+
+.conflict {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-3);
+  padding: var(--rag-space-3) var(--rag-space-4);
+  border: 1px solid var(--rag-border);
+  border-left: 3px solid var(--rag-warn);
+  border-radius: var(--rag-radius-l);
+  background: var(--rag-surface);
+}
+
+.conflictTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+  margin: 0;
+  color: var(--rag-warn);
+  font-size: var(--rag-text-m);
+  font-weight: 600;
+}
+
+.conflict p {
+  margin: 0;
+  color: var(--rag-text);
+  font-size: var(--rag-text-s);
+}
+
+.conflictWho {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+}
+
+/* ---- diffs ---- */
+
+.diff {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-1);
+  min-width: 0;
+}
+
+.diffLegend {
+  display: flex;
+  gap: var(--rag-space-3);
+  margin: 0;
+  font-size: var(--rag-text-xs);
+}
+
+.legendAdd {
+  color: var(--rag-good);
+}
+
+.legendDel {
+  color: var(--rag-crit);
+}
+
+.diffRows {
+  max-height: 32rem;
+  margin: 0;
+  padding: var(--rag-space-1) 0;
+  overflow: auto;
+  list-style: none;
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-m);
+  background: var(--rag-bg);
+  font-family: var(--rag-font-mono);
+  font-size: var(--rag-text-s);
+  line-height: 1.5;
+}
+
+.diffRow {
+  display: flex;
+  min-width: max-content;
+}
+
+.diffSign {
+  flex: none;
+  width: 2ch;
+  padding-left: var(--rag-space-1);
+  color: var(--rag-dim);
+  user-select: none;
+}
+
+.diffText {
+  padding-right: var(--rag-space-3);
+  white-space: pre;
+}
+
+.diff_add {
+  background: color-mix(in srgb, var(--rag-good) 14%, transparent);
+  color: var(--rag-bright);
+}
+
+.diff_add .diffSign {
+  color: var(--rag-good);
+}
+
+.diff_del {
+  background: color-mix(in srgb, var(--rag-crit) 14%, transparent);
+  color: var(--rag-bright);
+}
+
+.diff_del .diffSign {
+  color: var(--rag-crit);
+}
+
+.diff_hunk {
+  color: var(--rag-acc2);
+}
+
+.diffGap {
+  padding: 0 var(--rag-space-3);
+  color: var(--rag-dim);
+  font-family: var(--rag-font);
+  font-size: var(--rag-text-xs);
+  font-style: italic;
+}
+
+/* ---- history ---- */
+
+.revisions {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.revision {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-2);
+  padding: var(--rag-space-3) 0;
+  border-bottom: 1px solid var(--rag-border);
+}
+
+.revision:last-child {
+  border-bottom: 0;
+}
+
+.revisionHead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--rag-space-1) var(--rag-space-3);
+  font-size: var(--rag-text-s);
+}
+
+.revisionNumber {
+  color: var(--rag-bright);
+  font-weight: 600;
+}
+
+.revisionMessage {
+  flex: 1 1 14rem;
+  min-width: 0;
+  color: var(--rag-text);
+  overflow-wrap: anywhere;
+}
+
+.who {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-1);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+  overflow-wrap: anywhere;
+}
+
+.surface {
+  padding: 0 var(--rag-space-1);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-s);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.revisionActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2);
+}
+
+.oldBody {
+  padding: var(--rag-space-3);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-m);
+  background: var(--rag-bg);
+}
+
+/* ---- attachments ---- */
+
+.attachments {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: var(--rag-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.attachment {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-l);
+  background: var(--rag-surface);
+  overflow: hidden;
+}
+
+.thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 9rem;
+  background: var(--rag-bg);
+  color: var(--rag-dim);
+}
+
+.thumb img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.attachmentBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-1);
+  padding: var(--rag-space-2) var(--rag-space-3) var(--rag-space-3);
+  font-size: var(--rag-text-s);
+}
+
+.attachmentName {
+  color: var(--rag-bright);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+}
+
+.attachmentName:hover {
+  color: var(--rag-acc);
+  text-decoration: underline;
+}
+
+.ref {
+  display: flex;
+  align-items: center;
+  gap: var(--rag-space-1);
+}
+
+.ref code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--rag-font-mono);
+  color: var(--rag-text);
+  font-size: var(--rag-text-s);
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+
+.hiddenInput {
+  display: none;
+}

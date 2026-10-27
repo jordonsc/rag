@@ -369,6 +369,35 @@ export function Toggle({ checked, onChange, label, disabled, ...rest }: TogglePr
   );
 }
 
+export interface CheckboxProps extends Omit<
+  InputHTMLAttributes<HTMLInputElement>,
+  'onChange' | 'className' | 'children' | 'type' | 'checked'
+> {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  /** Visible label beside the box; clicking it ticks the box. */
+  label: string;
+}
+
+/**
+ * One native checkbox and its label: a yes-or-no choice that is part of a
+ * form being filled in, where `Toggle` is a setting that takes effect at once.
+ */
+export function Checkbox({ checked, onChange, label, disabled, ...rest }: CheckboxProps) {
+  return (
+    <label className={styles.checkboxOption}>
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+        {...rest}
+      />
+      <span>{label}</span>
+    </label>
+  );
+}
+
 export interface CheckboxSetProps {
   values: readonly string[];
   onChange: (values: string[]) => void;
@@ -1260,6 +1289,13 @@ export interface ChipListProps {
   'aria-describedby'?: string;
   /** Somewhere for a form to reach {@link ChipListHandle.commit} on submit. */
   handleRef?: RefObject<ChipListHandle | null>;
+  /**
+   * Values to offer while typing (a native `datalist` on the entry box): an
+   * open list's known vocabulary, still letting anything else be typed.
+   */
+  suggestions?: readonly string[];
+  /** The longest value the entry box takes, in characters. */
+  maxLength?: number;
 }
 
 /** An editable list of free strings — tags, and anything else open-ended. */
@@ -1273,10 +1309,14 @@ export function ChipList({
   invalid,
   id,
   handleRef,
+  suggestions,
+  maxLength,
   ...rest
 }: ChipListProps) {
   const [draft, setDraft] = useState('');
   const t = useT();
+  const listId = useId();
+  const offered = (suggestions ?? []).filter((value) => !values.includes(value));
 
   const atMax = maxItems !== undefined && values.length >= maxItems;
   const atMin = minItems !== undefined && values.length <= minItems;
@@ -1341,8 +1381,17 @@ export function ChipList({
           // is the right way round to be wrong: an unwanted chip is visible and
           // removable, a lost one is neither.
           onBlur={add}
+          {...(offered.length > 0 ? { list: listId } : {})}
+          {...(maxLength === undefined ? {} : { maxLength })}
           {...rest}
         />
+        {offered.length > 0 && (
+          <datalist id={listId}>
+            {offered.map((value) => (
+              <option key={value} value={value} />
+            ))}
+          </datalist>
+        )}
         <IconButton
           icon="plus"
           label={t('chiplist.add')}

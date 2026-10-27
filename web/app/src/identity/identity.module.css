@@ -27,3 +27,10 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* At a phone's width the address yields further; the tooltip still has it. */
+@media (max-width: 40rem) {
+  .value {
+    max-width: 12ch;
+  }
+}

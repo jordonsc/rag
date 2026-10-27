@@ -124,6 +124,7 @@ export function archivedSearch(results: ArchivedHit[] = [ARCHIVED_HIT]) {
 export const INFO: InfoResponse = {
   collection: 'rag_corpus',
   points: 1200,
+  qdrant_error: null,
   embed_model: 'voyage-4-large',
   rerank_model: 'rerank-2.5',
   dimensions: 1024,

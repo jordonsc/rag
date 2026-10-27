@@ -37,6 +37,8 @@
 import DOMPurify from 'dompurify';
 import MarkdownIt from 'markdown-it';
 
+import { docPath, resolveDocLink } from '../tracker/paths';
+
 const md = new MarkdownIt({
   // The load-bearing option. Raw HTML in the source is escaped and shown as
   // text rather than parsed. See the note above before ever changing it.
@@ -60,12 +62,95 @@ const md = new MarkdownIt({
  * markup with a regular expression — which is the class of code this module
  * exists to avoid.
  */
+/** Where a tracker document's page lives: see the document-link rewrite below. */
+const DOCUMENT_PAGES = '/projects';
+
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   if (node.tagName === 'A' && node.hasAttribute('href')) {
+    // A link to another tracker document stays in this tab: it is a page of
+    // this application, and the caller turns the click into a navigation.
+    if (node.getAttribute('href')?.startsWith(`${DOCUMENT_PAGES}/`) === true) {
+      node.removeAttribute('target');
+      return;
+    }
     node.setAttribute('target', '_blank');
     node.setAttribute('rel', 'noopener noreferrer');
   }
 });
+
+/**
+ * Tracker attachments: `![terrain](att:3fa9c2e1b07d)` (specs/tracker D8).
+ *
+ * An `att:` reference is not a URL a browser can fetch, and DOMPurify would
+ * strip it as an unknown scheme. So, **when the caller asks for it**, an image
+ * source or a link target that is exactly `att:` and 12 to 64 hex characters
+ * is rewritten to the attachment route, `/tracker/attachments/<hex>`: a
+ * same-origin path built from hex alone, which is all the rewrite can emit.
+ * Anything else is left as it was and meets the sanitiser like every other
+ * string. The rewrite happens on parsed tokens, before rendering, never on the
+ * HTML string, and the sanitiser still runs over the result.
+ *
+ * Opt-in, through the render environment, so ledger prose renders exactly as it
+ * always has: the ledger has no attachments.
+ */
+const ATTACHMENT = /^att:([0-9a-f]{12,64})$/i;
+
+/**
+ * Tracker documents link to each other as the repository's files did:
+ * `[music](m03-music.md)` (specs/tracker D4, m04 TC-02). **When the caller
+ * names the document being rendered**, a link target that resolves to a
+ * document path (`tracker/paths.ts`'s `resolveDocLink`: no scheme, no host,
+ * ending in `.md`) is rewritten to that document's page,
+ * `/projects/<project>/doc/<path>`. Like the attachment rewrite it works on
+ * parsed tokens, emits only a path built from encoded segments, and the
+ * sanitiser still runs over the result. Nothing else changes.
+ */
+/** The document being rendered, for resolving its relative links. */
+export interface DocumentLinks {
+  project: string;
+  /** The rendered document's own path, e.g. `specs/audio/master.md`. */
+  from: string;
+}
+
+interface RenderEnv {
+  attachments?: boolean;
+  documentLinks?: DocumentLinks;
+}
+
+type Rule = NonNullable<typeof md.renderer.rules.image>;
+
+function resolvingAttachment(attribute: 'src' | 'href', fallback: Rule | undefined): Rule {
+  return (tokens, index, options, env: RenderEnv, self) => {
+    const token = tokens[index]!;
+    const value = token.attrGet(attribute);
+    const match = env.attachments === true && value !== null ? ATTACHMENT.exec(value) : null;
+    if (match !== null) {
+      token.attrSet(attribute, `/tracker/attachments/${match[1]!.toLowerCase()}`);
+    } else if (attribute === 'href' && value !== null && env.documentLinks !== undefined) {
+      const resolved = resolveDocLink(env.documentLinks.from, value);
+      if (resolved !== null) {
+        token.attrSet(
+          'href',
+          `${docPath(env.documentLinks.project, resolved.path)}${resolved.fragment}`,
+        );
+      }
+    }
+    return fallback === undefined
+      ? self.renderToken(tokens, index, options)
+      : fallback(tokens, index, options, env, self);
+  };
+}
+
+md.renderer.rules.image = resolvingAttachment('src', md.renderer.rules.image);
+md.renderer.rules.link_open = resolvingAttachment('href', md.renderer.rules.link_open);
+
+/** What a caller may ask of the renderer. */
+export interface RenderOptions {
+  /** Resolve `att:` references to tracker attachments (see above). */
+  attachments?: boolean;
+  /** Resolve links to other tracker documents from this one (see above). */
+  documentLinks?: DocumentLinks;
+}
 
 /**
  * Markdown in, sanitised HTML out.
@@ -74,6 +159,10 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
  * MathML — because nothing the Markdown parser emits needs either, and a
  * profile that permits what cannot arrive is surface for no benefit.
  */
-export function renderMarkdown(source: string): string {
-  return DOMPurify.sanitize(md.render(source), { USE_PROFILES: { html: true } });
+export function renderMarkdown(source: string, options: RenderOptions = {}): string {
+  const env: RenderEnv = {
+    attachments: options.attachments === true,
+    ...(options.documentLinks === undefined ? {} : { documentLinks: options.documentLinks }),
+  };
+  return DOMPurify.sanitize(md.render(source, env), { USE_PROFILES: { html: true } });
 }

@@ -22,6 +22,9 @@ import { renderMarkdown } from '../markdown/render';
 
 vi.mock('markdown-it', () => ({
   default: class PassThroughParser {
+    // `render.ts` installs its `att:` rules on the renderer at import; the
+    // pass-through never calls them, so an empty table is all it needs.
+    renderer = { rules: {} };
     render(source: string): string {
       return source;
     }
