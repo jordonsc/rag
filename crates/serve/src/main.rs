@@ -18,9 +18,14 @@
 //! from (see [`prompts`]). They are the only routes here that **write a file**,
 //! on a service with no authentication, which is why the name validation in
 //! that module is as strict as it is.
+//!
+//! The tracker's routes (`/tracker/…`, the queue, specs, concepts, documents and
+//! attachments) live in [`tracker`], with their own state, and are merged in
+//! below. Their contract is `specs/tracker/api.md`.
 
 mod prompts;
 mod summarise;
+mod tracker;
 mod web;
 
 use std::path::PathBuf;
@@ -42,6 +47,7 @@ use rag_core::config::Config;
 use rag_core::ledger::{EventKind, LedgerStore, NewEvent, NewTopic, Status, TopicType};
 use rag_core::model::{Corpus, RankedHit, SearchFilters};
 use rag_core::retrieval::{RetrievalRequest, Retriever, Timings};
+use rag_core::tracker::TrackerStore;
 
 use crate::prompts::{PromptError, PromptLibrary, SavedPrompt};
 
@@ -86,6 +92,8 @@ struct AppState {
     /// default prompt is always available and needs no file; the two write
     /// routes answer 503, the same shape as `/reindex` without a trigger.
     prompts: Option<PromptLibrary>,
+    /// Whether the tracker store opened (its routes hold their own handle).
+    tracker_ready: bool,
 }
 
 impl AppState {
@@ -135,6 +143,10 @@ async fn main() -> anyhow::Result<()> {
         let t = cfg.server.ledger_reindex_trigger.trim();
         (!t.is_empty()).then(|| PathBuf::from(t))
     };
+    let tracker_trigger = {
+        let t = cfg.server.tracker_reindex_trigger.trim();
+        (!t.is_empty()).then(|| PathBuf::from(t))
+    };
 
     // The ledger is a local SQLite file; tolerate open failure (routes 503) so the
     // retrieval service stays up and `--check` works without a writable ledger dir.
@@ -179,6 +191,18 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // The tracker is a second SQLite file beside the ledger's, opened the same
+    // tolerant way: if it cannot open, its routes answer 503 and nothing else
+    // about the service changes.
+    let tracker = match TrackerStore::open(&cfg.tracker.db_path, &cfg.tracker.attachments_dir).await
+    {
+        Ok(t) => Some(t),
+        Err(e) => {
+            tracing::warn!(error = %e, path = %cfg.tracker.db_path.display(), "tracker unavailable — /tracker routes will 503");
+            None
+        }
+    };
+
     let state = Arc::new(AppState {
         retriever,
         cfg: cfg.clone(),
@@ -187,24 +211,10 @@ async fn main() -> anyhow::Result<()> {
         ledger_trigger,
         summariser,
         prompts,
+        tracker_ready: tracker.is_some(),
     });
 
-    let app = Router::new()
-        .route("/health", get(health))
-        .route("/info", get(info))
-        .route("/search", post(search))
-        .route("/reindex", post(reindex))
-        .route("/ledger", post(ledger_create))
-        .route("/ledger/search", post(ledger_search))
-        .route("/ledger/{id}", get(ledger_get))
-        .route("/ledger/{id}/append", post(ledger_append))
-        .route("/ledger/{id}/move", post(ledger_move))
-        .route("/ledger/{id}/archive", post(ledger_archive))
-        .route("/ledger/{id}/summarise", post(ledger_summarise))
-        .route("/prompts", get(prompts_list))
-        .route("/prompts/save", post(prompts_save))
-        .route("/prompts/delete", post(prompts_delete))
-        .with_state(state);
+    let app = api_router(state).merge(tracker::router(tracker, tracker_trigger));
 
     // The UI rides on the same port as the API — attached last, because it is a
     // fallback: it answers only what the routes above did not.
@@ -227,6 +237,27 @@ async fn main() -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
+}
+
+/// The service's own routes (everything but the tracker's and the web UI's),
+/// bound to their state. A function so the route tests drive the same table.
+fn api_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/info", get(info))
+        .route("/search", post(search))
+        .route("/reindex", post(reindex))
+        .route("/ledger", post(ledger_create))
+        .route("/ledger/search", post(ledger_search))
+        .route("/ledger/{id}", get(ledger_get))
+        .route("/ledger/{id}/append", post(ledger_append))
+        .route("/ledger/{id}/move", post(ledger_move))
+        .route("/ledger/{id}/archive", post(ledger_archive))
+        .route("/ledger/{id}/summarise", post(ledger_summarise))
+        .route("/prompts", get(prompts_list))
+        .route("/prompts/save", post(prompts_save))
+        .route("/prompts/delete", post(prompts_delete))
+        .with_state(state)
 }
 
 // ---- Handlers ---------------------------------------------------------------
@@ -327,7 +358,17 @@ async fn search(
 #[derive(Serialize)]
 struct InfoResponse {
     collection: String,
-    points: u64,
+    /// Points in the collection, or `null` when Qdrant could not be asked: it is
+    /// unreachable (see `qdrant_error`), or this server has no retriever (check
+    /// mode without a Voyage key). Never a guessed `0` — an empty collection and
+    /// a Qdrant that did not answer are different outages.
+    points: Option<u64>,
+    /// Why `points` is `null` when Qdrant was asked and failed; `null` otherwise.
+    ///
+    /// The route stays 200 in that case (rag-t0001): the readiness fields below
+    /// are exactly what an operator wants during a Qdrant outage, and the ledger
+    /// and the tracker work without Qdrant.
+    qdrant_error: Option<String>,
     embed_model: String,
     rerank_model: String,
     dimensions: u32,
@@ -347,22 +388,31 @@ struct InfoResponse {
     /// The default instruction, so the editable prompt box is prefilled from the
     /// single source of truth instead of a second copy written in TypeScript.
     summarise_system_prompt: &'static str,
+    /// Whether the tracker store opened, i.e. whether the `/tracker/…` routes
+    /// will do anything but 503.
+    tracker_ready: bool,
 }
 
-async fn info(State(state): State<Arc<AppState>>) -> Result<Json<InfoResponse>, ApiError> {
+/// `GET /info`. Always 200: a Qdrant that cannot be reached is reported as
+/// `points: null` with `qdrant_error`, not as a failed route. The Qdrant client's
+/// own request timeout bounds how long an unreachable host can hold this up.
+async fn info(State(state): State<Arc<AppState>>) -> Json<InfoResponse> {
     let cfg = &state.cfg;
-    let points = match &state.retriever {
-        Some(r) => r
-            .store()
-            .points_count()
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?,
-        None => 0,
+    let (points, qdrant_error) = match &state.retriever {
+        Some(r) => match r.store().points_count().await {
+            Ok(n) => (Some(n), None),
+            Err(e) => {
+                tracing::warn!(error = %e, url = %cfg.qdrant.url, "GET /info: Qdrant unreachable — points reported as null");
+                (None, Some(e.to_string()))
+            }
+        },
+        None => (None, None),
     };
 
-    Ok(Json(InfoResponse {
+    Json(InfoResponse {
         collection: cfg.qdrant.collection.clone(),
         points,
+        qdrant_error,
         embed_model: cfg.voyage.embed_model.clone(),
         rerank_model: cfg.voyage.rerank_model.clone(),
         dimensions: cfg.voyage.dimensions,
@@ -374,7 +424,8 @@ async fn info(State(state): State<Arc<AppState>>) -> Result<Json<InfoResponse>, 
         summarise_models: anthropic::ALLOWED_MODELS,
         summarise_default_model: anthropic::DEFAULT_MODEL,
         summarise_system_prompt: anthropic::DEFAULT_SYSTEM_PROMPT,
-    }))
+        tracker_ready: state.tracker_ready,
+    })
 }
 
 /// `POST /reindex` — trigger an immediate corpus re-index by writing the trigger
@@ -1018,7 +1069,7 @@ fn parse_filters(f: Option<FilterBody>) -> Result<SearchFilters, ApiError> {
         None => None,
         Some(name) => Some(Corpus::from_name(name).ok_or_else(|| {
             ApiError::BadRequest(format!(
-                "invalid corpus {name:?} (expected \"code\", \"wiki\" or \"ledger\")"
+                "invalid corpus {name:?} (expected \"code\", \"wiki\", \"ledger\" or \"tracker\")"
             ))
         })?),
     };
@@ -1062,4 +1113,109 @@ impl IntoResponse for ApiError {
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
     tracing::info!("shutdown signal received");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn corpus(name: &str) -> Result<SearchFilters, ApiError> {
+        parse_filters(Some(FilterBody {
+            corpus: Some(name.into()),
+            repo: None,
+            language: None,
+            path_prefix: None,
+        }))
+    }
+
+    /// `POST /search` takes `corpus: "tracker"` (m05 TS-02), beside the others.
+    #[test]
+    fn search_filters_accept_every_corpus_and_refuse_others() {
+        for c in [Corpus::Code, Corpus::Wiki, Corpus::Ledger, Corpus::Tracker] {
+            assert_eq!(corpus(c.as_str()).ok().and_then(|f| f.corpus), Some(c));
+        }
+        match corpus("trackers") {
+            Err(ApiError::BadRequest(m)) => assert!(m.contains("\"tracker\""), "{m}"),
+            _ => panic!("an unknown corpus must be a 400"),
+        }
+    }
+
+    // ---- GET /info (rag-t0001) ----------------------------------------------
+
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use rag_core::qdrant::VectorStore;
+    use rag_core::voyage::VoyageClient;
+    use tower::ServiceExt;
+
+    /// A state with every optional part off but the retriever, which the caller
+    /// chooses. `tracker_ready` is true so the test sees it survive the outage.
+    fn info_state(retriever: Option<Retriever>, cfg: Config) -> Arc<AppState> {
+        Arc::new(AppState {
+            retriever,
+            cfg,
+            reindex_trigger: None,
+            ledger: None,
+            ledger_trigger: None,
+            summariser: None,
+            prompts: None,
+            tracker_ready: true,
+        })
+    }
+
+    async fn get_info(state: Arc<AppState>) -> (StatusCode, serde_json::Value) {
+        let req = Request::get("/info").body(Body::empty()).unwrap();
+        let res = api_router(state).oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let body = serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| panic!("not JSON ({status}): {}", String::from_utf8_lossy(&bytes)));
+        (status, body)
+    }
+
+    /// A URL nothing listens on: bind an ephemeral port, then release it, so a
+    /// connection to it is refused at once rather than timing out.
+    fn unreachable_url() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        format!("http://127.0.0.1:{port}")
+    }
+
+    /// The acceptance: Qdrant down is `points: null` and a reason, at 200, with
+    /// the readiness fields intact. Before the fix this route answered 500.
+    #[tokio::test]
+    async fn info_is_200_with_null_points_when_qdrant_is_unreachable() {
+        let mut cfg = Config::default();
+        cfg.qdrant.url = unreachable_url();
+        let store = VectorStore::connect(&cfg.qdrant.url, &cfg.qdrant.collection, None).unwrap();
+        let voyage = VoyageClient::new(cfg.voyage.clone(), "test-key".into()).unwrap();
+        let retriever = Retriever::new(store, voyage, 50, 8, 1.0);
+
+        let (status, body) = get_info(info_state(Some(retriever), cfg.clone())).await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["points"].is_null(), "{body}");
+        let reason = body["qdrant_error"].as_str().unwrap_or_default();
+        assert!(!reason.is_empty(), "qdrant_error must say why: {body}");
+        assert_eq!(body["retrieval_ready"], true);
+        assert_eq!(body["summarise_ready"], false);
+        assert_eq!(body["tracker_ready"], true);
+        assert_eq!(body["qdrant_url"], cfg.qdrant.url.as_str());
+        assert_eq!(body["collection"], cfg.qdrant.collection.as_str());
+    }
+
+    /// Without a retriever Qdrant was never asked: `points` is `null` (not a
+    /// made-up 0) and there is no error to report.
+    #[tokio::test]
+    async fn info_reports_null_points_and_no_error_without_a_retriever() {
+        let (status, body) = get_info(info_state(None, Config::default())).await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["points"].is_null(), "{body}");
+        assert!(body["qdrant_error"].is_null(), "{body}");
+        assert_eq!(body["retrieval_ready"], false);
+        assert_eq!(body["tracker_ready"], true);
+    }
 }

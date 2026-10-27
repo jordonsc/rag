@@ -13,6 +13,7 @@ pub mod model;
 pub mod qdrant;
 pub mod retrieval;
 pub mod telemetry;
+pub mod tracker;
 pub mod voyage;
 
 pub use error::{Error, Result};

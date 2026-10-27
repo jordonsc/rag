@@ -4,7 +4,7 @@
 -include deploy/deploy.env
 DEPLOY_HOST ?= your-server
 
-.PHONY: build check fmt fmt-check clippy test run-ingest run-serve run-mcp reindex reconcile-ledger all
+.PHONY: build check fmt fmt-check clippy test run-ingest run-serve run-mcp reindex reconcile-ledger reconcile-tracker all
 
 all: fmt-check clippy test
 
@@ -43,3 +43,8 @@ reindex:
 # rag-serve also fires this automatically after each ledger write).
 reconcile-ledger:
 	ssh $(DEPLOY_HOST) systemctl --user start rag-ledger-sync.service && echo "ledger reconcile triggered"
+
+# Trigger an immediate tracker reconcile (corpus = tracker) on the server (the timer otherwise
+# runs every 15 min; rag-serve also fires this automatically after each tracker write).
+reconcile-tracker:
+	ssh $(DEPLOY_HOST) systemctl --user start rag-tracker-sync.service && echo "tracker reconcile triggered"

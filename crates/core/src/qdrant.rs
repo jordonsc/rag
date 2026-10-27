@@ -17,11 +17,13 @@ use qdrant_client::{Payload, Qdrant};
 
 use crate::config::QdrantConfig;
 use crate::error::{Error, Result};
-use crate::model::{Chunk, Corpus, LedgerPoint, SearchFilters, SearchHit};
+use crate::model::{Chunk, Corpus, LedgerPoint, SearchFilters, SearchHit, TrackerPoint};
 
 /// Payload fields that get a keyword index (the ⛁ fields in the data model).
-/// `type`/`status`/`topic_id` are ledger-only filters (and `topic_id` backs
-/// the per-topic delete during reconcile).
+/// `type`/`status` filter ledger topics and tracker items; `topic_id` backs the
+/// per-topic delete of the ledger reconcile and `tracker_id` the per-unit delete
+/// of the tracker reconcile. `rag-ingest init` adds a missing one to an existing
+/// collection (deploy step 4).
 const INDEXED_FIELDS: &[&str] = &[
     "corpus",
     "repo",
@@ -31,7 +33,13 @@ const INDEXED_FIELDS: &[&str] = &[
     "type",
     "status",
     "topic_id",
+    "tracker_id",
 ];
+
+/// The corpora whose points come from files (`path` + `file_hash`), i.e. the
+/// ones the corpus sync owns. The ledger and the tracker are reconciled from
+/// their own SQLite stores and must never be purged by the sync.
+const FILE_CORPORA: &[Corpus] = &[Corpus::Code, Corpus::Wiki];
 
 const API_KEY_ENV: &str = "QDRANT_API_KEY";
 
@@ -263,9 +271,21 @@ impl VectorStore {
         Ok(())
     }
 
-    /// Delete all points belonging to a repo (used to purge archived/removed repos).
+    /// Delete a repo's **file** points (`code`/`wiki`), used by the corpus sync to
+    /// purge archived/removed repos. The ledger's and the tracker's points for a
+    /// project of the same name are left alone: they come from their own stores,
+    /// and purging them here would only make their reconcile re-embed them on its
+    /// next run, every run.
     pub async fn delete_by_repo(&self, repo: &str) -> Result<()> {
-        self.delete_by_field("repo", repo).await
+        self.client
+            .delete_points(
+                DeletePointsBuilder::new(&self.collection)
+                    .points(repo_files_filter(repo))
+                    .wait(true),
+            )
+            .await
+            .map_err(|e| Error::Qdrant(e.to_string()))?;
+        Ok(())
     }
 
     async fn delete_by_field(&self, field: &str, value: &str) -> Result<()> {
@@ -370,6 +390,89 @@ impl VectorStore {
         self.delete_by_field("topic_id", topic_id).await
     }
 
+    /// Upsert tracker points with their embeddings. `points[i]` pairs with `vectors[i]`.
+    pub async fn upsert_tracker_points(
+        &self,
+        points: &[TrackerPoint],
+        vectors: &[Vec<f32>],
+    ) -> Result<()> {
+        let mut out = Vec::with_capacity(points.len());
+        for (point, vector) in points.iter().zip(vectors) {
+            let value = serde_json::to_value(&point.payload)?;
+            let payload = Payload::try_from(value)
+                .map_err(|e| Error::Qdrant(format!("payload conversion: {e}")))?;
+            out.push(PointStruct::new(
+                point.id.to_string(),
+                vector.clone(),
+                payload,
+            ));
+        }
+        self.client
+            .upsert_points(UpsertPointsBuilder::new(&self.collection, out).wait(true))
+            .await
+            .map_err(|e| Error::Qdrant(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Snapshot of indexed tracker units: `tracker_id -> tracker_hash` (one entry
+    /// per document or item, deduped across a document's chunks; a unit whose
+    /// points disagree maps to [`MIXED_HASH`]). Drives the tracker reconcile diff.
+    pub async fn tracker_unit_hashes(&self) -> Result<HashMap<String, String>> {
+        let filter = Filter::must([Condition::matches(
+            "corpus",
+            Corpus::Tracker.as_str().to_string(),
+        )]);
+        let mut map = HashMap::new();
+        let mut offset = None;
+        loop {
+            let include = SelectorOptions::Include(PayloadIncludeSelector {
+                fields: vec!["tracker_id".to_string(), "tracker_hash".to_string()],
+            });
+            let mut builder = ScrollPointsBuilder::new(&self.collection)
+                .limit(2048)
+                .with_payload(include)
+                .with_vectors(false)
+                .filter(filter.clone());
+            if let Some(o) = offset.take() {
+                builder = builder.offset(o);
+            }
+            let resp = self
+                .client
+                .scroll(builder)
+                .await
+                .map_err(|e| Error::Qdrant(e.to_string()))?;
+            for point in resp.result {
+                let id = payload_str(&point.payload, "tracker_id");
+                let hash = payload_str(&point.payload, "tracker_hash");
+                if let (Some(i), Some(h)) = (id, hash) {
+                    note_hash(&mut map, i, h);
+                }
+            }
+            match resp.next_page_offset {
+                Some(o) => offset = Some(o),
+                None => break,
+            }
+        }
+        Ok(map)
+    }
+
+    /// Delete a tracker unit's points that do not carry `keep_hash` — the stale
+    /// chunks of an earlier revision, removed only after the new points are
+    /// written (the same write-then-prune order as the corpus and the ledger).
+    pub async fn delete_tracker_except_hash(
+        &self,
+        tracker_id: &str,
+        keep_hash: &str,
+    ) -> Result<()> {
+        self.delete_except("tracker_id", tracker_id, "tracker_hash", keep_hash)
+            .await
+    }
+
+    /// Delete every point of one tracker unit.
+    pub async fn delete_by_tracker_id(&self, tracker_id: &str) -> Result<()> {
+        self.delete_by_field("tracker_id", tracker_id).await
+    }
+
     /// Unfiltered vector search returning the top `limit` hits with provenance.
     pub async fn search(&self, vector: Vec<f32>, limit: u64) -> Result<Vec<SearchHit>> {
         self.search_filtered(vector, limit, &SearchFilters::default())
@@ -398,23 +501,49 @@ impl VectorStore {
         Ok(resp
             .result
             .into_iter()
-            .map(|p| SearchHit {
-                score: p.score,
-                corpus: payload_str(&p.payload, "corpus").unwrap_or_default(),
-                repo: payload_str(&p.payload, "repo").unwrap_or_default(),
-                path: payload_str(&p.payload, "path").unwrap_or_default(),
-                rel_path: payload_str(&p.payload, "rel_path").unwrap_or_default(),
-                language: payload_str(&p.payload, "language").unwrap_or_default(),
-                start_line: payload_int(&p.payload, "start_line") as u32,
-                end_line: payload_int(&p.payload, "end_line") as u32,
-                text: payload_str(&p.payload, "text").unwrap_or_default(),
-                topic_id: payload_str(&p.payload, "topic_id"),
-                topic_type: payload_str(&p.payload, "type"),
-                status: payload_str(&p.payload, "status"),
-                title: payload_str(&p.payload, "title"),
-            })
+            .map(|p| hit_from_payload(p.score, &p.payload))
             .collect())
     }
+}
+
+/// Map one search result's payload to a hit. Every corpus's fields are read by
+/// name; a field a corpus does not carry comes back `None` (or empty), so one
+/// mapping serves code, wiki, ledger and tracker points.
+fn hit_from_payload(score: f32, p: &HashMap<String, Value>) -> SearchHit {
+    SearchHit {
+        score,
+        corpus: payload_str(p, "corpus").unwrap_or_default(),
+        repo: payload_str(p, "repo").unwrap_or_default(),
+        path: payload_str(p, "path").unwrap_or_default(),
+        rel_path: payload_str(p, "rel_path").unwrap_or_default(),
+        language: payload_str(p, "language").unwrap_or_default(),
+        start_line: payload_int(p, "start_line") as u32,
+        end_line: payload_int(p, "end_line") as u32,
+        text: payload_str(p, "text").unwrap_or_default(),
+        topic_id: payload_str(p, "topic_id"),
+        topic_type: payload_str(p, "type"),
+        status: payload_str(p, "status"),
+        title: payload_str(p, "title"),
+        citation: payload_str(p, "citation"),
+        tracker_id: payload_str(p, "tracker_id"),
+        kind: payload_str(p, "kind"),
+        revision: p.get("revision").and_then(|v| match v.kind.as_ref() {
+            Some(Kind::IntegerValue(i)) => Some(*i),
+            _ => None,
+        }),
+    }
+}
+
+/// `repo == repo AND corpus IN (code, wiki)`: a repo's file points only.
+fn repo_files_filter(repo: &str) -> Filter {
+    let corpora: Vec<String> = FILE_CORPORA
+        .iter()
+        .map(|c| c.as_str().to_string())
+        .collect();
+    Filter::must([
+        Condition::matches("repo", repo.to_string()),
+        Condition::matches("corpus", corpora),
+    ])
 }
 
 /// Build an optional Qdrant filter from search filters (the indexed fields only;
@@ -499,6 +628,62 @@ mod tests {
         note_hash(&mut map, "a".into(), "h1".into());
         assert_eq!(map["a"], MIXED_HASH);
         assert_eq!(map["b"], "h2");
+    }
+
+    #[test]
+    fn a_repo_purge_never_reaches_the_ledger_or_the_tracker() {
+        let dbg = format!("{:?}", repo_files_filter("ubu"));
+        assert!(dbg.contains("\"ubu\""));
+        assert!(dbg.contains("\"code\"") && dbg.contains("\"wiki\""));
+        assert!(!dbg.contains("ledger") && !dbg.contains("tracker"));
+    }
+
+    /// A tracker payload, written as `upsert_tracker_points` writes it, reads back
+    /// as a hit carrying its citation, id, kind, revision, title and line range.
+    #[test]
+    fn a_tracker_payload_maps_to_a_cited_hit() {
+        use crate::model::TrackerPayload;
+        let payload = TrackerPayload {
+            corpus: Corpus::Tracker,
+            repo: "ubu".into(),
+            rel_path: "concepts/power.md".into(),
+            language: "markdown".into(),
+            tracker_id: "ubu-d0003".into(),
+            point_kind: "document".into(),
+            kind: "concept".into(),
+            item_type: None,
+            status: None,
+            title: "Power".into(),
+            revision: Some(4),
+            citation: "ubu:concepts/power.md@r4".into(),
+            chunk_index: 1,
+            start_line: 12,
+            end_line: 30,
+            text: "a solar film on the roof".into(),
+            content_hash: "c".into(),
+            tracker_hash: "h".into(),
+        };
+        let qp = Payload::try_from(serde_json::to_value(&payload).unwrap()).unwrap();
+        let map: HashMap<String, Value> = qp.into();
+        let hit = hit_from_payload(0.5, &map);
+        assert_eq!(hit.corpus, "tracker");
+        assert_eq!(hit.repo, "ubu");
+        assert_eq!(hit.rel_path, "concepts/power.md");
+        assert_eq!(hit.citation.as_deref(), Some("ubu:concepts/power.md@r4"));
+        assert_eq!(hit.tracker_id.as_deref(), Some("ubu-d0003"));
+        assert_eq!(hit.kind.as_deref(), Some("concept"));
+        assert_eq!(hit.revision, Some(4));
+        assert_eq!(hit.title.as_deref(), Some("Power"));
+        assert_eq!((hit.start_line, hit.end_line), (12, 30));
+        assert_eq!(hit.path, "", "a tracker point has no file path");
+        assert_eq!(hit.topic_type, None);
+        // A code payload carries none of the tracker fields.
+        let code = Payload::try_from(serde_json::json!({
+            "corpus": "code", "repo": "r", "path": "/p", "rel_path": "p", "text": "x"
+        }))
+        .unwrap();
+        let hit = hit_from_payload(0.1, &code.into());
+        assert!(hit.citation.is_none() && hit.tracker_id.is_none() && hit.revision.is_none());
     }
 
     #[test]

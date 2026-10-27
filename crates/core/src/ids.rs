@@ -29,9 +29,33 @@ pub fn ledger_event_id(topic_id: &str, event_id: i64, chunk_index: u32) -> Uuid 
     Uuid::new_v5(&RAG_NAMESPACE, name.as_bytes())
 }
 
+/// Deterministic point ID for chunk `chunk_index` of a tracker unit (a document
+/// id like `ubu-d0007` or an item id like `ubu-t0042`). Keyed on the id, not the
+/// path, so a renamed document's new points overwrite its old ones in place.
+pub fn tracker_point_id(tracker_id: &str, chunk_index: u32) -> Uuid {
+    let name = format!("tracker:{tracker_id}#{chunk_index}");
+    Uuid::new_v5(&RAG_NAMESPACE, name.as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tracker_ids_are_stable_and_distinct_from_ledger_ids() {
+        assert_eq!(
+            tracker_point_id("ubu-d0001", 0),
+            tracker_point_id("ubu-d0001", 0)
+        );
+        assert_ne!(
+            tracker_point_id("ubu-d0001", 0),
+            tracker_point_id("ubu-d0001", 1)
+        );
+        assert_ne!(
+            tracker_point_id("ubu-t0001", 0),
+            ledger_topic_id("ubu-t0001")
+        );
+    }
 
     #[test]
     fn stable_across_calls() {

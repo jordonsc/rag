@@ -53,7 +53,7 @@ use crate::ApiError;
 /// never served from disk and never falls back to `index.html` — an unmatched
 /// path here is a 404 with a JSON body, the same as every other API error.
 const API_PREFIXES: &[&str] = &[
-    "/health", "/info", "/search", "/reindex", "/ledger", "/prompts",
+    "/health", "/info", "/search", "/reindex", "/ledger", "/prompts", "/tracker",
 ];
 
 /// The document policy for the one response that carries ledger prose.
@@ -456,6 +456,9 @@ mod tests {
             "/prompts",
             "/prompts/save",
             "/prompts/delete",
+            "/tracker",
+            "/tracker/ubu",
+            "/tracker/items/ubu-t0001/move",
         ] {
             assert!(is_api_path(path), "{path} belongs to the API");
         }
@@ -464,6 +467,8 @@ mod tests {
             "/healthz",
             "/ledgers",
             "/promptsy",
+            "/trackers",
+            "/projects/ubu",
             "/topic/rag-0042",
             "/assets/x.js",
         ] {

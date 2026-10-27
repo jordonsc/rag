@@ -15,6 +15,9 @@ pub enum Corpus {
     Wiki,
     /// The decision/incident ledger (derived from the SQLite source of truth).
     Ledger,
+    /// The tracker's documents and queue items (derived from `tracker.db`;
+    /// `specs/tracker/master.md` D13).
+    Tracker,
 }
 
 impl Corpus {
@@ -23,6 +26,7 @@ impl Corpus {
             Corpus::Code => "code",
             Corpus::Wiki => "wiki",
             Corpus::Ledger => "ledger",
+            Corpus::Tracker => "tracker",
         }
     }
 
@@ -32,6 +36,7 @@ impl Corpus {
             "code" => Some(Corpus::Code),
             "wiki" => Some(Corpus::Wiki),
             "ledger" => Some(Corpus::Ledger),
+            "tracker" => Some(Corpus::Tracker),
             _ => None,
         }
     }
@@ -128,10 +133,87 @@ pub struct LedgerPoint {
     pub payload: LedgerPayload,
 }
 
+/// Whether a tracker point is a chunk of a document or a whole queue item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrackerPointKind {
+    Document,
+    Item,
+}
+
+impl TrackerPointKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TrackerPointKind::Document => "document",
+            TrackerPointKind::Item => "item",
+        }
+    }
+}
+
+/// The payload stored alongside a tracker vector in Qdrant, in the same
+/// `rag_corpus` collection, distinguished by `corpus = tracker`.
+///
+/// A *unit* is what is replaced together: one document (all its chunks) or one
+/// item (one point). `tracker_id` names the unit (`ubu-d0007`, `ubu-t0042`) and
+/// `tracker_hash` is its whole content hash, which drives the reconcile diff, as
+/// `topic_id`/`topic_hash` do for the ledger. There is deliberately **no `path` or
+/// `file_hash`**: those are the corpus sync's keys, and a point carrying them would
+/// look like a deleted file to an unscoped `rag-ingest run`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackerPayload {
+    /// Always [`Corpus::Tracker`].
+    pub corpus: Corpus,
+    /// The project (a repository name), so `repo` filters work across corpora.
+    pub repo: String,
+    /// The document's path within its project (`specs/tracker/master.md`), or an
+    /// item's id. Cited, and what `path_prefix` filters on.
+    pub rel_path: String,
+    /// Always `markdown`: documents and item bodies are markdown.
+    pub language: String,
+    /// The unit: a document id (`ubu-d0007`) or an item id (`ubu-t0042`).
+    pub tracker_id: String,
+    /// `document` | `item`.
+    pub point_kind: String,
+    /// A document's kind (`spec`, `milestone`, `concept`, `doc`), or `item`.
+    pub kind: String,
+    /// An item's type (`dev`, `design`, …); absent on documents.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub item_type: Option<String>,
+    /// An item's status; absent on documents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// The document's or item's title.
+    pub title: String,
+    /// The document revision this chunk is from; absent on items.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<i64>,
+    /// `<project>:<path>@r<revision>` for a document, the item id for an item.
+    pub citation: String,
+    /// Ordinal of this chunk within its unit.
+    pub chunk_index: u32,
+    /// 1-based inclusive line range within the document body (`0` on items).
+    pub start_line: u32,
+    pub end_line: u32,
+    /// The embedded text.
+    pub text: String,
+    /// Hash of this point's `text`.
+    pub content_hash: String,
+    /// Hash of the whole unit's content — drives the reconcile diff.
+    pub tracker_hash: String,
+}
+
+/// A tracker point paired with its deterministic Qdrant point ID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackerPoint {
+    pub id: Uuid,
+    pub payload: TrackerPayload,
+}
+
 /// A retrieval result: a chunk with its similarity score and provenance.
 ///
-/// The `topic_*`/`status`/`title` fields are populated only for `corpus = ledger`
-/// hits; they are `None`/empty for code and wiki hits.
+/// The `topic_*` fields are populated only for `corpus = ledger` hits; `status`
+/// and `title` for ledger and tracker hits; `citation`, `tracker_id`, `kind` and
+/// `revision` for tracker hits. They are `None`/empty for code and wiki hits.
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchHit {
     pub score: f32,
@@ -157,6 +239,21 @@ pub struct SearchHit {
     /// serve that purpose (an event hit is mid-monologue prose, not a heading).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// How to cite a tracker hit (tracker hits only): `<project>:<path>@r<revision>`
+    /// for a document chunk, the item id for an item.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub citation: Option<String>,
+    /// The tracker document or item id (tracker hits only): what `tracker_get`
+    /// and `tracker_doc_get` take.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracker_id: Option<String>,
+    /// A tracker document's kind (`spec`, `milestone`, `concept`, `doc`) or `item`
+    /// (tracker hits only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// The tracker document revision the chunk is from (document hits only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<i64>,
 }
 
 /// Payload filters narrowing a search. `corpus`/`repo`/`language` map to Qdrant
@@ -168,9 +265,9 @@ pub struct SearchFilters {
     pub repo: Option<String>,
     pub language: Option<String>,
     pub path_prefix: Option<String>,
-    /// Ledger topic type filter (only meaningful with `corpus = ledger`).
+    /// The `type` payload filter: a ledger topic's type or a tracker item's type.
     pub topic_type: Option<String>,
-    /// Ledger status filter (only meaningful with `corpus = ledger`).
+    /// The `status` payload filter: a ledger topic's or a tracker item's status.
     pub status: Option<String>,
 }
 
@@ -203,6 +300,21 @@ pub struct RankedHit {
     /// Ledger topic title (ledger hits only) — the display label for the hit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// How to cite a tracker hit (tracker hits only): `<project>:<path>@r<revision>`
+    /// for a document chunk, the item id for an item.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub citation: Option<String>,
+    /// The tracker document or item id (tracker hits only): what `tracker_get`
+    /// and `tracker_doc_get` take.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracker_id: Option<String>,
+    /// A tracker document's kind (`spec`, `milestone`, `concept`, `doc`) or `item`
+    /// (tracker hits only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// The tracker document revision the chunk is from (document hits only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<i64>,
 }
 
 impl RankedHit {
@@ -223,6 +335,10 @@ impl RankedHit {
             topic_type: h.topic_type.clone(),
             status: h.status.clone(),
             title: h.title.clone(),
+            citation: h.citation.clone(),
+            tracker_id: h.tracker_id.clone(),
+            kind: h.kind.clone(),
+            revision: h.revision,
         }
     }
 }

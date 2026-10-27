@@ -1,6 +1,7 @@
 //! `rag-ingest` — corpus walk, chunk, embed, and index.
 //!
-//! Subcommands: `init` (Phase 02), `scan` (Phase 03), `run` + `query` (Phase 04).
+//! Subcommands: `init` (Phase 02), `scan` (Phase 03), `run` + `query` (Phase 04),
+//! `reconcile-ledger` and `reconcile-tracker` (the SQLite-backed corpora).
 
 mod breaker;
 mod chunker;
@@ -13,6 +14,7 @@ mod query;
 mod run;
 mod scan;
 mod source;
+mod tracker_reconcile;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use rag_core::config::Config;
@@ -77,6 +79,9 @@ enum Command {
     },
     /// Reconcile the Qdrant ledger index against the SQLite ledger (incremental).
     ReconcileLedger,
+    /// Reconcile the Qdrant tracker index (`corpus = tracker`: documents and queue
+    /// items) against the tracker's SQLite store (incremental).
+    ReconcileTracker,
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -141,6 +146,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Command::Query { text, limit }) => query::query(&cfg, &text, limit).await,
         Some(Command::ReconcileLedger) => ledger_reconcile::run(&cfg).await,
+        Some(Command::ReconcileTracker) => tracker_reconcile::run(&cfg).await,
         None => {
             tracing::info!(
                 code_root = %cfg.corpus.code_root.display(),

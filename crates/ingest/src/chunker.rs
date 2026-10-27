@@ -126,6 +126,27 @@ impl Chunker {
     }
 }
 
+impl Chunker {
+    /// As [`Chunker::chunk_text`], with each chunk's 1-based inclusive line range
+    /// in `text`. Used for tracker documents, whose hits cite a line range as code
+    /// hits do.
+    pub fn chunk_text_lines(&self, text: &str) -> anyhow::Result<Vec<(u32, u32, String)>> {
+        let config = ChunkConfig::new(self.max_chars)
+            .with_overlap(self.overlap_chars)
+            .context("invalid chunk overlap/capacity")?;
+        let starts = line_starts(text);
+        Ok(MarkdownSplitter::new(config)
+            .chunk_indices(text)
+            .filter(|(_, s)| !s.is_empty())
+            .map(|(offset, s)| {
+                let start = line_at(&starts, offset);
+                let end = line_at(&starts, offset + s.len() - 1).max(start);
+                (start, end, s.to_string())
+            })
+            .collect())
+    }
+}
+
 /// Byte offsets at which each line begins (line 1 begins at 0).
 fn line_starts(text: &str) -> Vec<usize> {
     let mut v = vec![0usize];
@@ -153,6 +174,24 @@ mod tests {
         assert_eq!(line_at(&s, 0), 1); // 'a'
         assert_eq!(line_at(&s, 2), 2); // first 'b'
         assert_eq!(line_at(&s, 5), 3); // first 'c'
+    }
+
+    #[test]
+    fn chunk_text_lines_reports_each_chunks_lines() {
+        let c = Chunker {
+            max_chars: 40,
+            overlap_chars: 0,
+        };
+        let text = "# One\n\nalpha beta gamma delta\n\n# Two\n\nepsilon zeta eta theta\n";
+        let chunks = c.chunk_text_lines(text).unwrap();
+        assert!(chunks.len() >= 2);
+        assert_eq!(chunks[0].0, 1);
+        let last = chunks.last().unwrap();
+        assert!(last.2.contains("theta"));
+        assert_eq!(last.1, 7, "the last chunk ends on the last line");
+        for (s, e, t) in &chunks {
+            assert!(s <= e && !t.is_empty());
+        }
     }
 
     #[test]

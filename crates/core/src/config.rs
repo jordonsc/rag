@@ -30,6 +30,9 @@ pub struct Config {
     pub github: GithubConfig,
     pub server: ServerConfig,
     pub ledger: LedgerConfig,
+    /// Absent from an older `rag.toml`, so defaulted rather than required.
+    #[serde(default)]
+    pub tracker: TrackerConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +140,12 @@ pub struct ServerConfig {
     /// a `.path` unit watches this file and starts `rag-ledger-sync.service`).
     #[serde(default)]
     pub ledger_reindex_trigger: String,
+    /// Path to a file the tracker write endpoints touch after a successful write to
+    /// trigger an immediate tracker reconcile (`corpus = tracker`). Empty disables
+    /// it (the default; in deployment `rag-tracker-reindex.path` watches this file
+    /// and starts `rag-tracker-sync.service`).
+    #[serde(default)]
+    pub tracker_reindex_trigger: String,
     /// Score multiplier applied to `corpus = ledger` hits before the top-k cut.
     /// 1.0 = neutral (default); < 1.0 demotes ledger results relative to code/wiki.
     #[serde(default = "default_ledger_weight")]
@@ -172,6 +181,28 @@ pub struct LedgerConfig {
     /// deployment this is a bind-mounted host path; in dev it defaults under
     /// `$HOME/rag/ledger`.
     pub db_path: PathBuf,
+}
+
+/// Configuration for the tracker (SQLite source of truth for a project's queue,
+/// specs and concepts, plus its attachments). See `specs/tracker/master.md` D1.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackerConfig {
+    /// SQLite database file, beside the ledger's but its own file, so a fault or a
+    /// restore of one never touches the other. Created if missing (WAL mode).
+    /// Defaults under `$HOME/rag/tracker`; the container sets `/tracker/tracker.db`.
+    pub db_path: PathBuf,
+    /// Directory attachments are stored under, by content hash
+    /// (`<sha256[0..2]>/<sha256>`). Created if missing.
+    pub attachments_dir: PathBuf,
+}
+
+impl Default for TrackerConfig {
+    fn default() -> Self {
+        TrackerConfig {
+            db_path: home_dir().join("rag/tracker/tracker.db"),
+            attachments_dir: home_dir().join("rag/tracker/attachments"),
+        }
+    }
 }
 
 impl Default for Config {
@@ -214,6 +245,7 @@ impl Default for Config {
                 default_top_k: 8,
                 reindex_trigger: String::new(),
                 ledger_reindex_trigger: String::new(),
+                tracker_reindex_trigger: String::new(),
                 ledger_weight: default_ledger_weight(),
                 web_root: String::new(),
                 prompts_dir: String::new(),
@@ -221,6 +253,7 @@ impl Default for Config {
             ledger: LedgerConfig {
                 db_path: home_dir().join("rag/ledger/ledger.db"),
             },
+            tracker: TrackerConfig::default(),
         }
     }
 }
@@ -259,12 +292,35 @@ mod tests {
         assert_eq!(cfg.server.web_root, "");
         assert_eq!(cfg.server.prompts_dir, "");
         assert_eq!(cfg.server.reindex_trigger, "");
+        assert_eq!(cfg.server.tracker_reindex_trigger, "");
         // The cost guards are on by default.
         assert_eq!(cfg.ingest.breaker_threshold, 3);
         assert!(cfg.ingest.min_chars_per_token > 1.0);
         assert!(cfg
             .breaker_path()
             .ends_with("rag/corpus/.rag-ingest-breaker.json"));
+        // The tracker lives beside the ledger, in its own directory.
+        assert!(cfg.tracker.db_path.ends_with("rag/tracker/tracker.db"));
+        assert!(cfg
+            .tracker
+            .attachments_dir
+            .ends_with("rag/tracker/attachments"));
+    }
+
+    #[test]
+    fn the_tracker_section_is_read_from_toml() {
+        let dir = std::env::temp_dir().join(format!("rag-cfg-tracker-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rag.toml");
+        std::fs::write(
+            &path,
+            "[tracker]\ndb_path = \"/t/tracker.db\"\nattachments_dir = \"/t/att\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(&path).expect("loads");
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(cfg.tracker.db_path, PathBuf::from("/t/tracker.db"));
+        assert_eq!(cfg.tracker.attachments_dir, PathBuf::from("/t/att"));
     }
 
     #[test]

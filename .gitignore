@@ -24,3 +24,6 @@ dist/
 # every indexed repo must never become committable. `.containerignore` already
 # excludes this — the two should agree.
 /corpus/
+
+# Python bytecode
+__pycache__/

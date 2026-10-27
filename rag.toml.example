@@ -71,6 +71,13 @@ default_top_k = 8
 # disables the endpoint. In the container deployment the unit sets this to
 # /triggers/reindex (a systemd .path unit watches it and starts rag-sync.service).
 reindex_trigger = ""
+# Files rag-serve touches after a ledger write and after a successful tracker write,
+# to start an immediate reconcile of `corpus = ledger` / `corpus = tracker`. Empty
+# disables them (the 15-min timers then keep the index current). The container
+# deployment sets /triggers/ledger-reindex and /triggers/tracker-reindex, watched by
+# rag-ledger-reindex.path and rag-tracker-reindex.path.
+ledger_reindex_trigger = ""
+tracker_reindex_trigger = ""
 # Directory holding the built ledger web UI (the `dist/` with index.html at its
 # root), served at / on the same port as the API. Empty disables it, and so does
 # a directory with no index.html — either way the JSON API is unaffected.
@@ -89,3 +96,14 @@ web_root = ""
 # ~/rag/prompts on the host — deliberately not ~/.config/rag/prompts, which is
 # where the secrets env file lives.
 prompts_dir = ""
+
+[tracker]
+# The tracker's SQLite store (specs/tracker): each project's queue, specs and concepts.
+# Its own file beside the ledger's, so a fault in or a restore of one never touches the
+# other. Created if missing (WAL mode). Defaults to $HOME/rag/tracker/tracker.db; the
+# container sets /tracker/tracker.db, bind-mounted from ~/rag/tracker on the host.
+# A store that cannot open is not fatal: the /tracker routes answer 503.
+db_path = "/path/to/rag/tracker/tracker.db"
+# Attachments (images and other files in tracker documents), stored by content hash as
+# <sha256[0..2]>/<sha256>. Created if missing. Defaults to $HOME/rag/tracker/attachments.
+attachments_dir = "/path/to/rag/tracker/attachments"
