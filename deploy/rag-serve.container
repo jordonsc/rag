@@ -16,7 +16,7 @@
 # no rebuild, no re-index, and no unit change here.
 
 [Unit]
-Description=RAG retrieval service (HTTP /search, /health, /info, ledger UI)
+Description=RAG retrieval service (HTTP /search, /health, /info, ledger, tracker, UI)
 After=network-online.target qdrant.service
 Wants=network-online.target
 # Retrieval is useless without the vector store; start after it.
@@ -50,6 +50,20 @@ Volume=%h/rag/ledger:/ledger:rw
 # library: the built-in default prompt is a constant in the binary and needs no file.
 Environment=RAG_SERVER__PROMPTS_DIR=/prompts
 Volume=%h/rag/prompts:/prompts:rw
+# The tracker (specs/tracker): its own SQLite store, beside the ledger's but a
+# separate file and a separate mount, so a fault in or a restore of one never touches
+# the other, plus its attachments stored by content hash. Source of truth for each
+# project's queue, specs and concepts, so it is backed up by backup-qdrant.sh like the
+# ledger. deploy.sh creates ~/rag/tracker/attachments. Without the mount the store
+# would land on the container's own filesystem and vanish with it.
+Environment=RAG_TRACKER__DB_PATH=/tracker/tracker.db
+Environment=RAG_TRACKER__ATTACHMENTS_DIR=/tracker/attachments
+Volume=%h/rag/tracker:/tracker:rw
+# After each successful tracker write, rag-serve touches /triggers/tracker-reindex;
+# rag-tracker-reindex.path watches it and runs rag-tracker-sync.service, which
+# reconciles `corpus = tracker` (the documents and items search_corpus finds). The
+# 15-min tracker timer is the backstop.
+Environment=RAG_SERVER__TRACKER_REINDEX_TRIGGER=/triggers/tracker-reindex
 # The built ledger web UI, baked into the image and served at / on this same port
 # (so there is no CORS to configure). An image without the bundle simply logs a
 # warning and serves the JSON API alone — the path is not required to exist.

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Back up the Qdrant `rag_corpus` collection (run on the server, or via
+# Back up the Qdrant `rag_corpus` collection, the ledger DB and the tracker DB
+# (run on the server, or via
 # `ssh <host> 'bash -s' < deploy/backup-qdrant.sh`).
 #
 # The index is rebuildable from GitHub source, but a snapshot saves a full
@@ -69,6 +70,32 @@ if [ -f "$LEDGER_DB" ]; then
     done
 else
     echo "  (no ledger.db yet — skipping)"
+fi
+
+# The tracker SQLite DB (specs/tracker) is the source of truth for every project's
+# queue, specs and concepts, which no longer live in their repositories: like the
+# ledger, it CANNOT be rebuilt from elsewhere. This is the interim same-box copy
+# until the off-box backup (tracker m06). Attachments are not copied: they are
+# content-addressed and never rewritten, so a second copy on the same disk guards
+# against nothing a disk failure would not take with it.
+echo "== backing up tracker SQLite =="
+TRACKER_DB="$HOME/rag/tracker/tracker.db"
+if [ -f "$TRACKER_DB" ]; then
+    tstamp="$(date -u +%Y%m%d%H%M%S 2>/dev/null || echo backup)"
+    tout="$OUT_DIR/tracker-${tstamp}.db"
+    if command -v sqlite3 >/dev/null 2>&1; then
+        sqlite3 "$TRACKER_DB" ".backup '$tout'"
+    else
+        cp -f "$TRACKER_DB" "$tout"
+        [ -f "$TRACKER_DB-wal" ] && cp -f "$TRACKER_DB-wal" "$tout-wal" || true
+        [ -f "$TRACKER_DB-shm" ] && cp -f "$TRACKER_DB-shm" "$tout-shm" || true
+    fi
+    echo "  saved: $tout ($(du -h "$tout" | cut -f1))"
+    ls -1t "$OUT_DIR/tracker-"*.db 2>/dev/null | tail -n +$((KEEP + 1)) | while read -r old; do
+        echo "  rm $old"; rm -f "$old" "$old-wal" "$old-shm"
+    done
+else
+    echo "  (no tracker.db yet — skipping)"
 fi
 
 echo "backup OK"

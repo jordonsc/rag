@@ -3,10 +3,11 @@
 #   ~/.config/containers/systemd/rag-mcp.container   on the server
 # then: systemctl --user daemon-reload && systemctl --user start rag-mcp.service
 #
-# A long-lived Streamable HTTP server that exposes BOTH MCP tool sets at once:
-#   POST :17794/corpus  -> search_corpus, reindex_corpus
-#   POST :17794/ledger  -> the ledger_* tools
-# so remote Claude Code clients register two URLs and need NO local binary. Each
+# A long-lived Streamable HTTP server that exposes EVERY MCP tool set at once:
+#   POST :17794/corpus   -> search_corpus, reindex_corpus
+#   POST :17794/ledger   -> the ledger_* tools
+#   POST :17794/tracker  -> the tracker_* tools (attachments as base64, <= 10 MB)
+# so remote Claude Code clients register URLs and need NO local binary. Each
 # request still forwards to rag-serve (localhost:17793), so the Voyage key never
 # leaves the server — same trust model as the stdio binary.
 #
@@ -15,11 +16,12 @@
 #
 # LEDGER IDENTITY: a shared HTTP server has no client git context, so ledger
 # writes attribute the author from RAG_EMAIL / RAG_AGENT below (fine for a
-# single-operator estate), and ledger_create needs an explicit `repo` arg. The
-# local stdio binary still captures the client's real git identity automatically.
+# single-operator estate), and ledger_create needs an explicit `repo` arg (every
+# tracker tool an explicit `project`). The local stdio binary still captures the
+# client's real git identity automatically.
 
 [Unit]
-Description=RAG MCP gateway (Streamable HTTP; /corpus + /ledger)
+Description=RAG MCP gateway (Streamable HTTP; /corpus + /ledger + /tracker)
 After=network-online.target rag-serve.service
 Wants=network-online.target
 # The gateway is a thin client of rag-serve; start after it.

@@ -112,6 +112,26 @@ systemctl --user start rag-sync.service     # run a sync now
 journalctl --user -u rag-sync.service -f
 ```
 
+## Ledger and tracker reconciles
+
+Two cheap, incremental jobs keep the SQLite-backed corpora in Qdrant current. Each diffs its store against the index
+and embeds only what changed; each has its own circuit breaker, kept beside its database.
+
+| | Ledger (`corpus = ledger`) | Tracker (`corpus = tracker`) |
+|---|---|---|
+| Command | `rag-ingest reconcile-ledger` | `rag-ingest reconcile-tracker` |
+| Units | `rag-ledger-sync.{service,timer}`, `rag-ledger-reindex.path` | `rag-tracker-sync.{service,timer}`, `rag-tracker-reindex.path` |
+| Trigger | `~/rag/triggers/ledger-reindex`, touched by `rag-serve` after each ledger write | `~/rag/triggers/tracker-reindex`, touched by `rag-serve` after each successful tracker write (`RAG_SERVER__TRACKER_REINDEX_TRIGGER`) |
+| Backstop | every 15 min at `:7/15` | every 15 min at `:11/15` |
+| Store | `~/rag/ledger` → `/ledger` | `~/rag/tracker` → `/tracker` |
+| Breaker | `~/rag/ledger/.rag-ledger-breaker.json` | `~/rag/tracker/.rag-tracker-breaker.json` |
+| Run now | `make reconcile-ledger` | `make reconcile-tracker` |
+
+The tracker reconcile indexes each document at its current revision (chunked; a hit cites
+`<project>:<path>@r<revision>`) and each queue item as one point (title, type, status, body and notes; a hit cites the
+item id). An edit, a rename or an item change replaces that unit's points; nothing of an old revision or an old path
+survives a run. The corpus sync never touches either corpus: its repo purge is limited to `code` and `wiki` points.
+
 ## Retrieval service
 
 `rag-serve` runs **on the server** as a rootless Quadlet container, host-networked so it binds `:17793` and reaches
@@ -125,7 +145,7 @@ web UI** at `/` on that same port, from a bundle baked into the image.
 | Secrets | `~/.config/rag/env` (`VOYAGE_API_KEY`; `QDRANT_API_KEY` and `ANTHROPIC_API_KEY` optional) |
 | Config | built-in defaults + `RAG_*` env (no `rag.toml` shipped); `RAG_QDRANT__URL=http://localhost:6334` |
 | Port | `17793` (host networking) |
-| Health | `GET /health` → `ok`; `GET /info` → collection stats + models + `retrieval_ready`/`summarise_ready` (no secrets) |
+| Health | `GET /health` → `ok`; `GET /info` → collection stats + models + `retrieval_ready`/`summarise_ready`/`tracker_ready` (no secrets); always 200, `points: null` + `qdrant_error` when Qdrant is unreachable |
 | Summarise | `POST /ledger/{id}/summarise` — needs `ANTHROPIC_API_KEY`; **optional**, and 503s without it. Nothing is cached: one billed call per press. |
 | Web UI | `http://<server>:17793/` — from `RAG_SERVER__WEB_ROOT=/usr/local/share/rag/web` |
 | Saved prompts | `GET /prompts`, `POST /prompts/save`, `POST /prompts/delete` — the Summarise tab's prompt library. `~/rag/prompts` → `/prompts` (`RAG_SERVER__PROMPTS_DIR`), one `.md` file per prompt. Unset/empty dir = only the built-in prompt; the write routes 503. |
@@ -156,6 +176,22 @@ locally with `cargo build --release -p rag-mcp`; register via `.mcp.json`). See 
 under `~/rag/backups`. Restore steps in [`RUNBOOK.md`](RUNBOOK.md). The index is also fully rebuildable from GitHub via
 `rag-sync` — a snapshot just skips the re-embed.
 
+The same script copies `~/rag/ledger/ledger.db` and `~/rag/tracker/tracker.db` (the tracker's store, bind-mounted into
+`rag-serve` at `/tracker`) beside the snapshots, keeping the last 7 of each, with `sqlite3 .backup` (install the
+`sqlite3` package: without it the copy is a raw one). `rag-backup.{service,timer}` runs it daily at 00:00 UTC. Neither
+database can be rebuilt, and this copy is on the same disk.
+
+**Off the box** (tracker m06): `deploy/backup-offbox.sh`, run nightly at 01:33 UTC by
+`rag-backup-offbox.{service,timer}`, uploads a `sqlite3 .backup` copy of each database (zstd-compressed, with a
+manifest of its sha256 and every table's row count) to `RAG_BACKUP__S3_URI` (`s3://rag-atlas-backups/atlas` on
+atlas: ap-southeast-4, private, versioned, 30-day noncurrent expiry), keeps 7 daily and 4 weekly copies of each, and
+syncs the tracker's attachments by hash. It authenticates with the host's AWS CLI profile
+(`RAG_BACKUP__AWS_PROFILE`, region `RAG_BACKUP__AWS_REGION`); no AWS key lives in `~/.config/rag/env`. Host needs:
+`aws` v2, `sqlite3`, `zstd`. `deploy.sh` installs both units and enables the timer only when `RAG_BACKUP__S3_URI` is
+set. `deploy/restore-offbox.sh DEST [STAMP]` fetches and verifies a copy into a scratch directory, and
+`deploy/test-offbox.sh` exercises both scripts against a throwaway prefix. Bucket settings, the restore procedure and
+the rehearsal: [`RUNBOOK.md`](RUNBOOK.md), "Off-box backups (S3)" and "Restore from S3".
+
 ## Collection bootstrap
 
 Created from the dev machine, idempotently:
@@ -165,4 +201,6 @@ cargo run -p rag-ingest -- init
 ```
 
 Vector size 1024 / cosine, int8 scalar quantization, payload indexes on
-`corpus`, `repo`, `path`, `language`, `content_hash`.
+`corpus`, `repo`, `path`, `language`, `content_hash`, and for the ledger and tracker
+`type`, `status`, `topic_id` and `tracker_id`. `init` adds any missing index to an
+existing collection, and `deploy.sh` runs it on every deploy.

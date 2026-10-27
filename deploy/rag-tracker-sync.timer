@@ -1,0 +1,17 @@
+# Backstop reconcile of the tracker index every 15 minutes, so a change that never
+# fired the trigger file (a manual SQL edit, a write while the path unit was down)
+# still converges. Offset from rag-sync.timer (:0/15) and rag-ledger-sync.timer
+# (:7/15) so no two embed at the same instant. Deploy to
+# ~/.config/systemd/user/rag-tracker-sync.timer
+# then: systemctl --user enable --now rag-tracker-sync.timer
+
+[Unit]
+Description=Reconcile the RAG tracker index every 15 minutes
+
+[Timer]
+OnCalendar=*:11/15
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

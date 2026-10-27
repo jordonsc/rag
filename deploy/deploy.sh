@@ -92,7 +92,7 @@ if [ "$LOCAL" = 1 ]; then
 fi
 
 echo "== 1/6  ship source -> $TARGET:$SRC_DIR =="
-run "mkdir -p ~/$SRC_DIR ~/.config/systemd/user ~/.config/containers/systemd ~/rag/triggers ~/rag/ledger ~/rag/prompts && touch ~/rag/triggers/reindex ~/rag/triggers/ledger-reindex"
+run "mkdir -p ~/$SRC_DIR ~/.config/systemd/user ~/.config/containers/systemd ~/rag/triggers ~/rag/ledger ~/rag/prompts ~/rag/tracker/attachments && touch ~/rag/triggers/reindex ~/rag/triggers/ledger-reindex ~/rag/triggers/tracker-reindex"
 # The image is built from this tree, so `web/` has to travel with the crates — the
 # SPA is compiled in a Node stage on the host, not shipped pre-built. What must NOT
 # travel is anything that build regenerates: node_modules (thousands of files, and
@@ -162,21 +162,33 @@ put .config/containers/systemd \
 put .config/systemd/user \
     deploy/rag-sync.service deploy/rag-sync.timer deploy/rag-reindex.path \
     deploy/rag-ledger-sync.service deploy/rag-ledger-sync.timer deploy/rag-ledger-reindex.path \
-    deploy/rag-backup.service deploy/rag-backup.timer
+    deploy/rag-tracker-sync.service deploy/rag-tracker-sync.timer deploy/rag-tracker-reindex.path \
+    deploy/rag-backup.service deploy/rag-backup.timer \
+    deploy/rag-backup-offbox.service deploy/rag-backup-offbox.timer
 run "systemctl --user daemon-reload"
 
-echo "== 4/6  ensure Qdrant payload indexes (idempotent; adds ledger type/status/topic_id) =="
+echo "== 4/6  ensure Qdrant payload indexes (idempotent; adds ledger type/status/topic_id, tracker_id) =="
 run "podman run --rm --network=host --pull=never \
     --env-file=\$HOME/.config/rag/env -e RAG_QDRANT__URL=http://localhost:6334 \
     $IMAGE rag-ingest init"
 
 echo "== 5/6  (re)start services =="
-# rag-serve + the MCP gateway pick up the new image; corpus + ledger timers and
-# trigger watchers are enabled.
+# rag-serve + the MCP gateway pick up the new image; corpus, ledger and tracker
+# timers and trigger watchers are enabled.
 # rag-serve + rag-mcp are Quadlet units enabled via their own [Install] section
 # (can't be `systemctl enable`d — they're generated), so just (re)start them.
 run "systemctl --user restart rag-serve.service rag-mcp.service && systemctl --user enable --now \
-    rag-sync.timer rag-reindex.path rag-ledger-sync.timer rag-ledger-reindex.path rag-backup.timer"
+    rag-sync.timer rag-reindex.path rag-ledger-sync.timer rag-ledger-reindex.path \
+    rag-tracker-sync.timer rag-tracker-reindex.path rag-backup.timer"
+# The off-box backup (tracker m06) is enabled only where it has somewhere to go: a
+# timer without RAG_BACKUP__S3_URI would just fail every night. It also needs the
+# host's aws CLI (with the profile named by RAG_BACKUP__AWS_PROFILE), sqlite3 and zstd.
+if run "grep -qs '^RAG_BACKUP__S3_URI=s3://..*' ~/.config/rag/env"; then
+    run "systemctl --user enable --now rag-backup-offbox.timer"
+    run "for t in aws sqlite3 zstd; do command -v \$t >/dev/null || echo \"WARNING: \$t is not installed; rag-backup-offbox will fail\"; done"
+else
+    echo "NOTE: RAG_BACKUP__S3_URI is not set in ~/.config/rag/env on $TARGET — rag-backup-offbox.timer NOT enabled (deploy/RUNBOOK.md, \"Off-box backups\")."
+fi
 
 echo "== 6/6  remove the superseded rag image =="
 # Only the image that was `:previous` before this deploy, and only if nothing still
@@ -188,10 +200,17 @@ run "podman image ls | grep -E 'localhost/rag' || true"
 
 echo
 echo "== health =="
-run "curl -fsS http://localhost:17793/health && echo && curl -fsS http://localhost:17793/info" || {
+info="$(run "curl -fsS http://localhost:17793/health && echo && curl -fsS http://localhost:17793/info")" || {
     echo "WARNING: /health or /info failed — check: ${LOG_HINT}journalctl --user -u rag-serve.service -n 50"
     exit 1
 }
+echo "$info"
+# /info stays 200 when Qdrant is unreachable and says so with `"points":null` and
+# a `qdrant_error` (rag-t0001). rag-serve is up, so this is not fatal — but
+# retrieval is down, so say it plainly rather than let a null scroll past.
+if printf '%s' "$info" | grep -q '"points":null'; then
+    echo "WARNING: rag-serve cannot count Qdrant points (\"points\": null) — retrieval is degraded; see qdrant_error above and: ${LOG_HINT}systemctl --user status qdrant.service"
+fi
 # MCP gateway liveness: a bare GET yields 4xx (no session) but proves it's listening.
 run "curl -s -o /dev/null -w 'rag-mcp /corpus -> HTTP %{http_code}\n' http://localhost:17794/corpus" || {
     echo "WARNING: rag-mcp gateway not answering — check: ${LOG_HINT}journalctl --user -u rag-mcp.service -n 50"

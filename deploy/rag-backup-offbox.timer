@@ -1,0 +1,19 @@
+# Nightly RAG off-box backup (tracker m06). Deploy to
+#   ~/.config/systemd/user/rag-backup-offbox.timer
+# then: systemctl --user enable --now rag-backup-offbox.timer
+
+[Unit]
+Description=Nightly RAG off-box backup to S3
+
+[Timer]
+# 01:33 UTC (atlas runs on UTC), clear of: the same-box rag-backup (00:00 + up to 15 min),
+# js_web's atlas-backup CronJobs (03:00), and the rag sync timers, which fire at minutes
+# 00/15/30/45 (rag-sync), 07/22/37/52 (rag-ledger-sync) and 11/26/41/56 (rag-tracker-sync).
+# The 2-minute jitter keeps it inside 01:33-01:35. Persistent catches a run missed while
+# the host was down.
+OnCalendar=*-*-* 01:33:00 UTC
+Persistent=true
+RandomizedDelaySec=2min
+
+[Install]
+WantedBy=timers.target

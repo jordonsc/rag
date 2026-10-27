@@ -1,0 +1,31 @@
+# RAG off-box backup (tracker m06): the tracker and ledger SQLite DBs and the tracker's
+# attachments to S3. Rootless user unit; deploy to ~/.config/systemd/user/rag-backup-offbox.service
+# Driven by rag-backup-offbox.timer (nightly). Runs deploy/backup-offbox.sh on the host:
+# a consistent `sqlite3 .backup` of each DB, zstd-compressed and uploaded with a manifest
+# (sha256 + row counts); attachments synced by hash; 7 daily + 4 weekly copies kept.
+#
+# Separate from rag-backup.service (the same-box copies under ~/rag/backups) so a
+# failed upload never costs the local copy, and the reverse.
+#
+# Config comes from ~/.config/rag/env, read by the script itself (not EnvironmentFile,
+# so a hand run behaves the same):
+#   RAG_BACKUP__S3_URI=s3://rag-atlas-backups/atlas      <-- REQUIRED
+#   RAG_BACKUP__AWS_PROFILE=default                      (an AWS CLI profile in ~/.aws)
+#   RAG_BACKUP__AWS_REGION=ap-southeast-4
+# No AWS keys in that file: this unit runs as the user, whose ~/.aws profile holds them.
+# Needs on the host: aws (CLI v2), sqlite3, zstd.
+#
+# A failed run exits non-zero: `systemctl --user status rag-backup-offbox.service`
+# shows it failed and `journalctl --user -u rag-backup-offbox.service` says why.
+
+[Unit]
+Description=RAG off-box backup (tracker + ledger DBs and attachments to S3)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash %h/rag/src/deploy/backup-offbox.sh
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=1800

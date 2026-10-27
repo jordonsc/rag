@@ -1,0 +1,20 @@
+# Watches the tracker reconcile trigger file; when rag-serve touches it (after any
+# successful tracker write), this starts rag-tracker-sync.service for an immediate
+# reconcile. Rootless user unit — deploy to
+#   ~/.config/systemd/user/rag-tracker-reindex.path
+# then: systemctl --user enable --now rag-tracker-reindex.path
+#
+# Activates the same oneshot the 15-min timer uses, so systemd serialises runs: a
+# burst of writes (a manager loading a project) never starts a reconciler per write.
+# A write landing while a run is in progress may join that run rather than start
+# another; the timer picks up whatever it missed.
+
+[Unit]
+Description=Watch the RAG tracker reconcile trigger file and run a reconcile
+
+[Path]
+PathModified=%h/rag/triggers/tracker-reindex
+Unit=rag-tracker-sync.service
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,32 @@
+# RAG tracker reconcile — make the Qdrant `corpus = tracker` points (the tracker's
+# documents and queue items) match the tracker's SQLite store. Cheap: an
+# incremental diff, embedding only what changed. Rootless user unit; deploy to
+# ~/.config/systemd/user/rag-tracker-sync.service. Driven by rag-tracker-sync.timer
+# (15-min backstop) and rag-tracker-reindex.path (fired by rag-serve after a tracker
+# write). Secrets come from ~/.config/rag/env (chmod 600): VOYAGE_API_KEY=...
+#
+# The tracker DB is mounted read-write (SQLite in WAL mode needs to write its -shm
+# file even to read); the reconcile itself only reads it. Its circuit-breaker state,
+# .rag-tracker-breaker.json, lives beside tracker.db on the same mount.
+
+[Unit]
+Description=RAG tracker reconcile (SQLite -> Qdrant)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# `--replace`: a container left behind by a killed run otherwise holds the name,
+# and every later run exits 125 without doing anything. systemd serialises this
+# oneshot, so nothing live is replaced.
+ExecStart=/usr/bin/podman run --rm --replace --name rag-tracker-sync \
+    --pull=never \
+    --network=host \
+    --env-file=%h/.config/rag/env \
+    -e RAG_QDRANT__URL=http://localhost:6334 \
+    -e RAG_TRACKER__DB_PATH=/tracker/tracker.db \
+    -e RAG_TRACKER__ATTACHMENTS_DIR=/tracker/attachments \
+    -e RUST_LOG=info \
+    -v %h/rag/tracker:/tracker:rw \
+    localhost/rag:latest rag-ingest reconcile-tracker
+TimeoutStartSec=600
