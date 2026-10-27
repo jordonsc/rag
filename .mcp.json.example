@@ -1,9 +1,9 @@
 {
-  "//": "Register the RAG MCP servers with Claude Code. TWO transports — pick one. Both are thin clients of rag-serve (which holds the Voyage key server-side); NO API key here. 'rag' = search_corpus/reindex_corpus; 'ledger' = ledger_search/get/create/append/move/archive.",
+  "//": "Register the RAG MCP servers with Claude Code. TWO transports — pick one. Both are thin clients of rag-serve (which holds the Voyage key server-side); NO API key here. 'rag' = search_corpus/reindex_corpus; 'ledger' = ledger_search/get/create/append/move/archive; 'tracker' = tracker_queue/list/get/create/update/move/doc_get/doc_edit/attach/attachment_get/ack_done (the project queue, specs and concepts).",
 
-  "// stdio (per-client subprocess)": "Build first: `cargo build --release -p rag-mcp`, then set the command path to your checkout. ONE binary, two servers via --server so tool-use history reads 'Calling rag…' vs 'Calling ledger…'. Captures the client's git identity automatically (creator email + repo come from git). Leave RAG_AGENT as 'Unknown': no static value can name the calling model - one process serves a whole session including subagents on other models - so agents pass `agent` per call, and this env is the marker for a write that did not.",
+  "// stdio (per-client subprocess)": "Build first: `cargo build --release -p rag-mcp`, then set the command path to your checkout. ONE binary, three servers via --server so tool-use history reads 'Calling rag…', 'Calling ledger…' or 'Calling tracker…'. Captures the client's git identity automatically (author email from git; the ledger's repo and the tracker's project default to the current git repository). The stdio tracker reads and writes attachments as local files. Leave RAG_AGENT as 'Unknown': no static value can name the calling model - one process serves a whole session including subagents on other models - so agents pass `agent` per call, and this env is the marker for a write that did not.",
 
-  "// http (shared Streamable HTTP gateway)": "No local binary — point at the rag-mcp gateway on your server (port 17794), which serves both tool sets under /corpus and /ledger. Register via: `claude mcp add --transport http rag http://your-server:17794/corpus` and `... ledger http://your-server:17794/ledger`, or use the http blocks below. Ledger writes are attributed to the gateway's RAG_EMAIL/RAG_AGENT and ledger_create needs an explicit `repo` arg (no client git context server-side).",
+  "// http (shared Streamable HTTP gateway)": "No local binary — point at the rag-mcp gateway on your server (port 17794), which serves every tool set under /corpus, /ledger and /tracker. Register via: `claude mcp add --transport http rag http://your-server:17794/corpus`, `... ledger http://your-server:17794/ledger` and `... tracker http://your-server:17794/tracker`, or use the http blocks below. Writes are attributed to the gateway's RAG_EMAIL/RAG_AGENT, ledger_create needs an explicit `repo` and every tracker tool an explicit `project` (no client git context server-side), and tracker attachments travel as base64 (at most 10 MB).",
 
   "mcpServers": {
     "rag": {
@@ -21,8 +21,17 @@
         "RAG_AGENT": "Unknown"
       }
     },
+    "tracker": {
+      "command": "/path/to/rag/target/release/rag-mcp",
+      "args": ["--server", "tracker"],
+      "env": {
+        "RAG_SERVE_URL": "http://localhost:17793",
+        "RAG_AGENT": "Unknown"
+      }
+    },
 
     "// rag (http alternative)": { "type": "http", "url": "http://your-server:17794/corpus" },
-    "// ledger (http alternative)": { "type": "http", "url": "http://your-server:17794/ledger" }
+    "// ledger (http alternative)": { "type": "http", "url": "http://your-server:17794/ledger" },
+    "// tracker (http alternative)": { "type": "http", "url": "http://your-server:17794/tracker" }
   }
 }

@@ -22,3 +22,8 @@ rmcp = { version = "1.7.0", default-features = false, features = ["server", "mac
 schemars = "1.2.1"
 serde.workspace = true
 serde_json.workspace = true
+base64 = "0.22"
+
+[dev-dependencies]
+axum = { workspace = true, features = ["multipart"] }
+tempfile = "3"

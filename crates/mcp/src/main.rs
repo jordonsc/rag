@@ -5,18 +5,21 @@
 //! auth lives server-side in `rag-serve`, so the key never reaches a client box
 //! (same as the Skill).
 //!
-//! One binary, two server *modes* selected by `--server`, so they register as
-//! separate MCP servers and the agent's tool-use history reads "Calling rag…" vs
-//! "Calling ledger…" rather than lumping decision-log writes under retrieval:
+//! One binary, three server *modes* selected by `--server`, so they register as
+//! separate MCP servers and the agent's tool-use history reads "Calling rag…",
+//! "Calling ledger…" or "Calling tracker…" rather than lumping writes under retrieval:
 //!   - `--server corpus` (default): `search_corpus`, `reindex_corpus`.
-//!   - `--server ledger`: `ledger_search`, `ledger_get`, `ledger_create`, `ledger_append`.
+//!   - `--server ledger`: `ledger_search`, `ledger_get`, `ledger_create`, `ledger_append`,
+//!     `ledger_move`, `ledger_archive`.
+//!   - `--server tracker`: the `tracker_*` tools (the queue, specs, concepts, documents
+//!     and attachments; see `tracker.rs` and `specs/tracker/`).
 //!
 //! Two transports (`--transport`):
 //!   - `stdio` (default): spawned per-client by the agent on the box it runs on.
 //!     `--server` selects which tool set this process exposes.
 //!   - `http`: a long-lived **Streamable HTTP** server (run once on the server), serving
-//!     **both** tool sets at once under distinct paths — `/corpus` and `/ledger` — so
-//!     clients register two URLs and need no local binary. See `serve_http`.
+//!     **every** tool set at once under distinct paths — `/corpus`, `/ledger` and
+//!     `/tracker` — so clients register URLs and need no local binary. See `serve_http`.
 //!
 //! Logs to stderr (stdout carries the JSON-RPC stream in stdio mode).
 
@@ -36,6 +39,9 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+mod tracker;
+use tracker::{TrackerServer, Transport};
+
 /// Default bind address for the Streamable HTTP gateway (`--transport http`).
 const DEFAULT_HTTP_BIND: &str = "0.0.0.0:17794";
 
@@ -49,6 +55,8 @@ enum ServerKind {
     Corpus,
     /// Decision/incident ledger: `ledger_search`/`get`/`create`/`append`.
     Ledger,
+    /// The tracker: a project's queue, specs, concepts, documents, attachments.
+    Tracker,
 }
 
 /// How this process speaks MCP to clients.
@@ -58,7 +66,7 @@ enum TransportKind {
     /// `--server` picks the single tool set this process serves.
     Stdio,
     /// Streamable HTTP — a long-lived network server (run once on the server). Serves
-    /// **both** tool sets under `/corpus` and `/ledger`; `--server` is ignored.
+    /// **every** tool set under `/corpus`, `/ledger` and `/tracker`; `--server` is ignored.
     Http,
 }
 
@@ -70,8 +78,8 @@ enum TransportKind {
 )]
 struct Cli {
     /// Which tool set to expose (stdio only). Register the binary once per mode so
-    /// each shows up as its own MCP server (e.g. `rag` for corpus, `ledger`).
-    /// Ignored under `--transport http`, which serves both at once.
+    /// each shows up as its own MCP server (e.g. `rag` for corpus, `ledger`, `tracker`).
+    /// Ignored under `--transport http`, which serves all three at once.
     #[arg(long, value_enum, default_value_t = ServerKind::Corpus)]
     server: ServerKind,
 
@@ -79,7 +87,7 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = TransportKind::Stdio)]
     transport: TransportKind,
 
-    /// Bind address for `--transport http`. Serves `/corpus` and `/ledger`.
+    /// Bind address for `--transport http`. Serves `/corpus`, `/ledger` and `/tracker`.
     #[arg(long, env = "RAG_MCP_BIND", default_value = DEFAULT_HTTP_BIND)]
     bind: String,
 
@@ -104,8 +112,10 @@ struct SearchArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rerank: Option<bool>,
     /// Restrict to a corpus: "code" (source repos), "wiki" (the document library),
-    /// or "ledger" (the decision/incident ledger). Use "ledger" to run a semantic +
-    /// rerank search over the ledger — richer than the ledger server's keyword search.
+    /// "ledger" (the decision/incident ledger) or "tracker" (the tracker's specs,
+    /// milestones, concepts and queue items). Use "ledger" to run a semantic + rerank
+    /// search over the ledger — richer than the ledger server's keyword search — and
+    /// "tracker" to find planned, specced or queued work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     corpus: Option<String>,
     /// Restrict to a single repository by exact name (e.g. "centurion-garage-HAS").
@@ -392,14 +402,19 @@ impl CorpusServer {
     /// Search the local code + wiki corpus. Forwards to rag-serve, which embeds the
     /// query, runs vector search with optional filters, reranks, and returns ranked
     /// chunks. Cite results by `repo` + `rel_path` + `start_line`/`end_line` (the
-    /// `path` field is the indexer's internal view — ignore it for citations).
+    /// `path` field is the indexer's internal view — ignore it for citations); a
+    /// tracker hit carries its own `citation`.
     #[tool(
         description = "Search the local code and wiki corpus (Retrieval-Augmented Generation). \
         Returns ranked, reranked source chunks with provenance. Use it to find where something \
         is implemented, how an API is used, or relevant docs across all indexed repositories. \
-        Cite results as repo + rel_path + line range. Optional filters: corpus (code|wiki|ledger), \
-        repo, language, path_prefix. Pass corpus=\"ledger\" to semantically search the \
-        decision/incident ledger (better recall than the ledger server's keyword search)."
+        Cite results as repo + rel_path + line range. Optional filters: corpus \
+        (code|wiki|ledger|tracker), repo, language, path_prefix. Pass corpus=\"ledger\" to \
+        semantically search the decision/incident ledger (better recall than the ledger \
+        server's keyword search). Pass corpus=\"tracker\" to search the tracker's specs, \
+        milestones, concepts and queue items (search it before re-planning work); repo is then \
+        the project, and each hit's `citation` is `<project>:<path>@r<revision>` for a document \
+        chunk (read it with tracker_doc_get) or the item id (tracker_get)."
     )]
     async fn search_corpus(
         &self,
@@ -452,8 +467,11 @@ impl ServerHandler for CorpusServer {
             (repo + rel_path + line range). Call `reindex_corpus` to refresh the index immediately \
             after pushing changes (it otherwise updates every 15 minutes). The decision/incident \
             ledger is indexed too: pass corpus=\"ledger\" to `search_corpus` for a semantic search \
-            over it (better recall than the ledger server's keyword search). Writing to the ledger \
-            (create/append) and exact lookups are on the separate `ledger_*` MCP server.",
+            over it (better recall than the ledger server's keyword search). The tracker's \
+            documents and queue items are indexed too: pass corpus=\"tracker\" to find planned, \
+            specced or queued work; each hit's `citation` is `<project>:<path>@r<revision>` or an \
+            item id. Writing to the ledger (create/append) and exact lookups are on the separate \
+            `ledger_*` MCP server; the tracker's are on the `tracker_*` server.",
         )
     }
 }
@@ -744,10 +762,11 @@ fn resolve_agent(arg: Option<String>) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Streamable HTTP gateway: one long-lived server (run on the server) exposing **both**
-/// tool sets so remote clients need no local binary — just two registered URLs:
+/// Streamable HTTP gateway: one long-lived server (run on the server) exposing
+/// **every** tool set so remote clients need no local binary — just registered URLs:
 ///   - `POST <bind>/corpus` → `search_corpus`, `reindex_corpus`
 ///   - `POST <bind>/ledger` → the `ledger_*` tools
+///   - `POST <bind>/tracker` → the `tracker_*` tools (attachments as base64, ≤ 10 MB)
 ///
 /// Each request still forwards to `rag-serve` (`url`), so the Voyage key never
 /// leaves the server — same trust model as the stdio binary.
@@ -759,6 +778,7 @@ fn resolve_agent(arg: Option<String>) -> Option<String> {
 /// must be passed explicitly to `ledger_create` (git inference returns nothing
 /// server-side, surfacing the existing "repo not given" error otherwise). Fine for
 /// a single-operator estate; per-client attribution would need request headers.
+/// The tracker tools have the same caveat, and need `project` passed explicitly.
 async fn serve_http(http: reqwest::Client, serve_url: &str, bind: &str) -> anyhow::Result<()> {
     // LAN-trusted: clients connect by the server's IP/hostname, so the default
     // loopback-only Host allowlist (a DNS-rebinding guard for local servers) would
@@ -783,15 +803,25 @@ async fn serve_http(http: reqwest::Client, serve_url: &str, bind: &str) -> anyho
         )
     };
 
+    let tracker = {
+        let (http, url) = (http.clone(), serve_url.to_string());
+        StreamableHttpService::new(
+            move || Ok(TrackerServer::new(http.clone(), &url, Transport::Gateway)),
+            Arc::new(LocalSessionManager::default()),
+            config(),
+        )
+    };
+
     let app = axum::Router::new()
         .nest_service("/corpus", corpus)
-        .nest_service("/ledger", ledger);
+        .nest_service("/ledger", ledger)
+        .nest_service("/tracker", tracker);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(
         bind = %bind,
         serve = %serve_url,
-        "rag-mcp starting (http; /corpus + /ledger; no local key)"
+        "rag-mcp starting (http; /corpus + /ledger + /tracker; no local key)"
     );
     axum::serve(listener, app).await?;
     Ok(())
@@ -820,7 +850,96 @@ async fn main() -> anyhow::Result<()> {
                 let svc = LedgerServer::new(http, &cli.url).serve(stdio()).await?;
                 svc.waiting().await?;
             }
+            ServerKind::Tracker => {
+                tracing::info!(serve = %cli.url, "rag-mcp starting (tracker; stdio; no local key)");
+                let svc = TrackerServer::new(http, &cli.url, Transport::Stdio)
+                    .serve(stdio())
+                    .await?;
+                svc.waiting().await?;
+            }
         },
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use axum::{extract::State, routing::post, Json, Router};
+    use serde_json::{json, Value};
+
+    use super::*;
+
+    /// A stand-in `rag-serve` whose `/search` records the body it was sent and
+    /// answers with one tracker hit, shaped as `RankedHit` serialises one.
+    async fn stand_in() -> (String, Arc<Mutex<Option<Value>>>) {
+        let seen: Arc<Mutex<Option<Value>>> = Arc::default();
+        async fn search(
+            State(seen): State<Arc<Mutex<Option<Value>>>>,
+            Json(body): Json<Value>,
+        ) -> Json<Value> {
+            *seen.lock().unwrap() = Some(body);
+            Json(json!({
+                "query": "solar film", "top_k": 8, "reranked": true, "candidates": 1,
+                "timings": {"embed_ms": 1, "search_ms": 1, "rerank_ms": 1, "total_ms": 3},
+                "results": [{
+                    "corpus": "tracker", "repo": "ubu", "rel_path": "concepts/power.md",
+                    "path": "", "language": "markdown", "start_line": 3, "end_line": 9,
+                    "text": "Power · ubu:concepts/power.md\n\nA solar film on the roof.",
+                    "ann_score": 0.7, "rerank_score": 0.9, "title": "Power",
+                    "citation": "ubu:concepts/power.md@r4", "tracker_id": "ubu-d0003",
+                    "kind": "concept", "revision": 4
+                }]
+            }))
+        }
+        let app = Router::new()
+            .route("/search", post(search))
+            .with_state(seen.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}"), seen)
+    }
+
+    /// m05: `search_corpus` with `corpus: "tracker"` sends the filter and returns
+    /// the fixture document's chunk with its citation.
+    #[tokio::test]
+    async fn search_corpus_takes_the_tracker_corpus_and_returns_the_citation() {
+        let (base, seen) = stand_in().await;
+        let server = CorpusServer::new(reqwest::Client::new(), &base);
+        let args = SearchArgs {
+            query: "solar film".into(),
+            top_k: None,
+            rerank: None,
+            corpus: Some("tracker".into()),
+            repo: Some("ubu".into()),
+            language: None,
+            path_prefix: None,
+        };
+        let res = server.search_corpus(Parameters(args)).await.unwrap();
+        let body = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            body,
+            json!({"query": "solar film", "filters": {"corpus": "tracker", "repo": "ubu"}})
+        );
+        let text = res.content[0].as_text().unwrap().text.clone();
+        let v: Value = serde_json::from_str(&text).unwrap();
+        let hit = &v["results"][0];
+        assert_eq!(hit["corpus"], "tracker");
+        assert_eq!(hit["citation"], "ubu:concepts/power.md@r4");
+        assert_eq!(hit["tracker_id"], "ubu-d0003");
+        assert!(hit["text"].as_str().unwrap().contains("solar film"));
+    }
+
+    #[test]
+    fn the_corpus_tool_names_the_tracker_corpus() {
+        let tools = CorpusServer::tool_router().list_all();
+        let search = tools.iter().find(|t| t.name == "search_corpus").unwrap();
+        let d = search.description.as_deref().unwrap_or_default();
+        assert!(
+            d.contains("corpus=\"tracker\"") && d.contains("citation"),
+            "{d}"
+        );
+    }
 }
