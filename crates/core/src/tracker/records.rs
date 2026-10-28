@@ -166,6 +166,8 @@ pub struct ConceptUpdate {
 /// The changes one record update makes, gathered so it becomes one event.
 struct Changes {
     fields: Map<String, Value>,
+    /// What each changed field held before (rag-t0038), keyed as `fields`.
+    before: Map<String, Value>,
     kinds: Vec<EventKind>,
     /// What a state or approval change says when the write carried no note
     /// (`State: draft → ready.`), in the order made.
@@ -176,25 +178,33 @@ impl Changes {
     fn new() -> Self {
         Self {
             fields: Map::new(),
+            before: Map::new(),
             kinds: Vec::new(),
             said: Vec::new(),
         }
     }
 
+    /// A field with no prior value to record (`links_added`).
     fn set(&mut self, name: &str, value: Value, kind: EventKind) {
         self.fields.insert(name.into(), value);
         self.kinds.push(kind);
     }
 
+    /// A field changed from `from` to `to`.
+    fn change(&mut self, name: &str, from: Value, to: Value, kind: EventKind) {
+        self.before.insert(name.into(), from);
+        self.set(name, to, kind);
+    }
+
     /// A state change, described from → to for the generated body.
     fn state(&mut self, from: &str, to: &str) {
-        self.set("state", json!(to), EventKind::Status);
+        self.change("state", json!(from), json!(to), EventKind::Status);
         self.said.push(format!("State: {from} → {to}."));
     }
 
     /// An approval change, described from → to for the generated body.
     fn approval(&mut self, from: Approval, to: Approval) {
-        self.set("approval", json!(to), EventKind::Approve);
+        self.change("approval", json!(from), json!(to), EventKind::Approve);
         self.said.push(format!("Approval: {from} → {to}."));
     }
 
@@ -516,6 +526,7 @@ async fn insert_milestone(
         EventKind::Create,
         &note,
         &json!({ "title": title, "state": state, "approval": m.approval, "order": order, "path": path }),
+        None,
         now,
     )
     .await?;
@@ -585,6 +596,7 @@ impl TrackerStore {
             &body,
             &json!({ "title": title, "state": state, "approval": new.approval, "path": path,
                      "milestones": new.milestones.iter().map(|m| m.code.clone()).collect::<Vec<_>>() }),
+            None,
             &now,
         )
         .await?;
@@ -601,7 +613,7 @@ impl TrackerStore {
             )
             .await?;
         }
-        tx.commit().await?;
+        self.commit(tx).await?;
         self.get_spec(&new.project, &new.slug, true)
             .await?
             .ok_or_else(|| TrackerError::Internal("spec vanished after create".into()))
@@ -660,7 +672,7 @@ impl TrackerStore {
         if let Some(t) = &upd.title {
             let t = require_title(t)?;
             if t != spec.title {
-                c.set("title", json!(t), EventKind::Edit);
+                c.change("title", json!(spec.title), json!(t), EventKind::Edit);
             }
         }
         if let Some(s) = upd.state.filter(|s| *s != spec.state) {
@@ -692,10 +704,11 @@ impl TrackerStore {
             kind,
             &body,
             &Value::Object(c.fields),
+            Some(&Value::Object(c.before)),
             &now,
         )
         .await?;
-        tx.commit().await?;
+        self.commit(tx).await?;
         self.get_spec(project, slug, true)
             .await?
             .ok_or_else(|| TrackerError::Internal("spec vanished after update".into()))
@@ -725,7 +738,7 @@ impl TrackerStore {
         .fetch_one(&mut *tx)
         .await?;
         insert_milestone(&mut tx, project, spec, &new, order, None, &who, &now).await?;
-        tx.commit().await?;
+        self.commit(tx).await?;
         self.get_milestone(project, spec, &new.code, true)
             .await?
             .ok_or_else(|| TrackerError::Internal("milestone vanished after create".into()))
@@ -777,11 +790,11 @@ impl TrackerStore {
         if let Some(t) = &upd.title {
             let t = require_title(t)?;
             if t != m.title {
-                c.set("title", json!(t), EventKind::Edit);
+                c.change("title", json!(m.title), json!(t), EventKind::Edit);
             }
         }
         if let Some(o) = upd.order.filter(|o| *o != m.order) {
-            c.set("order", json!(o), EventKind::Edit);
+            c.change("order", json!(m.order), json!(o), EventKind::Edit);
         }
         if let Some(s) = upd.state.filter(|s| *s != m.state) {
             c.state(m.state.as_str(), s.as_str());
@@ -814,10 +827,11 @@ impl TrackerStore {
             kind,
             &body,
             &Value::Object(c.fields),
+            Some(&Value::Object(c.before)),
             &now,
         )
         .await?;
-        tx.commit().await?;
+        self.commit(tx).await?;
         self.get_milestone(project, spec, code, true)
             .await?
             .ok_or_else(|| TrackerError::Internal("milestone vanished after update".into()))
@@ -902,10 +916,11 @@ impl TrackerStore {
             EventKind::Create,
             &body,
             &json!({ "title": title, "state": state, "approval": new.approval, "links": links, "path": path }),
+            None,
             &now,
         )
         .await?;
-        tx.commit().await?;
+        self.commit(tx).await?;
         self.get_concept(&new.project, &new.slug, true)
             .await?
             .ok_or_else(|| TrackerError::Internal("concept vanished after create".into()))
@@ -971,7 +986,7 @@ impl TrackerStore {
         if let Some(t) = &upd.title {
             let t = require_title(t)?;
             if t != concept.title {
-                c.set("title", json!(t), EventKind::Edit);
+                c.change("title", json!(concept.title), json!(t), EventKind::Edit);
             }
         }
         if let Some(s) = upd.state.filter(|s| *s != concept.state) {
@@ -1049,10 +1064,11 @@ impl TrackerStore {
             kind,
             &body,
             &Value::Object(c.fields),
+            Some(&Value::Object(c.before)),
             &now,
         )
         .await?;
-        tx.commit().await?;
+        self.commit(tx).await?;
         self.get_concept(project, slug, true)
             .await?
             .ok_or_else(|| TrackerError::Internal("concept vanished after update".into()))

@@ -140,6 +140,8 @@ async fn every_route_answers_503_without_a_store() {
         "/tracker/p",
         "/tracker/p/check",
         "/tracker/p/labels",
+        "/tracker/p/events",
+        "/tracker/p/events/ws",
         "/tracker/items/p-t0001",
         "/tracker/docs/p-d0001",
     ] {
@@ -1425,4 +1427,185 @@ async fn without_a_trigger_writes_still_succeed() {
     )
     .await;
     assert!(r.status.is_success());
+}
+
+// ---- rag-t0038: web writes are the owner's; events say what they changed from ----
+
+#[tokio::test]
+async fn a_web_write_without_an_agent_is_recorded_as_owner_with_its_prior_values() {
+    let t = app().await;
+    let web = |mut body: Value| {
+        let m = body.as_object_mut().unwrap();
+        m.insert("author_email".into(), json!("owner@example.com"));
+        m.insert("surface".into(), json!("web"));
+        body
+    };
+    let r = ok(post(
+        &t.app,
+        "/tracker/p/items",
+        web(json!({ "type": "dev", "title": "From the web" })),
+    )
+    .await)
+    .await;
+    let id = r["id"].as_str().unwrap().to_string();
+    let r = ok(post(
+        &t.app,
+        &format!("/tracker/items/{id}"),
+        web(json!({ "status": "in_progress", "labels": ["Physics"] })),
+    )
+    .await)
+    .await;
+    let e = &r["event"];
+    let e = if e.is_null() {
+        r["events"].as_array().unwrap().last().unwrap()
+    } else {
+        e
+    };
+    assert_eq!(e["agent"], "Owner");
+    assert_eq!(e["surface"], "web");
+    assert_eq!(e["fields"]["status"], "in_progress");
+    assert_eq!(e["before"], json!({ "status": "pending", "labels": [] }));
+    let rec = ok(get(&t.app, &format!("/tracker/items/{id}")).await).await;
+    let events = rec["events"].as_array().unwrap();
+    assert!(events.iter().all(|e| e["agent"] == "Owner"), "{events:?}");
+    assert_eq!(
+        events[0]["before"],
+        json!(null),
+        "a create has no prior values"
+    );
+    // An agent's write without a name is still Unknown, never Owner.
+    ok(post(
+        &t.app,
+        &format!("/tracker/items/{id}"),
+        json!({ "note": "agent note", "author_email": "dev@example.com", "surface": "mcp" }),
+    )
+    .await)
+    .await;
+    let rec = ok(get(&t.app, &format!("/tracker/items/{id}")).await).await;
+    assert_eq!(
+        rec["events"].as_array().unwrap().last().unwrap()["agent"],
+        "Unknown"
+    );
+}
+
+// ---- Requests (rag-t0044) ---------------------------------------------------------
+
+#[tokio::test]
+async fn a_request_has_its_own_section_and_its_tickets_link_back() {
+    let t = app().await;
+    let a = item(&t.app, "p", "queued work").await;
+    let r = ok(post(
+        &t.app,
+        "/tracker/p/items",
+        json!({
+            "type": "request", "title": "Weather", "body": "Rain, then snow. Before audio.",
+            "approval": "owner", "author_email": "owner@example.com", "surface": "web"
+        }),
+    )
+    .await)
+    .await;
+    let rid = r["id"].as_str().unwrap().to_string();
+    assert_eq!(r["type"], "request");
+    assert_eq!(r["events"][0]["agent"], "Owner");
+    let q = ok(get(&t.app, "/tracker/p").await).await;
+    assert_eq!(ids(&q["requests"]), vec![rid.clone()]);
+    assert_eq!(ids(&q["queue"]), vec![a.clone()]);
+    let projects = ok(get(&t.app, "/tracker/projects").await).await;
+    assert_eq!(projects["projects"][0]["requests"], 1);
+
+    // A ticket from the request: agent-approved unless it says otherwise.
+    let tk = ok(post(
+        &t.app,
+        "/tracker/p/items",
+        w(json!({
+            "type": "design", "title": "Rain art",
+            "links": [{ "kind": "from", "target": rid }]
+        })),
+    )
+    .await)
+    .await;
+    assert_eq!(tk["approval"], "agent");
+    assert_eq!(tk["links"], json!([{ "kind": "from", "target": rid }]));
+    let owner = ok(post(
+        &t.app,
+        "/tracker/p/items",
+        w(json!({
+            "type": "dev", "title": "Snow", "approval": "owner",
+            "links": [{ "kind": "from", "target": rid }], "before": a
+        })),
+    )
+    .await)
+    .await;
+    assert_eq!(owner["approval"], "owner");
+    // Without a from link the default stays unapproved.
+    let plain = ok(post(
+        &t.app,
+        "/tracker/p/items",
+        w(json!({ "type": "dev", "title": "x" })),
+    )
+    .await)
+    .await;
+    assert_eq!(plain["approval"], "unapproved");
+
+    let req = ok(get(&t.app, &format!("/tracker/items/{rid}")).await).await;
+    let became: Vec<&str> = req["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|l| l["kind"] == "became")
+        .map(|l| l["target"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        became,
+        vec![tk["id"].as_str().unwrap(), owner["id"].as_str().unwrap()]
+    );
+    // Done with a note naming them; it leaves the requests for Done.
+    ok(post(
+        &t.app,
+        &format!("/tracker/items/{rid}"),
+        w(json!({ "status": "done", "note": "Became the two tickets." })),
+    )
+    .await)
+    .await;
+    let q = ok(get(&t.app, "/tracker/p").await).await;
+    assert!(q["requests"].as_array().unwrap().is_empty());
+    assert!(ids(&q["done"]).contains(&rid));
+    let check = ok(get(&t.app, "/tracker/p/check").await).await;
+    assert_eq!(check["ok"], true, "{check}");
+}
+
+#[tokio::test]
+async fn request_writes_are_refused_where_they_do_not_belong() {
+    let t = app().await;
+    let a = item(&t.app, "p", "a").await;
+    for (body, why) in [
+        (
+            json!({ "type": "request", "title": "r", "parallel": true }),
+            "a request cannot be parallel",
+        ),
+        (
+            json!({ "type": "request", "title": "r", "intensity": "quick" }),
+            "gate fields",
+        ),
+        (
+            json!({ "type": "dev", "title": "t", "links": [{ "kind": "from", "target": a }] }),
+            "names a request",
+        ),
+        (
+            json!({ "type": "dev", "title": "t", "links": [{ "kind": "became", "target": a }] }),
+            "written by the server",
+        ),
+    ] {
+        let r = post(&t.app, "/tracker/p/items", w(body)).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{why}");
+        assert!(r.error().contains(why), "{why}: {}", r.error());
+    }
+    let r = post(
+        &t.app,
+        &format!("/tracker/items/{a}"),
+        w(json!({ "add_links": [{ "kind": "became", "target": a }] })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(r.error().contains("written by the server"), "{}", r.error());
 }

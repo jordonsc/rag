@@ -30,6 +30,7 @@
 
 mod attachments;
 mod docs;
+mod feed;
 mod index;
 mod items;
 mod labels;
@@ -55,10 +56,14 @@ pub use docs::{
     apply_replacements, unified_diff, validate_path, Document, DocumentView, Edit, NewDocument,
     Replacement, Revision, RevisionDiff, MAX_DOCUMENT_BYTES,
 };
+pub use feed::{
+    burst_line, describe_changes, joins_burst, FeedEvent, FeedFilter, BURST_WINDOW_SECS,
+    DEFAULT_FEED_KINDS, FEED_CAPACITY,
+};
 pub use index::{DocForIndex, IndexSnapshot, ItemForIndex};
 pub use items::{
-    queued_status, transition_allowed, Item, ItemRecord, ItemUpdate, NewItem, ProjectSummary,
-    QueueView,
+    default_approval, queued_status, transition_allowed, Item, ItemRecord, ItemUpdate, NewItem,
+    ProjectSummary, QueueView,
 };
 pub use labels::{clean_labels, label_key, LabelCount, MAX_LABELS, MAX_LABEL_CHARS};
 pub use list::{IntegrityReport, Place};
@@ -202,7 +207,7 @@ macro_rules! str_enum {
 
 str_enum!(
     /// What kind of work a queue item is (R6).
-    ItemType, "item type" {
+    ItemType, "ticket type" {
         /// Implement a spec or a milestone.
         Dev => "dev",
         /// Artwork, image generation.
@@ -213,6 +218,12 @@ str_enum!(
         Analysis => "analysis",
         /// Gate and release; carries an [`Intensity`] and a release flag (D6).
         Gate => "gate",
+        /// The owner's idea, with how to prioritise it (owner, 2026-10-27,
+        /// rag-t0044). Never dispatched: the manager breaks it into tickets
+        /// that link back to it (`from`), then marks it done. Queued in a
+        /// section of its own ([`QueueView::requests`]), never in the queue a
+        /// worker or a gate's batch reads.
+        Request => "request",
     }
 );
 
@@ -358,10 +369,19 @@ str_enum!(
         Milestone => "milestone",
         /// A concept, by slug.
         Concept => "concept",
-        /// A ledger topic, any project's, held as text: `ubu-1592`.
+        /// A ledger topic, any project's, held as text: `ubu-l1652` (or a legacy
+        /// `ubu-1592`, minted before rag-t0051).
         Ledger => "ledger",
         /// Another item, any project's: `ubu-t0042`.
         Item => "item",
+        /// The request an item was broken out of (rag-t0044): an item of type
+        /// `request` in the same project. Writing it writes the reverse,
+        /// [`LinkKind::Became`], on the request; removing it removes that.
+        From => "from",
+        /// An item a request became (rag-t0044). Written and removed by the
+        /// server only, as the reverse of a `from` link; a write naming it is
+        /// refused.
+        Became => "became",
     }
 );
 
@@ -382,8 +402,10 @@ str_enum!(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Actor {
     pub email: String,
-    /// The acting agent's name. Blank or absent is recorded as `Unknown` (D12):
-    /// a marker for an unattributed write rather than a guess.
+    /// The acting agent's name. Blank or absent is recorded as [`OWNER_AGENT`]
+    /// on the `web` surface (the owner at the keyboard, rag-t0038) and as
+    /// [`UNKNOWN_AGENT`] on `mcp` (D12): a marker for an unattributed agent
+    /// write rather than a guess.
     pub agent: Option<String>,
     pub surface: Surface,
 }
@@ -402,9 +424,10 @@ impl Actor {
         if email.is_empty() {
             return refused("author_email is required");
         }
-        let agent = match self.agent.as_deref().map(str::trim) {
-            Some(a) if !a.is_empty() => a.to_string(),
-            _ => "Unknown".to_string(),
+        let agent = match (self.agent.as_deref().map(str::trim), self.surface) {
+            (Some(a), _) if !a.is_empty() => a.to_string(),
+            (_, Surface::Web) => OWNER_AGENT.to_string(),
+            (_, Surface::Mcp) => UNKNOWN_AGENT.to_string(),
         };
         Ok((email.to_string(), agent, self.surface))
     }
@@ -412,6 +435,16 @@ impl Actor {
 
 /// A validated [`Actor`]: email, agent (never blank) and surface.
 type Who = (String, String, Surface);
+
+/// The agent a `web` write with no agent is recorded as (rag-t0038): the web UI
+/// is the owner at the keyboard (D10) and never sends one. Stamped by the
+/// server, so every web write is covered whatever the client sends; web events
+/// written before it read `Unknown` and are rewritten to it on open
+/// ([`TrackerStore::open`]).
+pub const OWNER_AGENT: &str = "Owner";
+
+/// The agent an `mcp` write with no agent is recorded as (D12).
+pub const UNKNOWN_AGENT: &str = "Unknown";
 
 /// A typed link (D3).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -445,6 +478,12 @@ pub struct Event {
     pub body: String,
     /// The fields this event set, with their new values (`{}` for a bare note).
     pub fields: serde_json::Value,
+    /// The values those fields held before the write (rag-t0038), keyed as in
+    /// `fields`: the "from" of a from → to. Recorded for every change made
+    /// since; `null` on a create (nothing came before) and on an event written
+    /// before it was recorded, which shows its new values only. A field with no
+    /// prior value to give (`links_added`, `unblocked_by`) is absent from it.
+    pub before: Option<serde_json::Value>,
 }
 
 // ---- Store ------------------------------------------------------------------
@@ -455,6 +494,8 @@ pub struct Event {
 pub struct TrackerStore {
     pool: SqlitePool,
     attachments_dir: PathBuf,
+    /// The live event feed (rag-t0036, `feed.rs`), shared by every clone.
+    feed: std::sync::Arc<feed::Feed>,
 }
 
 impl TrackerStore {
@@ -484,8 +525,12 @@ impl TrackerStore {
         let store = Self {
             pool,
             attachments_dir: attachments_dir.as_ref().to_path_buf(),
+            feed: std::sync::Arc::new(feed::Feed::new(0, FEED_CAPACITY)),
         };
         store.init_schema().await?;
+        // The feed starts after everything already in the table (the open-time
+        // migrations' events included): a subscriber replays those by `since`.
+        store.feed.start_at(store.latest_event_id().await?).await;
         Ok(store)
     }
 
@@ -517,6 +562,31 @@ impl TrackerStore {
             }
         }
         self.migrate_retired_approval_blocks().await?;
+        self.migrate_web_agent_to_owner().await?;
+        Ok(())
+    }
+
+    /// The data migration for rag-t0038 (owner, 2026-10-27): web writes are
+    /// stamped [`OWNER_AGENT`] when they carry no agent, and the web UI never
+    /// sends one, so every web event, revision and attachment recorded before
+    /// that reads [`UNKNOWN_AGENT`]. They are rewritten to `Owner`, so every
+    /// reader (the API, the web UI, the MCP tools, the feed, the search index, a
+    /// hand-run `sqlite3`) sees one value rather than each applying a display
+    /// rule. Only the `agent` column of a `web` row that reads exactly
+    /// `Unknown` changes; no event is appended (nothing about the record
+    /// changed, only who it names). Idempotent: a second open finds nothing.
+    async fn migrate_web_agent_to_owner(&self) -> TResult<()> {
+        let mut tx = self.write_tx().await?;
+        for table in ["events", "revisions", "attachments"] {
+            sqlx::query(&format!(
+                "UPDATE {table} SET agent = ? WHERE surface = 'web' AND agent = ?"
+            ))
+            .bind(OWNER_AGENT)
+            .bind(UNKNOWN_AGENT)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -556,7 +626,7 @@ impl TrackerStore {
                 .filter(|n| !n.is_empty())
                 .map(|n| format!(" The block note was: {n}"))
                 .unwrap_or_default();
-            let (kind, body, fields) = if queued {
+            let (kind, body, fields, before) = if queued {
                 sqlx::query(
                     "UPDATE items SET status = 'review', blocked = 0, block_reason = NULL, \
                      block_note = NULL, updated_at = ? WHERE id = ?",
@@ -569,6 +639,7 @@ impl TrackerStore {
                     EventKind::Status,
                     format!("{MIGRATED_TO_REVIEW}{note_said}"),
                     serde_json::json!({ "status": "review", "blocked": false }),
+                    serde_json::json!({ "status": status, "blocked": true, "block_reason": "approval" }),
                 )
             } else {
                 sqlx::query(
@@ -583,6 +654,7 @@ impl TrackerStore {
                     EventKind::Unblock,
                     format!("Unblocked: the block reason approval was retired.{note_said}"),
                     serde_json::json!({ "blocked": false }),
+                    serde_json::json!({ "blocked": true, "block_reason": "approval" }),
                 )
             };
             append_event(
@@ -594,6 +666,7 @@ impl TrackerStore {
                 kind,
                 &body,
                 &fields,
+                Some(&before),
                 &now,
             )
             .await?;
@@ -711,6 +784,8 @@ async fn ensure_project(conn: &mut SqliteConnection, project: &str, now: &str) -
 }
 
 /// Append one event. Every write calls this exactly once per record it changes.
+/// `before` is what the changed fields held before the write (rag-t0038), keyed
+/// as `fields` is; `None` on a create, where nothing came before.
 #[allow(clippy::too_many_arguments)]
 async fn append_event(
     conn: &mut SqliteConnection,
@@ -721,11 +796,13 @@ async fn append_event(
     kind: EventKind,
     body: &str,
     fields: &serde_json::Value,
+    before: Option<&serde_json::Value>,
     now: &str,
 ) -> TResult<i64> {
+    let before = before.map(serde_json::to_string).transpose()?;
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO events (project, target_kind, target_id, ts, author_email, agent, surface, \
-         kind, body, fields) VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING event_id",
+         kind, body, fields, fields_before) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING event_id",
     )
     .bind(project)
     .bind(target_kind.as_str())
@@ -737,6 +814,7 @@ async fn append_event(
     .bind(kind.as_str())
     .bind(body)
     .bind(serde_json::to_string(fields)?)
+    .bind(before)
     .fetch_one(&mut *conn)
     .await?;
     Ok(id)
@@ -752,6 +830,7 @@ struct EventRow {
     kind: String,
     body: String,
     fields: String,
+    fields_before: Option<String>,
 }
 
 impl EventRow {
@@ -765,6 +844,10 @@ impl EventRow {
             kind: self.kind.parse()?,
             body: self.body,
             fields: serde_json::from_str(&self.fields).unwrap_or(serde_json::Value::Null),
+            before: self
+                .fields_before
+                .as_deref()
+                .and_then(|b| serde_json::from_str(b).ok()),
         })
     }
 }
@@ -777,7 +860,8 @@ async fn events_for(
     target_id: &str,
 ) -> TResult<Vec<Event>> {
     let rows = sqlx::query_as::<_, EventRow>(
-        "SELECT event_id, ts, author_email, agent, surface, kind, body, fields FROM events \
+        "SELECT event_id, ts, author_email, agent, surface, kind, body, fields, fields_before \
+         FROM events \
          WHERE project = ? AND target_kind = ? AND target_id = ? ORDER BY event_id",
     )
     .bind(project)
@@ -804,9 +888,36 @@ async fn validate_link(
     }
     let exists: Option<i64> = match link.kind {
         LinkKind::Ledger => return Ok(()),
+        LinkKind::Became => return refused(BECAME_IS_THE_SERVERS),
+        LinkKind::From => {
+            let Some(me) = self_item else {
+                return refused(
+                    "a from link goes on a ticket: it names the request the ticket came from",
+                );
+            };
+            if target == me {
+                return refused("a ticket cannot come from itself");
+            }
+            let row: Option<(String, String)> =
+                sqlx::query_as("SELECT project, type FROM items WHERE id = ?")
+                    .bind(target)
+                    .fetch_optional(&mut *conn)
+                    .await?;
+            return match row {
+                None => refused(format!("no ticket {target:?} to come from")),
+                Some((p, _)) if p != project => refused(format!(
+                    "{target} is a ticket of project {p}; a from link names a request of the \
+                     ticket's own project ({project})"
+                )),
+                Some((_, t)) if t != ItemType::Request.as_str() => refused(format!(
+                    "{target} is a {t} ticket; a from link names a request"
+                )),
+                Some(_) => Ok(()),
+            };
+        }
         LinkKind::Item => {
             if Some(target) == self_item {
-                return refused("an item cannot link to itself");
+                return refused("a ticket cannot link to itself");
             }
             sqlx::query_scalar("SELECT 1 FROM items WHERE id = ?")
                 .bind(target)
@@ -854,6 +965,10 @@ async fn validate_link(
     Ok(())
 }
 
+/// Why a write naming a `became` link is refused (rag-t0044).
+pub const BECAME_IS_THE_SERVERS: &str = "became links are written by the server: give the ticket \
+     from:<request id> (on create, or add_links on update) and the request's became link follows";
+
 /// Who the open-time data migrations write as: `(email, agent)`, surface `mcp`.
 pub const MIGRATION_ACTOR: (&str, &str) = ("system", "Tracker migration (rag-t0024)");
 
@@ -871,6 +986,9 @@ pub const MIGRATED_TO_REVIEW: &str =
 pub(crate) const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
     // rag-t0013: may start before the gates above it clear.
     ("items", "parallel", "INTEGER NOT NULL DEFAULT 0"),
+    // rag-t0038: the changed fields' values before the write (JSON); NULL on a
+    // create and on every event written before it was recorded.
+    ("events", "fields_before", "TEXT"),
 ];
 
 pub(crate) const SCHEMA_SQL: &str = "
@@ -1048,7 +1166,8 @@ CREATE TABLE IF NOT EXISTS events (
     surface      TEXT NOT NULL,
     kind         TEXT NOT NULL,
     body         TEXT NOT NULL,
-    fields       TEXT NOT NULL DEFAULT '{}'
+    fields       TEXT NOT NULL DEFAULT '{}',
+    fields_before TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_target ON events(project, target_kind, target_id);
 ";

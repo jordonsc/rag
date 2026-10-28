@@ -12,7 +12,7 @@ use super::list::{self, Place};
 use super::{
     append_event, ensure_project, events_for, given_note, now_iso, refused, require_title,
     validate_link, Actor, Approval, BlockReason, Event, EventKind, Intensity, ItemStatus, ItemType,
-    Link, TResult, TargetKind, TrackerError, TrackerStore,
+    Link, LinkKind, TResult, TargetKind, TrackerError, TrackerStore, Who,
 };
 
 /// Whether an item with this status is in the queue (the linked list).
@@ -180,15 +180,20 @@ pub struct QueueView {
     pub project: String,
     /// Whether the project has been written to. An unknown project reads as empty.
     pub exists: bool,
+    /// The owner's requests waiting to be broken down (rag-t0044): queued
+    /// items of type `request`, whatever their status or block, in list
+    /// order. Never in `queue`, `review`, `blocked` or `deferred`, so nothing
+    /// that reads the queue (`tracker_next`, a gate's batch) sees them.
+    pub requests: Vec<Item>,
     /// Done and not yet acknowledged, in the order they finished: oldest first,
     /// newest last (by `done_at`, then id), so the latest sits just above the
     /// queue, as the queue reads (rag-t0029).
     pub done: Vec<Item>,
     /// Items waiting on the owner (status `review`, blocked or not), in list
-    /// order (rag-t0024). Each keeps its place in the list.
+    /// order (rag-t0024). Each keeps its place in the list. Requests excluded.
     pub review: Vec<Item>,
-    /// The queue in list order, gates included, **without** review, blocked or
-    /// deferred items.
+    /// The queue in list order, gates included, **without** requests, review,
+    /// blocked or deferred items.
     pub queue: Vec<Item>,
     /// Blocked items (not deferred or in review), in list order. Each keeps its
     /// place in the list.
@@ -203,14 +208,17 @@ pub struct QueueView {
 pub struct ProjectSummary {
     pub name: String,
     pub created_at: String,
-    /// Items in the queue (review, blocked and deferred included).
+    /// Items in the queue (requests, review, blocked and deferred included).
     pub queued: i64,
-    /// Blocked items that are not deferred or in review (each of those is
-    /// counted under its status).
+    /// Queued requests (rag-t0044), whatever their status or block; counted
+    /// under none of the other buckets.
+    pub requests: i64,
+    /// Blocked items that are not requests, deferred or in review (each of
+    /// those is counted under its own bucket).
     pub blocked: i64,
-    /// Deferred items, blocked or not.
+    /// Deferred items, blocked or not, requests excluded.
     pub deferred: i64,
-    /// Items in review, blocked or not (rag-t0024).
+    /// Items in review, blocked or not (rag-t0024), requests excluded.
     pub review: i64,
     pub done_unacknowledged: i64,
 }
@@ -325,7 +333,7 @@ pub(super) async fn load_item(conn: &mut SqliteConnection, id: &str) -> TResult<
 async fn must_item(conn: &mut SqliteConnection, id: &str) -> TResult<Item> {
     load_item(conn, id)
         .await?
-        .ok_or_else(|| TrackerError::NotFound(format!("no item {id:?}")))
+        .ok_or_else(|| TrackerError::NotFound(format!("no ticket {id:?}")))
 }
 
 /// Load many items by id with their links, in one query each.
@@ -390,6 +398,130 @@ const DESCRIBED: &[&str] = &[
     "labels",
 ];
 
+/// Why a request cannot be parallel (rag-t0044).
+const PARALLEL_REQUEST: &str = "a request cannot be parallel: it is never dispatched, only broken \
+     into tickets, which may be";
+
+/// The approval an item is created with when the create names none
+/// (rag-t0044): `agent` for a ticket broken out of a request (it carries a
+/// `from` link: the breakdown is the agent's), else `unapproved`. The owner's
+/// approval of the work is given explicitly, as `owner`.
+pub fn default_approval(links: &[Link]) -> Approval {
+    if links.iter().any(|l| l.kind == LinkKind::From) {
+        Approval::Agent
+    } else {
+        Approval::Unapproved
+    }
+}
+
+/// Write, in the caller's transaction, the reverse of a `from` link item →
+/// request (rag-t0044): `became:<item>` on the request when `added`, its
+/// removal otherwise, with a `link` event on the request so its history (and
+/// the feed) says what it became. Nothing when the reverse is already so.
+async fn reciprocate_from(
+    conn: &mut SqliteConnection,
+    project: &str,
+    item_id: &str,
+    request_id: &str,
+    added: bool,
+    who: &Who,
+    now: &str,
+) -> TResult<()> {
+    let link = Link {
+        kind: LinkKind::Became,
+        target: item_id.to_string(),
+    };
+    let changed = if added {
+        sqlx::query("INSERT OR IGNORE INTO item_links (item_id, kind, target) VALUES (?,?,?)")
+    } else {
+        sqlx::query("DELETE FROM item_links WHERE item_id = ? AND kind = ? AND target = ?")
+    }
+    .bind(request_id)
+    .bind(link.kind.as_str())
+    .bind(item_id)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
+    if changed == 0 {
+        return Ok(());
+    }
+    sqlx::query("UPDATE items SET updated_at = ? WHERE id = ?")
+        .bind(now)
+        .bind(request_id)
+        .execute(&mut *conn)
+        .await?;
+    let (body, key) = if added {
+        (format!("Became {item_id}."), "links_added")
+    } else {
+        (
+            format!("No longer became {item_id}: its from link was removed."),
+            "links_removed",
+        )
+    };
+    append_event(
+        conn,
+        project,
+        TargetKind::Item,
+        request_id,
+        who,
+        EventKind::Link,
+        &body,
+        &json!({ key: [link] }),
+        Some(&json!({})),
+        now,
+    )
+    .await?;
+    Ok(())
+}
+
+/// The request-link faults in `project`, for the integrity check (rag-t0044):
+/// a `from` link whose request lacks the `became` link back, a `became` link
+/// whose item lacks the `from`, and a `from` naming anything but a request.
+pub(super) async fn request_link_problems(
+    conn: &mut SqliteConnection,
+    project: &str,
+) -> TResult<Vec<String>> {
+    let mut problems = Vec::new();
+    let froms: Vec<(String, String, Option<String>, Option<i64>)> = sqlx::query_as(
+        "SELECT l.item_id, l.target, r.type, \
+           (SELECT 1 FROM item_links b WHERE b.item_id = l.target AND b.kind = 'became' \
+            AND b.target = l.item_id) \
+         FROM item_links l JOIN items i ON i.id = l.item_id \
+         LEFT JOIN items r ON r.id = l.target \
+         WHERE i.project = ? AND l.kind = 'from' ORDER BY i.seq, l.target",
+    )
+    .bind(project)
+    .fetch_all(&mut *conn)
+    .await?;
+    for (item, request, ty, back) in froms {
+        if ty.as_deref() != Some(ItemType::Request.as_str()) {
+            problems.push(format!(
+                "{item} comes from {request}, which is not a request"
+            ));
+        } else if back.is_none() {
+            problems.push(format!(
+                "{item} comes from {request}, which has no became link back"
+            ));
+        }
+    }
+    let becames: Vec<(String, String)> = sqlx::query_as(
+        "SELECT l.item_id, l.target FROM item_links l JOIN items i ON i.id = l.item_id \
+         WHERE i.project = ? AND l.kind = 'became' AND NOT EXISTS \
+           (SELECT 1 FROM item_links f WHERE f.item_id = l.target AND f.kind = 'from' \
+            AND f.target = l.item_id) \
+         ORDER BY i.seq, l.target",
+    )
+    .bind(project)
+    .fetch_all(&mut *conn)
+    .await?;
+    for (request, item) in becames {
+        problems.push(format!(
+            "{request} became {item}, which has no from link back"
+        ));
+    }
+    Ok(problems)
+}
+
 /// Why a gate cannot be parallel (rag-t0013).
 const PARALLEL_GATE: &str = "a gate cannot be parallel: parallel lets work start before the \
      gates above it clear, and a gate is what the work above it waits for";
@@ -428,11 +560,11 @@ async fn validate_depends(
                 .fetch_optional(&mut *conn)
                 .await?;
         let Some((their_project, status)) = row else {
-            return refused(format!("depends_on names {d:?}, which is not an item"));
+            return refused(format!("depends_on names {d:?}, which is not a ticket"));
         };
         if their_project != project {
             return refused(format!(
-                "{d} is an item of project {their_project}; {id} can only depend on items of \
+                "{d} is a ticket of project {their_project}; {id} can only depend on tickets of \
                  its own project ({project})"
             ));
         }
@@ -442,7 +574,7 @@ async fn validate_depends(
     }
     if all_done {
         return refused(format!(
-            "every item {id} would depend on is already done ({}): there is nothing to wait on",
+            "every ticket {id} would depend on is already done ({}): there is nothing to wait on",
             deps.join(", ")
         ));
     }
@@ -544,6 +676,7 @@ async fn unblock_dependents(
             EventKind::Unblock,
             &body,
             &json!({ "blocked": false, "depends_on": [], "unblocked_by": done_id }),
+            Some(&json!({ "blocked": true, "block_reason": BlockReason::Dependency, "depends_on": deps })),
             now,
         )
         .await?;
@@ -614,6 +747,26 @@ pub(super) async fn dependency_problems(
     Ok(problems)
 }
 
+/// What the fields an update set held before it (rag-t0038): each key of
+/// `fields` the item has, at its old value. `blocked` and `block_reason` are
+/// recorded together, so an unblock says what reason it lifted. A key the item
+/// has no value for (`links_added`, `links_removed`) is left out.
+fn prior_values(item: &Item, fields: &Map<String, Value>) -> Map<String, Value> {
+    let old = serde_json::to_value(item).unwrap_or(Value::Null);
+    let mut before = Map::new();
+    for key in fields.keys() {
+        if let Some(v) = old.get(key) {
+            before.insert(key.clone(), v.clone());
+        }
+    }
+    if fields.contains_key("blocked") || fields.contains_key("block_reason") {
+        for key in ["blocked", "block_reason"] {
+            before.insert(key.into(), old.get(key).cloned().unwrap_or(Value::Null));
+        }
+    }
+    before
+}
+
 fn opt_str(v: &Option<String>) -> Value {
     v.as_ref().map_or(Value::Null, |s| Value::String(s.clone()))
 }
@@ -632,7 +785,7 @@ impl TrackerStore {
             other => {
                 if new.intensity.is_some() || new.release {
                     return refused(format!(
-                        "intensity and release are gate fields; a {other} item cannot have them"
+                        "intensity and release are gate fields; a {other} ticket cannot have them"
                     ));
                 }
             }
@@ -640,9 +793,19 @@ impl TrackerStore {
         if new.parallel && new.item_type == ItemType::Gate {
             return refused(PARALLEL_GATE);
         }
+        if new.parallel && new.item_type == ItemType::Request {
+            return refused(PARALLEL_REQUEST);
+        }
+        if new.item_type == ItemType::Request && new.links.iter().any(|l| l.kind == LinkKind::From)
+        {
+            return refused(
+                "a request cannot come from another request: it is the owner's own; break it \
+                 into dev, design, recon, analysis or gate tickets with from:<request id>",
+            );
+        }
         if new.approval == Approval::Ratified {
             return refused(
-                "an item cannot be created ratified: ratified follows an agent's approval",
+                "a ticket cannot be created ratified: ratified follows an agent's approval",
             );
         }
         let note = given_note(new.note.as_deref());
@@ -687,7 +850,14 @@ impl TrackerStore {
         .execute(&mut *tx)
         .await?;
 
-        let mut links = new.links.clone();
+        let mut links: Vec<Link> = new
+            .links
+            .iter()
+            .map(|l| Link {
+                kind: l.kind,
+                target: l.target.trim().to_string(),
+            })
+            .collect();
         links.sort();
         links.dedup();
         for link in &links {
@@ -695,7 +865,7 @@ impl TrackerStore {
             sqlx::query("INSERT INTO item_links (item_id, kind, target) VALUES (?,?,?)")
                 .bind(&id)
                 .bind(link.kind.as_str())
-                .bind(link.target.trim())
+                .bind(&link.target)
                 .execute(&mut *tx)
                 .await?;
         }
@@ -721,7 +891,7 @@ impl TrackerStore {
         });
         let body = note.unwrap_or_else(|| {
             let created = super::records::created_body(
-                format!("Created {} item.", new.item_type),
+                format!("Created {} ticket.", new.item_type),
                 new.approval,
             );
             if item_labels.is_empty() {
@@ -739,10 +909,16 @@ impl TrackerStore {
             EventKind::Create,
             &body,
             &fields,
+            None,
             &now,
         )
         .await?;
-        tx.commit().await?;
+        // The request it came from records what it became (rag-t0044); that
+        // event follows the create's.
+        for link in links.iter().filter(|l| l.kind == LinkKind::From) {
+            reciprocate_from(&mut tx, &new.project, &id, &link.target, true, &who, &now).await?;
+        }
+        self.commit(tx).await?;
 
         self.get_item(&id, true)
             .await?
@@ -869,7 +1045,7 @@ impl TrackerStore {
             Some(Some(reason)) if !blocked || item.block_reason != Some(reason) => {
                 if !queued_status(status) {
                     return refused(format!(
-                        "{id} is {status}; only a queued item can be blocked"
+                        "{id} is {status}; only a queued ticket can be blocked"
                     ));
                 }
                 sqlx::query(
@@ -911,7 +1087,7 @@ impl TrackerStore {
             let deps = deps_given.unwrap_or_else(|| item.depends_on.clone());
             if deps.is_empty() {
                 return refused(format!(
-                    "blocking {id} with reason dependency needs depends_on: the items it waits on"
+                    "blocking {id} with reason dependency needs depends_on: the tickets it waits on"
                 ));
             }
             if deps != item.depends_on {
@@ -979,6 +1155,11 @@ impl TrackerStore {
             if item.links.contains(&link) || added.contains(&link) {
                 continue;
             }
+            if link.kind == LinkKind::From && item.item_type == ItemType::Request {
+                return refused(format!(
+                    "{id} is a request and cannot come from another request"
+                ));
+            }
             validate_link(&mut tx, &project, &link, Some(id)).await?;
             sqlx::query("INSERT INTO item_links (item_id, kind, target) VALUES (?,?,?)")
                 .bind(id)
@@ -994,6 +1175,13 @@ impl TrackerStore {
                 kind: link.kind,
                 target: link.target.trim().to_string(),
             };
+            if link.kind == LinkKind::Became {
+                return refused(format!(
+                    "became links are written by the server: remove the from link on {} \
+                     (remove_links from:{id}) and this one goes with it",
+                    link.target
+                ));
+            }
             if !item.links.contains(&link) {
                 return refused(format!(
                     "{id} has no {} link to {:?} to remove",
@@ -1042,7 +1230,7 @@ impl TrackerStore {
         }
         if (upd.intensity.is_some() || upd.release.is_some()) && item.item_type != ItemType::Gate {
             return refused(format!(
-                "intensity and release are gate fields; {id} is a {} item",
+                "intensity and release are gate fields; {id} is a {} ticket",
                 item.item_type
             ));
         }
@@ -1057,6 +1245,9 @@ impl TrackerStore {
         }
         if upd.parallel.is_some() && item.item_type == ItemType::Gate {
             return refused(PARALLEL_GATE);
+        }
+        if upd.parallel == Some(true) && item.item_type == ItemType::Request {
+            return refused(PARALLEL_REQUEST);
         }
         if let Some(parallel) = upd.parallel.filter(|p| *p != item.parallel) {
             sqlx::query("UPDATE items SET parallel = ? WHERE id = ?")
@@ -1127,6 +1318,8 @@ impl TrackerStore {
                 (kind, said.join(" "))
             }
         };
+        let before = Value::Object(prior_values(&item, &fields));
+        let fields = Value::Object(fields);
         sqlx::query("UPDATE items SET updated_at = ? WHERE id = ?")
             .bind(&now)
             .bind(id)
@@ -1140,16 +1333,23 @@ impl TrackerStore {
             &who,
             kind,
             &body,
-            &Value::Object(fields),
+            &fields,
+            Some(&before),
             &now,
         )
         .await?;
+        // A from link added or removed is answered on its request (rag-t0044).
+        for (links, on) in [(&added, true), (&removed, false)] {
+            for link in links.iter().filter(|l| l.kind == LinkKind::From) {
+                reciprocate_from(&mut tx, &project, id, &link.target, on, &who, &now).await?;
+            }
+        }
         // Finishing an item frees what waited on it, in this same transaction
         // (rag-t0018); its events follow this write's.
         if status == ItemStatus::Done && item.status != ItemStatus::Done {
             unblock_dependents(&mut tx, &project, id, &who, &now).await?;
         }
-        tx.commit().await?;
+        self.commit(tx).await?;
 
         self.get_item(id, true)
             .await?
@@ -1171,7 +1371,7 @@ impl TrackerStore {
         let item = must_item(&mut tx, id).await?;
         if !item.queued {
             return refused(format!(
-                "{id} is {} and not in the queue; only a queued item moves",
+                "{id} is {} and not in the queue; only a queued ticket moves",
                 item.status
             ));
         }
@@ -1183,6 +1383,11 @@ impl TrackerStore {
         }
         list::unlink(&mut tx, &item.project, id).await?;
         list::link_at(&mut tx, &item.project, id, &place).await?;
+        // Where it now sits, by its new neighbour (rag-t0038): `null` is the top.
+        let prev_id: Option<String> = sqlx::query_scalar("SELECT prev_id FROM items WHERE id = ?")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
         let body = note
             .map(str::trim)
             .filter(|n| !n.is_empty())
@@ -1206,11 +1411,12 @@ impl TrackerStore {
             &who,
             EventKind::Move,
             &body,
-            &json!({ "place": place }),
+            &json!({ "place": place, "prev_id": prev_id }),
+            Some(&json!({ "prev_id": item.prev_id })),
             &now,
         )
         .await?;
-        tx.commit().await?;
+        self.commit(tx).await?;
         self.get_item(id, true)
             .await?
             .ok_or_else(|| TrackerError::Internal("item vanished after move".into()))
@@ -1244,16 +1450,17 @@ impl TrackerStore {
                 EventKind::Acknowledge,
                 "Acknowledged done.",
                 &json!({ "acknowledged_at": now }),
+                Some(&json!({ "acknowledged_at": null })),
                 &now,
             )
             .await?;
         }
-        tx.commit().await?;
+        self.commit(tx).await?;
         Ok(ids)
     }
 
-    /// The queue view (D14): done-unacknowledged oldest first (rag-t0029), the items in
-    /// review (blocked or not), the queue in list order without review, blocked
+    /// The queue view (D14): the requests (rag-t0044), done-unacknowledged oldest
+    /// first (rag-t0029), the items in review (blocked or not), the queue in list order without review, blocked
     /// or deferred items, then the blocked items, then the deferred items
     /// (blocked or not), each in list order.
     pub async fn queue_view(&self, project: &str) -> TResult<QueueView> {
@@ -1274,13 +1481,16 @@ impl TrackerStore {
         .into_iter()
         .map(|i| (i.id.clone(), i))
         .collect();
+        let mut requests = Vec::new();
         let mut review = Vec::new();
         let mut queue = Vec::new();
         let mut blocked = Vec::new();
         let mut deferred = Vec::new();
         for id in order {
             if let Some(item) = items.remove(&id) {
-                if item.status == ItemStatus::Review {
+                if item.item_type == ItemType::Request {
+                    requests.push(item);
+                } else if item.status == ItemStatus::Review {
                     review.push(item);
                 } else if item.status == ItemStatus::Deferred {
                     deferred.push(item);
@@ -1304,6 +1514,7 @@ impl TrackerStore {
         Ok(QueueView {
             project: project.to_string(),
             exists: exists.is_some(),
+            requests,
             done,
             review,
             queue,
@@ -1345,12 +1556,14 @@ impl TrackerStore {
 
     /// Every project the tracker knows, by name, with its counts.
     pub async fn list_projects(&self) -> TResult<Vec<ProjectSummary>> {
-        let rows: Vec<(String, String, i64, i64, i64, i64, i64)> = sqlx::query_as(&format!(
+        type Row = (String, String, i64, i64, i64, i64, i64, i64);
+        let rows: Vec<Row> = sqlx::query_as(&format!(
             "SELECT p.name, p.created_at, \
                (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.status IN {QUEUED_IN}), \
-               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.blocked = 1 AND i.status IN ('pending','in_progress','failed')), \
-               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.status = 'deferred'), \
-               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.status = 'review'), \
+               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.type = 'request' AND i.status IN {QUEUED_IN}), \
+               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.type <> 'request' AND i.blocked = 1 AND i.status IN ('pending','in_progress','failed')), \
+               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.type <> 'request' AND i.status = 'deferred'), \
+               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.type <> 'request' AND i.status = 'review'), \
                (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.status = 'done' AND i.acknowledged_at IS NULL) \
              FROM projects p ORDER BY p.name",
         ))
@@ -1359,11 +1572,21 @@ impl TrackerStore {
         Ok(rows
             .into_iter()
             .map(
-                |(name, created_at, queued, blocked, deferred, review, done_unacknowledged)| {
+                |(
+                    name,
+                    created_at,
+                    queued,
+                    requests,
+                    blocked,
+                    deferred,
+                    review,
+                    done_unacknowledged,
+                )| {
                     ProjectSummary {
                         name,
                         created_at,
                         queued,
+                        requests,
                         blocked,
                         deferred,
                         review,

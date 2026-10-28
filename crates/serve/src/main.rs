@@ -214,6 +214,7 @@ async fn main() -> anyhow::Result<()> {
         tracker_ready: tracker.is_some(),
     });
 
+    let feed_store = tracker.clone();
     let app = api_router(state).merge(tracker::router(tracker, tracker_trigger));
 
     // The UI rides on the same port as the API — attached last, because it is a
@@ -234,7 +235,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_with_feeds(feed_store))
         .await?;
     Ok(())
 }
@@ -485,8 +486,8 @@ async fn ledger_create(
             "title and summary are required".into(),
         ));
     }
-    // `create_topic` interpolates the repo straight into the id (`{repo}-{seq:04}`),
-    // so a blank one mints `-0001` rather than failing. `ledger_move` has always
+    // `create_topic` interpolates the repo straight into the id (`{repo}-l{seq:04}`),
+    // so a blank one mints `-l0001` rather than failing. `ledger_move` has always
     // guarded this; `ledger_create` did not, and the web UI is the first client
     // where a human types the repo freehand.
     if body.repo.trim().is_empty() {
@@ -1110,9 +1111,46 @@ impl IntoResponse for ApiError {
     }
 }
 
+/// Ctrl-C, or SIGTERM (what `podman stop` and systemd send: the container's
+/// process is PID 1, which the kernel does not kill on a signal it has no
+/// handler for, so without this a stop waited out podman's timeout and ended
+/// in SIGKILL, and the event feeds never got their close frame).
 async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let term = async {
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut s) => {
+                    s.recv().await;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "cannot listen for SIGTERM");
+                    std::future::pending::<()>().await;
+                }
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term => {}
+        }
+    }
+    #[cfg(not(unix))]
     let _ = tokio::signal::ctrl_c().await;
     tracing::info!("shutdown signal received");
+}
+
+/// The shutdown signal, then the event feeds told the server is going
+/// (rag-t0036): each sends its client a close frame carrying the id to resume
+/// from. The moment's grace lets those frames out before the runtime stops.
+async fn shutdown_with_feeds(tracker: Option<TrackerStore>) {
+    shutdown_signal().await;
+    if let Some(t) = tracker {
+        let listening = t.close_feed();
+        if listening > 0 {
+            tracing::info!(listening, "closing tracker event feeds");
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1217,5 +1255,170 @@ mod tests {
         assert!(body["qdrant_error"].is_null(), "{body}");
         assert_eq!(body["retrieval_ready"], false);
         assert_eq!(body["tracker_ready"], true);
+    }
+
+    // ---- Ledger ids of both forms over HTTP (rag-t0051) ----------------------
+
+    async fn call(
+        state: &Arc<AppState>,
+        method: &str,
+        uri: &str,
+        body: Option<serde_json::Value>,
+    ) -> (StatusCode, serde_json::Value) {
+        let req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(match body {
+                Some(b) => Body::from(b.to_string()),
+                None => Body::empty(),
+            })
+            .unwrap();
+        let res = api_router(state.clone()).oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, body)
+    }
+
+    /// New topics mint `{repo}-l{seq:04}`, continuing the repo's legacy
+    /// sequence; a legacy `{repo}-{seq:04}` id still gets, appends, moves (with
+    /// its redirect), archives and is found by the archived search.
+    #[tokio::test]
+    async fn ledger_routes_take_both_id_forms() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ledger.db");
+        let ledger = LedgerStore::open(&db).await.unwrap();
+        // A topic as the store minted it before rag-t0051, in a hyphenated repo.
+        let raw = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.display()))
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO topics (topic_id, seq, type, repo, title, summary, current_state, \
+             status, created_at, updated_at, creator_email, tags) VALUES \
+             ('shq-suite-0041', 41, 'decision', 'shq-suite', 'Legacy', 'Legacy summary.', \
+             'Legacy state.', 'proposed', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', \
+             'dev@example.com', '[]')",
+        )
+        .execute(&raw)
+        .await
+        .unwrap();
+        raw.close().await;
+
+        let state = Arc::new(AppState {
+            retriever: None,
+            cfg: Config::default(),
+            reindex_trigger: None,
+            ledger: Some(ledger),
+            ledger_trigger: None,
+            summariser: None,
+            prompts: None,
+            tracker_ready: false,
+        });
+        let who = serde_json::json!({ "author_email": "dev@example.com" });
+        let with = |extra: serde_json::Value| {
+            let mut v = who.clone();
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            v
+        };
+
+        // Create: the next number after the legacy 41, in the new form.
+        let (st, created) = call(
+            &state,
+            "POST",
+            "/ledger",
+            Some(serde_json::json!({
+                "type": "decision", "repo": "shq-suite", "title": "New",
+                "summary": "New summary.", "initial_state": "New state.",
+                "creator_email": "dev@example.com",
+            })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{created}");
+        assert_eq!(created["topic_id"], "shq-suite-l0042");
+
+        // Get and append, both forms.
+        for id in ["shq-suite-0041", "shq-suite-l0042"] {
+            let (st, got) = call(&state, "GET", &format!("/ledger/{id}"), None).await;
+            assert_eq!(st, StatusCode::OK, "{id}: {got}");
+            assert_eq!(got["topic_id"], id);
+            let (st, ev) = call(
+                &state,
+                "POST",
+                &format!("/ledger/{id}/append"),
+                Some(with(serde_json::json!({ "body": "Noted." }))),
+            )
+            .await;
+            assert_eq!(st, StatusCode::OK, "{id}: {ev}");
+            assert_eq!(ev["body"], "Noted.");
+        }
+
+        // Archive both, find both in the archived search, restore.
+        for id in ["shq-suite-0041", "shq-suite-l0042"] {
+            let (st, a) = call(
+                &state,
+                "POST",
+                &format!("/ledger/{id}/archive"),
+                Some(who.clone()),
+            )
+            .await;
+            assert_eq!(st, StatusCode::OK, "{id}: {a}");
+        }
+        let (st, found) = call(
+            &state,
+            "POST",
+            "/ledger/search",
+            Some(serde_json::json!({ "query": "", "archived": true })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{found}");
+        let mut ids: Vec<&str> = found["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["topic_id"].as_str().unwrap())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["shq-suite-0041", "shq-suite-l0042"]);
+        for id in ["shq-suite-0041", "shq-suite-l0042"] {
+            call(
+                &state,
+                "POST",
+                &format!("/ledger/{id}/archive"),
+                Some(with(serde_json::json!({ "archived": false }))),
+            )
+            .await;
+        }
+
+        // Move the legacy id: a new-form id in the destination, and the old id
+        // answers with the redirect pointer.
+        let (st, moved) = call(
+            &state,
+            "POST",
+            "/ledger/shq-suite-0041/move",
+            Some(with(serde_json::json!({ "repo": "rag" }))),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{moved}");
+        assert_eq!(moved["topic_id"], "rag-l0001");
+        let (st, pointer) = call(&state, "GET", "/ledger/shq-suite-0041", None).await;
+        assert_eq!(st, StatusCode::OK, "{pointer}");
+        assert_eq!(pointer["moved"], true);
+        assert_eq!(pointer["moved_to"], "rag-l0001");
+
+        // The moved-away legacy number is not reissued in either form.
+        let (_, next) = call(
+            &state,
+            "POST",
+            "/ledger",
+            Some(serde_json::json!({
+                "type": "defect", "repo": "shq-suite", "title": "Next",
+                "summary": "s", "initial_state": "i", "creator_email": "dev@example.com",
+            })),
+        )
+        .await;
+        assert_eq!(next["topic_id"], "shq-suite-l0043");
     }
 }

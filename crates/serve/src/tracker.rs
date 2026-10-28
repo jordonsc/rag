@@ -7,7 +7,8 @@
 //! Conventions, in the ledger routes' style:
 //!
 //! * JSON in and out. Every write carries `author_email` (required), `agent`
-//!   (optional; recorded as `Unknown` when absent) and `surface` (`web` or `mcp`).
+//!   (optional; recorded as `Owner` when absent on `web`, rag-t0038, and `Unknown` on `mcp`)
+//!   and `surface` (`web` or `mcp`).
 //! * Request bodies are parsed here rather than by axum's `Json` extractor, so a
 //!   malformed body, an unknown field or a bad enum value is a **400** with the
 //!   same `{"error": …}` body as every other refusal, not axum's plain-text 422.
@@ -41,10 +42,10 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use rag_core::hashing::hash_str;
 use rag_core::tracker::{
-    Actor, Approval, BlockReason, ConceptState, ConceptUpdate, DocKind, Edit, Intensity,
-    ItemStatus, ItemType, ItemUpdate, Link, MilestoneState, MilestoneUpdate, NewAttachment,
-    NewConcept, NewDocument, NewItem, NewMilestone, NewSpec, Place, Replacement, SpecState,
-    SpecUpdate, Surface, TrackerError, TrackerStore, MAX_ATTACHMENT_BYTES,
+    default_approval, Actor, Approval, BlockReason, ConceptState, ConceptUpdate, DocKind, Edit,
+    Intensity, ItemStatus, ItemType, ItemUpdate, Link, MilestoneState, MilestoneUpdate,
+    NewAttachment, NewConcept, NewDocument, NewItem, NewMilestone, NewSpec, Place, Replacement,
+    SpecState, SpecUpdate, Surface, TrackerError, TrackerStore, MAX_ATTACHMENT_BYTES,
 };
 
 /// Body limit for the JSON routes: a document may be up to 4 MB, and JSON
@@ -85,6 +86,8 @@ pub fn router(store: Option<TrackerStore>, reindex_trigger: Option<PathBuf>) -> 
         .route("/tracker/{project}/check", get(check))
         .route("/tracker/{project}/ack-done", post(ack_done))
         .route("/tracker/{project}/labels", get(labels_list))
+        .route("/tracker/{project}/events", get(feed::events_read))
+        .route("/tracker/{project}/events/ws", get(feed::events_ws))
         .route(
             "/tracker/{project}/items",
             get(items_list).post(item_create),
@@ -444,6 +447,8 @@ async fn item_create(State(api): St, Path(project): Path<String>, body: Bytes) -
     let b: ItemCreateBody = parse(&body)?;
     let place = place_of(b.before, b.after, b.top, b.bottom, false)?.unwrap_or(Place::Bottom);
     let actor = Actor::new(b.author_email, b.agent.as_deref(), b.surface);
+    // Unnamed, a ticket broken out of a request is agent-approved (rag-t0044).
+    let approval = b.approval.unwrap_or_else(|| default_approval(&b.links));
     let rec = api
         .store()?
         .create_item(
@@ -453,7 +458,7 @@ async fn item_create(State(api): St, Path(project): Path<String>, body: Bytes) -
                 title: b.title,
                 body: b.body,
                 assignee: b.assignee,
-                approval: b.approval.unwrap_or(Approval::Unapproved),
+                approval,
                 links: b.links,
                 intensity: b.intensity,
                 release: b.release,
@@ -471,7 +476,7 @@ async fn item_create(State(api): St, Path(project): Path<String>, body: Bytes) -
 async fn item_get(State(api): St, Path(id): Path<String>, Q(q): Q<HistoryQuery>) -> ApiResult {
     match api.store()?.get_item(&id, q.history()).await? {
         Some(rec) => ok(&rec),
-        None => Err(not_found(format!("no item {id:?}"))),
+        None => Err(not_found(format!("no ticket {id:?}"))),
     }
 }
 
@@ -1309,6 +1314,8 @@ async fn attachment_get(State(api): St, Path(hash): Path<String>) -> ApiResult {
     );
     Ok((StatusCode::OK, headers, bytes).into_response())
 }
+
+mod feed;
 
 #[cfg(test)]
 mod tests;

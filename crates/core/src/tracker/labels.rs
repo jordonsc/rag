@@ -75,7 +75,7 @@ pub fn clean_labels(given: &[String]) -> TResult<Vec<String>> {
     }
     if out.len() > MAX_LABELS {
         return refused(format!(
-            "an item carries at most {MAX_LABELS} labels, not {}",
+            "a ticket carries at most {MAX_LABELS} labels, not {}",
             out.len()
         ));
     }

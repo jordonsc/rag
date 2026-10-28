@@ -1151,8 +1151,8 @@ async fn ratified_follows_only_an_agent_approval() {
     assert_eq!(last.kind, EventKind::Approve);
     assert_eq!(last.surface, Surface::Web);
     assert_eq!(
-        last.agent, "Unknown",
-        "an absent agent is recorded as Unknown"
+        last.agent, "Owner",
+        "a web write with no agent is recorded as Owner (rag-t0038)"
     );
 }
 
@@ -1248,6 +1248,52 @@ async fn links_are_validated() {
         .await
         .unwrap();
     assert_eq!(r.item.links, vec![link(LinkKind::Item, &b)]);
+}
+
+/// A ledger link holds a topic id of either form (rag-t0051): the `l`-marked
+/// ids minted since, the legacy ones before, and repos with hyphens of their
+/// own. Held as text, so nothing re-reads or rewrites them.
+#[tokio::test]
+async fn ledger_links_take_both_topic_id_forms() {
+    let f = fixture().await;
+    let s = &f.store;
+    let a = create(s, "p", "a").await;
+    let ids = ["ubu-l1652", "ubu-1651", "shq-suite-l0012", "shq-suite-0001"];
+    let links: Vec<Link> = ids
+        .iter()
+        .map(|t| Link {
+            kind: LinkKind::Ledger,
+            target: (*t).into(),
+        })
+        .collect();
+    let r = s
+        .update_item(
+            &a,
+            ItemUpdate {
+                add_links: links.clone(),
+                ..Default::default()
+            },
+            &mcp(),
+        )
+        .await
+        .unwrap();
+    let mut held: Vec<&str> = r.item.links.iter().map(|l| l.target.as_str()).collect();
+    held.sort_unstable();
+    let mut want = ids.to_vec();
+    want.sort_unstable();
+    assert_eq!(held, want);
+    let r = s
+        .update_item(
+            &a,
+            ItemUpdate {
+                remove_links: links,
+                ..Default::default()
+            },
+            &mcp(),
+        )
+        .await
+        .unwrap();
+    assert!(r.item.links.is_empty());
 }
 
 // ---- The queue view and acknowledge ------------------------------------------
@@ -1446,9 +1492,13 @@ async fn every_write_appends_exactly_one_event_that_explains_it() {
         let e = rec.events.last().unwrap();
         assert_eq!(e.kind, kind);
         assert_eq!(e.surface, actor.surface);
+        let absent = match actor.surface {
+            Surface::Web => "Owner",
+            Surface::Mcp => "Unknown",
+        };
         assert_eq!(
             e.agent,
-            actor.agent.clone().unwrap_or_else(|| "Unknown".into())
+            actor.agent.clone().unwrap_or_else(|| absent.into())
         );
     }
     s.move_item(&id, Place::Before(other.clone()), Some("first"), &mcp())
@@ -2721,7 +2771,7 @@ async fn an_approval_at_creation_needs_no_note() {
         .await
         .unwrap();
     assert_eq!(item.item.approval, Approval::Owner);
-    assert_eq!(item.events[0].body, "Created dev item (approval: owner).");
+    assert_eq!(item.events[0].body, "Created dev ticket (approval: owner).");
     assert!(s
         .create_item(
             NewItem {
@@ -2959,8 +3009,12 @@ async fn a_dependency_unblocks_itself_when_its_one_dependency_is_done() {
     assert_eq!(ev.body, format!("Unblocked: {a} is done."));
     assert_eq!(ev.author_email, "owner@example.com");
     assert_eq!(ev.surface, Surface::Web);
-    assert_eq!(ev.agent, "Unknown");
+    assert_eq!(ev.agent, "Owner");
     assert_eq!(ev.fields["unblocked_by"], json!(a));
+    assert_eq!(
+        ev.before,
+        Some(json!({ "blocked": true, "block_reason": "dependency", "depends_on": [a.clone()] }))
+    );
     // b is back in the queue, at the place it kept.
     let view = s.queue_view("ubu").await.unwrap();
     assert!(view.blocked.is_empty());
@@ -3054,7 +3108,7 @@ async fn depends_on_is_refused_across_projects_empty_self_unknown_done_and_in_a_
         .update_item(&b, wait_on(&[&other]), &mcp())
         .await
         .unwrap_err();
-    refuse(e, "can only depend on items of its own project (ubu)");
+    refuse(e, "can only depend on tickets of its own project (ubu)");
     sound(s, "ubu").await;
     sound(s, "rag").await;
     // An empty list, and none at all.
@@ -3088,7 +3142,7 @@ async fn depends_on_is_refused_across_projects_empty_self_unknown_done_and_in_a_
         s.update_item(&b, wait_on(&["ubu-t0099"]), &mcp())
             .await
             .unwrap_err(),
-        "not an item",
+        "not a ticket",
     );
     let done = create(s, "ubu", "done already").await;
     finish(s, &done).await;
@@ -3292,12 +3346,12 @@ async fn labels_are_cleaned_sorted_and_recorded_on_create() {
     );
     assert_eq!(
         e.body,
-        "Created dev item. Labels: biomes, Deep water, Physics."
+        "Created dev ticket. Labels: biomes, Deep water, Physics."
     );
     // An unlabelled item says nothing about labels.
     let plain = s.create_item(new_item("ubu", "x"), &mcp()).await.unwrap();
     assert!(plain.item.labels.is_empty());
-    assert_eq!(plain.events[0].body, "Created dev item.");
+    assert_eq!(plain.events[0].body, "Created dev ticket.");
     assert_eq!(plain.events[0].fields["labels"], json!([]));
     // A read and the queue view carry them.
     let id = rec.item.id.clone();
@@ -3609,4 +3663,1509 @@ async fn an_older_database_gains_the_labels_table_and_keeps_its_items() {
         assert_eq!(sound(&store, "old").await, ids(&["old-t0001"]));
         store.pool.close().await;
     }
+}
+
+// ---- The live event feed (rag-t0036) -------------------------------------------
+
+/// Every event a receiver holds right now, without waiting.
+fn drain(rx: &mut tokio::sync::broadcast::Receiver<std::sync::Arc<FeedEvent>>) -> Vec<FeedEvent> {
+    let mut out = Vec::new();
+    while let Ok(e) = rx.try_recv() {
+        out.push((*e).clone());
+    }
+    out
+}
+
+#[tokio::test]
+async fn the_feed_publishes_each_committed_event_after_its_write() {
+    let f = fixture().await;
+    let mut rx = f.store.subscribe();
+    let id = f
+        .store
+        .create_item(new_item("p", "Feed me"), &web())
+        .await
+        .unwrap()
+        .item
+        .id;
+    // Published by the time the write returns: no polling, no delay.
+    let got = drain(&mut rx);
+    assert_eq!(got.len(), 1);
+    let e = &got[0];
+    assert_eq!(
+        (e.project.as_str(), e.target_id.as_str()),
+        ("p", id.as_str())
+    );
+    assert_eq!(e.target_kind, TargetKind::Item);
+    assert_eq!(e.title.as_deref(), Some("Feed me"));
+    assert_eq!((e.surface, e.kind), (Surface::Web, EventKind::Create));
+    assert_eq!(e.author_email, "owner@example.com");
+
+    f.store
+        .update_item(
+            &id,
+            ItemUpdate {
+                approval: Some(Approval::Owner),
+                ..Default::default()
+            },
+            &web(),
+        )
+        .await
+        .unwrap();
+    let got = drain(&mut rx);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].kind, EventKind::Approve);
+    assert!(got[0].event_id > e.event_id);
+    assert_eq!(got[0].body, "Approval: unapproved → owner.");
+}
+
+#[tokio::test]
+async fn a_refused_write_publishes_nothing() {
+    let f = fixture().await;
+    let id = create(&f.store, "p", "A").await;
+    let mut rx = f.store.subscribe();
+    let err = f
+        .store
+        .update_item(&id, ItemUpdate::default(), &web())
+        .await;
+    assert!(err.is_err());
+    assert!(drain(&mut rx).is_empty());
+}
+
+#[tokio::test]
+async fn a_spec_with_milestones_publishes_every_event_it_wrote_in_id_order() {
+    let f = fixture().await;
+    let mut rx = f.store.subscribe();
+    f.store
+        .create_spec(
+            NewSpec {
+                project: "p".into(),
+                slug: "feed".into(),
+                title: "The feed".into(),
+                state: None,
+                approval: Approval::Unapproved,
+                body: "# The feed".into(),
+                milestones: vec![NewMilestone {
+                    code: "m01".into(),
+                    title: "Socket".into(),
+                    name: None,
+                    state: None,
+                    approval: Approval::Unapproved,
+                    body: String::new(),
+                    note: None,
+                }],
+                note: None,
+            },
+            &web(),
+        )
+        .await
+        .unwrap();
+    let got = drain(&mut rx);
+    let in_table = f
+        .store
+        .events_after(&FeedFilter::default(), 0, None)
+        .await
+        .unwrap();
+    let ids: Vec<i64> = got.iter().map(|e| e.event_id).collect();
+    assert_eq!(ids, in_table.iter().map(|e| e.event_id).collect::<Vec<_>>());
+    assert!(ids.windows(2).all(|w| w[0] < w[1]));
+    // Each record is named and titled from its own table.
+    let spec = got
+        .iter()
+        .find(|e| e.target_kind == TargetKind::Spec)
+        .unwrap();
+    assert_eq!(
+        (spec.target_label(), spec.title.as_deref()),
+        ("spec:feed".into(), Some("The feed"))
+    );
+    let m = got
+        .iter()
+        .find(|e| e.target_kind == TargetKind::Milestone)
+        .unwrap();
+    assert_eq!(
+        (m.target_label(), m.title.as_deref()),
+        ("milestone:feed/m01".into(), Some("Socket"))
+    );
+    let d = got
+        .iter()
+        .find(|e| e.target_kind == TargetKind::Document)
+        .unwrap();
+    assert!(d.target_label().starts_with("doc:"), "{}", d.target_label());
+    assert!(d.title.is_some());
+}
+
+#[tokio::test]
+async fn a_late_subscriber_gets_only_what_comes_after_it() {
+    let f = fixture().await;
+    // Written with nobody listening: the mark moves on without a read.
+    create(&f.store, "p", "Before").await;
+    let mut rx = f.store.subscribe();
+    create(&f.store, "p", "After").await;
+    let got = drain(&mut rx);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].title.as_deref(), Some("After"));
+}
+
+#[tokio::test]
+async fn a_reopened_store_starts_its_feed_after_the_events_already_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tracker.db");
+    {
+        let s = TrackerStore::open(&path, dir.path().join("att"))
+            .await
+            .unwrap();
+        s.create_item(new_item("p", "Old"), &web()).await.unwrap();
+    }
+    let s = TrackerStore::open(&path, dir.path().join("att"))
+        .await
+        .unwrap();
+    let mut rx = s.subscribe();
+    s.create_item(new_item("p", "New"), &web()).await.unwrap();
+    let got = drain(&mut rx);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].title.as_deref(), Some("New"));
+}
+
+#[tokio::test]
+async fn events_after_applies_project_surface_and_kind_filters() {
+    let f = fixture().await;
+    let a = f
+        .store
+        .create_item(new_item("p", "A"), &web())
+        .await
+        .unwrap()
+        .item
+        .id;
+    f.store
+        .create_item(new_item("q", "Q"), &web())
+        .await
+        .unwrap();
+    f.store
+        .update_item(&a, status(ItemStatus::InProgress, "go"), &mcp())
+        .await
+        .unwrap();
+    let all = |filter: FeedFilter| {
+        let store = f.store.clone();
+        async move { store.events_after(&filter, 0, None).await.unwrap() }
+    };
+    let ids = |v: &[FeedEvent]| v.iter().map(|e| e.target_id.clone()).collect::<Vec<_>>();
+    assert_eq!(all(FeedFilter::default()).await.len(), 3);
+    let p = all(FeedFilter {
+        project: Some("p".into()),
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(ids(&p), vec![a.clone(), a.clone()]);
+    let web_only = all(FeedFilter {
+        surfaces: Some(vec![Surface::Web]),
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(web_only.len(), 2);
+    assert!(web_only.iter().all(|e| e.surface == Surface::Web));
+    let status_only = all(FeedFilter {
+        kinds: Some(vec![EventKind::Status]),
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(status_only.len(), 1);
+    assert_eq!(status_only[0].kind, EventKind::Status);
+    let none = all(FeedFilter {
+        kinds: Some(Vec::new()),
+        ..Default::default()
+    })
+    .await;
+    assert!(none.is_empty());
+    // `since` is exclusive, `limit` caps, and the counts agree.
+    let first = all(FeedFilter::default()).await[0].event_id;
+    let after_first = f
+        .store
+        .events_after(&FeedFilter::default(), first, Some(1))
+        .await
+        .unwrap();
+    assert_eq!(after_first.len(), 1);
+    assert_eq!(after_first[0].event_id, first + 1);
+    assert_eq!(
+        f.store
+            .count_events_after(&FeedFilter::default(), first)
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(f.store.latest_event_id().await.unwrap(), first + 2);
+    // `matches` is the same test as the SQL.
+    let filter = FeedFilter {
+        project: Some("p".into()),
+        surfaces: Some(vec![Surface::Mcp]),
+        kinds: None,
+    };
+    let sql = all(filter.clone()).await;
+    let rust: Vec<_> = all(FeedFilter::default())
+        .await
+        .into_iter()
+        .filter(|e| filter.matches(e))
+        .collect();
+    assert_eq!(
+        sql.iter().map(|e| e.event_id).collect::<Vec<_>>(),
+        rust.iter().map(|e| e.event_id).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_writers_publish_every_event_once_in_id_order() {
+    let f = fixture().await;
+    let mut rx = f.store.subscribe();
+    let mut tasks = Vec::new();
+    for w in 0..4 {
+        let store = f.store.clone();
+        tasks.push(tokio::spawn(async move {
+            for i in 0..10 {
+                store
+                    .create_item(new_item("p", &format!("w{w} i{i}")), &web())
+                    .await
+                    .unwrap();
+            }
+        }));
+    }
+    for t in tasks {
+        t.await.unwrap();
+    }
+    let got = drain(&mut rx);
+    let in_table = f
+        .store
+        .events_after(&FeedFilter::default(), 0, None)
+        .await
+        .unwrap();
+    assert_eq!(in_table.len(), 40);
+    assert_eq!(
+        got.iter().map(|e| e.event_id).collect::<Vec<_>>(),
+        in_table.iter().map(|e| e.event_id).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_feed_line_is_one_line_with_the_event_id_first() {
+    let e = FeedEvent {
+        event_id: 13901,
+        ts: "2026-10-27T21:49:42Z".into(),
+        project: "rag".into(),
+        target_kind: TargetKind::Item,
+        target_id: "rag-t0040".into(),
+        title: Some("Event   feed".into()),
+        author_email: "owner@example.com".into(),
+        agent: "Owner".into(),
+        surface: Surface::Web,
+        kind: EventKind::Approve,
+        body: "Approval: agent → ratified.\n\nShip it.".into(),
+        fields: json!({ "approval": "ratified" }),
+        before: Some(json!({ "approval": "agent" })),
+    };
+    assert_eq!(
+        e.line(),
+        "#13901 rag web approve rag-t0040 \"Event feed\" {approval: agent → ratified}: Approval: \
+         agent → ratified. Ship it. [Owner]"
+    );
+    // An agent's write names the agent, a record without a title has none,
+    // and a long body is cut.
+    let long = FeedEvent {
+        surface: Surface::Mcp,
+        agent: "Claude Test".into(),
+        title: None,
+        target_kind: TargetKind::Spec,
+        target_id: "feed".into(),
+        body: "x".repeat(1000),
+        ..e
+    };
+    let line = long.line();
+    assert!(
+        line.starts_with("#13901 rag mcp approve spec:feed {approval: agent → ratified}: xxx"),
+        "{line}"
+    );
+    // The cut says how much more there is and which event holds it (rag-t0039).
+    assert!(
+        line.ends_with(&format!(
+            "{}… (+801 chars in #13901) [Claude Test]",
+            "x".repeat(199)
+        )),
+        "{line}"
+    );
+    assert!(!line.contains('\n'));
+    assert!(line.chars().count() < 320);
+    // A note of exactly the cap is not cut.
+    let exact = FeedEvent {
+        body: "y".repeat(200),
+        ..long
+    };
+    assert!(exact.line().contains(&format!(": {} [", "y".repeat(200))));
+}
+
+/// One event of a burst: `id`, `kind` on `target` at `ts`, as the owner.
+fn burst_event(
+    id: i64,
+    ts: &str,
+    kind: EventKind,
+    target: &str,
+    fields: serde_json::Value,
+    before: Option<serde_json::Value>,
+) -> FeedEvent {
+    FeedEvent {
+        event_id: id,
+        ts: ts.into(),
+        target_id: target.into(),
+        title: Some(format!("Title {target}")),
+        kind,
+        fields,
+        before,
+        ..feed_event(EventKind::Note, json!({}), None)
+    }
+}
+
+#[test]
+fn a_burst_joins_one_project_and_surface_within_its_window() {
+    let at = |id, ts: &str| burst_event(id, ts, EventKind::Move, "rag-t0001", json!({}), None);
+    let first = at(1, "2026-10-27T21:49:40Z");
+    assert!(joins_burst(&first, &at(2, "2026-10-27T21:49:40Z"), 3));
+    assert!(joins_burst(&first, &at(2, "2026-10-27T21:49:43Z"), 3));
+    assert!(!joins_burst(&first, &at(2, "2026-10-27T21:49:44Z"), 3));
+    assert!(!joins_burst(&first, &at(2, "2026-10-27T21:49:39Z"), 3));
+    assert!(
+        !joins_burst(&first, &at(2, "2026-10-27T21:49:40Z"), 0),
+        "a window of 0 coalesces nothing"
+    );
+    let other_surface = FeedEvent {
+        surface: Surface::Mcp,
+        ..at(2, "2026-10-27T21:49:40Z")
+    };
+    assert!(!joins_burst(&first, &other_surface, 3));
+    let other_project = FeedEvent {
+        project: "ubu".into(),
+        ..at(2, "2026-10-27T21:49:40Z")
+    };
+    assert!(!joins_burst(&first, &other_project, 3));
+    let bad_ts = at(2, "yesterday");
+    assert!(!joins_burst(&first, &bad_ts, 3));
+}
+
+#[test]
+fn a_burst_line_summarises_moves_and_names_each_record_once() {
+    let ts = "2026-10-27T21:49:40Z";
+    let mv = |id, target: &str| {
+        burst_event(
+            id,
+            ts,
+            EventKind::Move,
+            target,
+            json!({ "prev_id": null }),
+            Some(json!({ "prev_id": "rag-t0001" })),
+        )
+    };
+    // A burst of one is that event's own line.
+    let one = mv(10, "rag-t0002");
+    assert_eq!(burst_line(std::slice::from_ref(&one)), one.line());
+    assert_eq!(burst_line(&[]), "");
+    // A drag reorder.
+    let drag: Vec<FeedEvent> = (0..7)
+        .map(|i| mv(10 + i, &format!("rag-t00{:02}", 20 + i)))
+        .collect();
+    assert_eq!(
+        burst_line(&drag),
+        "#16 rag web burst #10–#16, 7 events: queue reordered: 7 moves (rag-t0020, rag-t0021, \
+         rag-t0022, rag-t0023, rag-t0024 +2 more) [Owner]"
+    );
+    // Several edits on one item, a status on another, a long note on a third.
+    let edits = vec![
+        burst_event(
+            20,
+            ts,
+            EventKind::Edit,
+            "rag-t0042",
+            json!({ "title": "B" }),
+            Some(json!({ "title": "A" })),
+        ),
+        burst_event(
+            21,
+            ts,
+            EventKind::Edit,
+            "rag-t0042",
+            json!({ "labels": ["Physics"] }),
+            Some(json!({ "labels": [] })),
+        ),
+        burst_event(
+            22,
+            ts,
+            EventKind::Status,
+            "rag-t0050",
+            json!({ "status": "done" }),
+            Some(json!({ "status": "review" })),
+        ),
+        burst_event(
+            23,
+            ts,
+            EventKind::Edit,
+            "rag-t0042",
+            json!({ "body": "x" }),
+            None,
+        ),
+        FeedEvent {
+            body: "z".repeat(300),
+            agent: "Claude Test".into(),
+            ..burst_event(24, ts, EventKind::Note, "rag-t0051", json!({}), None)
+        },
+    ];
+    let line = burst_line(&edits);
+    assert_eq!(
+        line,
+        format!(
+            "#24 rag web burst #20–#24, 5 events: rag-t0042 \"Title rag-t0042\": 3 edits \
+             {{title: A → B; labels: +Physics; body: edited}}; rag-t0050 \"Title rag-t0050\": \
+             status {{status: review → done}}; rag-t0051 \"Title rag-t0051\": note: {}… \
+             [Owner, Claude Test]",
+            "z".repeat(79)
+        )
+    );
+    assert!(!line.contains('\n'));
+    // Acknowledgements, and more records than are named.
+    let mut mixed: Vec<FeedEvent> = (0..3)
+        .map(|i| {
+            burst_event(
+                30 + i,
+                ts,
+                EventKind::Acknowledge,
+                &format!("rag-t000{i}"),
+                json!({}),
+                None,
+            )
+        })
+        .collect();
+    mixed.extend((0..7).map(|i| {
+        burst_event(
+            33 + i,
+            ts,
+            EventKind::Create,
+            &format!("rag-t01{i:02}"),
+            json!({ "title": "x" }),
+            None,
+        )
+    }));
+    let line = burst_line(&mixed);
+    assert!(
+        line.starts_with(
+            "#39 rag web burst #30–#39, 10 events: acknowledged 3 done tickets (rag-t0000, \
+             rag-t0001, rag-t0002); rag-t0100 \"Title rag-t0100\": create; "
+        ),
+        "{line}"
+    );
+    assert!(line.ends_with("; +2 more records [Owner]"), "{line}");
+}
+
+fn feed_event(
+    kind: EventKind,
+    fields: serde_json::Value,
+    before: Option<serde_json::Value>,
+) -> FeedEvent {
+    FeedEvent {
+        event_id: 7,
+        ts: "2026-10-27T21:49:42Z".into(),
+        project: "rag".into(),
+        target_kind: TargetKind::Item,
+        target_id: "rag-t0007".into(),
+        title: Some("Seven".into()),
+        author_email: "owner@example.com".into(),
+        agent: "Owner".into(),
+        surface: Surface::Web,
+        kind,
+        body: "Looks good.".into(),
+        fields,
+        before,
+    }
+}
+
+#[test]
+fn a_feed_line_names_each_change_from_to() {
+    let line = |kind, fields, before| feed_event(kind, fields, Some(before)).line();
+    // Status, with the unblock leaving the queue made: the reason it lifted.
+    assert_eq!(
+        line(
+            EventKind::Status,
+            json!({ "status": "done", "blocked": false, "done_at": "2026-10-27T21:49:42Z" }),
+            json!({ "status": "in_progress", "blocked": true, "block_reason": "dependency", "done_at": null }),
+        ),
+        "#7 rag web status rag-t0007 \"Seven\" {status: in_progress → done; blocked: dependency → no}: \
+         Looks good. [Owner]"
+    );
+    let changes = |kind, fields, before| feed_event(kind, fields, Some(before)).changes();
+    assert_eq!(
+        changes(
+            EventKind::Approve,
+            json!({ "approval": "ratified" }),
+            json!({ "approval": "agent" })
+        ),
+        vec!["approval: agent → ratified"]
+    );
+    assert_eq!(
+        changes(
+            EventKind::Block,
+            json!({ "blocked": true, "block_reason": "dependency", "depends_on": ["rag-t0003"] }),
+            json!({ "blocked": false, "block_reason": null, "depends_on": [] }),
+        ),
+        vec!["blocked: no → dependency", "depends_on: none → rag-t0003"]
+    );
+    // A reason changed while blocked.
+    assert_eq!(
+        changes(
+            EventKind::Block,
+            json!({ "blocked": true, "block_reason": "redesign" }),
+            json!({ "blocked": true, "block_reason": "review" }),
+        ),
+        vec!["blocked: review → redesign"]
+    );
+    assert_eq!(
+        changes(
+            EventKind::Edit,
+            json!({ "labels": ["Creatures", "Physics"] }),
+            json!({ "labels": ["Biomes", "Physics"] }),
+        ),
+        vec!["labels: +Creatures −Biomes"]
+    );
+    assert_eq!(
+        changes(
+            EventKind::Assign,
+            json!({ "assignee": "dev-3" }),
+            json!({ "assignee": null })
+        ),
+        vec!["assignee: none → dev-3"]
+    );
+    assert_eq!(
+        changes(
+            EventKind::Move,
+            json!({ "place": "top", "prev_id": null }),
+            json!({ "prev_id": "rag-t0010" }),
+        ),
+        vec!["moved: after rag-t0010 → top"]
+    );
+    assert_eq!(
+        changes(
+            EventKind::Move,
+            json!({ "place": { "before": "rag-t0013" }, "prev_id": "rag-t0012" }),
+            json!({ "prev_id": null }),
+        ),
+        vec!["moved: top → after rag-t0012"]
+    );
+    assert_eq!(
+        changes(
+            EventKind::Edit,
+            json!({ "title": "New", "body": "long text", "release": true, "parallel": false }),
+            json!({ "title": "Old", "body": "old text", "release": false, "parallel": true }),
+        ),
+        vec![
+            "title: Old → New",
+            "body: edited",
+            "release: no → yes",
+            "parallel: yes → no"
+        ]
+    );
+    assert_eq!(
+        changes(
+            EventKind::Link,
+            json!({ "links_added": [{ "kind": "item", "target": "rag-t0002" }],
+                    "links_removed": [{ "kind": "ledger", "target": "rag-0033" }] }),
+            json!({}),
+        ),
+        vec!["links: +item:rag-t0002 −ledger:rag-0033"]
+    );
+    assert_eq!(
+        changes(
+            EventKind::Status,
+            json!({ "state": "ready" }),
+            json!({ "state": "draft" })
+        ),
+        vec!["state: draft → ready"]
+    );
+    let doc = FeedEvent {
+        target_kind: TargetKind::Document,
+        target_id: "rag-d0003".into(),
+        ..feed_event(
+            EventKind::Edit,
+            json!({ "revision": 4, "base_revision": 3 }),
+            Some(json!({ "revision": 3 })),
+        )
+    };
+    assert_eq!(doc.changes(), vec!["revision: 3 → 4"]);
+    // A note alone, a create and an acknowledge name nothing.
+    assert!(changes(EventKind::Note, json!({}), json!({})).is_empty());
+    assert!(changes(
+        EventKind::Acknowledge,
+        json!({ "acknowledged_at": "2026-10-27T21:49:42Z" }),
+        json!({ "acknowledged_at": null })
+    )
+    .is_empty());
+    let created = feed_event(
+        EventKind::Create,
+        json!({ "status": "pending", "approval": "unapproved" }),
+        None,
+    );
+    assert_eq!(
+        created.line(),
+        "#7 rag web create rag-t0007 \"Seven\": Looks good. [Owner]"
+    );
+}
+
+#[test]
+fn an_event_from_before_its_prior_values_were_recorded_names_the_new_value_alone() {
+    let changes = |kind, fields| feed_event(kind, fields, None).changes();
+    assert_eq!(
+        changes(
+            EventKind::Status,
+            json!({ "status": "done", "blocked": false, "assignee": null })
+        ),
+        vec!["status: done", "blocked: no", "assignee: none"]
+    );
+    assert_eq!(
+        changes(
+            EventKind::Block,
+            json!({ "blocked": true, "block_reason": "review" })
+        ),
+        vec!["blocked: review"]
+    );
+    assert_eq!(
+        changes(EventKind::Edit, json!({ "labels": ["Biomes", "Physics"] })),
+        vec!["labels: Biomes, Physics"]
+    );
+    // An old move says the place asked for.
+    assert_eq!(
+        changes(
+            EventKind::Move,
+            json!({ "place": { "after": "rag-t0012" } })
+        ),
+        vec!["moved: after rag-t0012"]
+    );
+    assert_eq!(
+        changes(EventKind::Move, json!({ "place": "top" })),
+        vec!["moved: top"]
+    );
+    // An old rename kept its old path beside the new one.
+    let rename = FeedEvent {
+        target_kind: TargetKind::Document,
+        ..feed_event(
+            EventKind::Rename,
+            json!({ "path": "concepts/new.md", "old_path": "concepts/old.md" }),
+            None,
+        )
+    };
+    assert_eq!(
+        rename.changes(),
+        vec!["path: concepts/old.md → concepts/new.md"]
+    );
+    let line = feed_event(EventKind::Status, json!({ "status": "done" }), None).line();
+    assert_eq!(
+        line,
+        "#7 rag web status rag-t0007 \"Seven\" {status: done}: Looks good. [Owner]"
+    );
+}
+
+/// The last event the feed holds for `target`, as text and as JSON.
+async fn last_feed(s: &TrackerStore, target: &str) -> (String, serde_json::Value) {
+    let events = s
+        .events_after(&FeedFilter::default(), 0, None)
+        .await
+        .unwrap();
+    let e = events
+        .into_iter()
+        .rev()
+        .find(|e| e.target_id == target)
+        .unwrap_or_else(|| panic!("no event for {target}"));
+    let line = e.line();
+    assert!(!line.contains('\n'), "{line}");
+    (line, serde_json::to_value(&e).unwrap())
+}
+
+#[tokio::test]
+async fn every_write_records_what_it_changed_from_and_the_feed_says_it() {
+    let f = fixture().await;
+    let s = &f.store;
+    let a = create(s, "ubu", "Alpha").await;
+    let b = create(s, "ubu", "Beta").await;
+    let c = create(s, "ubu", "Gamma").await;
+    let upd = |u: ItemUpdate| u;
+
+    // Status, by the owner on the web with no note: the generated body stays.
+    s.update_item(
+        &a,
+        upd(ItemUpdate {
+            status: Some(ItemStatus::InProgress),
+            ..Default::default()
+        }),
+        &web(),
+    )
+    .await
+    .unwrap();
+    let (line, v) = last_feed(s, &a).await;
+    assert_eq!(
+        line,
+        format!(
+            "#4 ubu web status {a} \"Alpha\" {{status: pending → in_progress}}: Status: pending → \
+             in_progress. [Owner]"
+        )
+    );
+    assert_eq!(v["fields"]["status"], "in_progress");
+    assert_eq!(v["before"], json!({ "status": "pending" }));
+    assert_eq!(v["agent"], "Owner");
+
+    // Approval: agent, then ratified by the owner.
+    s.update_item(
+        &a,
+        ItemUpdate {
+            approval: Some(Approval::Agent),
+            ..Default::default()
+        },
+        &mcp(),
+    )
+    .await
+    .unwrap();
+    s.update_item(
+        &a,
+        ItemUpdate {
+            approval: Some(Approval::Ratified),
+            note: Some("Ship it.".into()),
+            ..Default::default()
+        },
+        &web(),
+    )
+    .await
+    .unwrap();
+    let (line, v) = last_feed(s, &a).await;
+    assert!(
+        line.contains(" {approval: agent → ratified}: Ship it. [Owner]"),
+        "{line}"
+    );
+    assert_eq!(v["before"], json!({ "approval": "agent" }));
+    assert_eq!(v["fields"], json!({ "approval": "ratified" }));
+
+    // A dependency block, then the unblock finishing a makes.
+    s.update_item(
+        &b,
+        ItemUpdate {
+            block_reason: Some(BlockReason::Dependency),
+            depends_on: Some(vec![a.clone()]),
+            ..Default::default()
+        },
+        &web(),
+    )
+    .await
+    .unwrap();
+    let (line, v) = last_feed(s, &b).await;
+    assert!(
+        line.contains(&format!(
+            " {{blocked: no → dependency; depends_on: none → {a}}}: "
+        )),
+        "{line}"
+    );
+    assert_eq!(
+        v["before"],
+        json!({ "blocked": false, "block_reason": null, "depends_on": [] })
+    );
+    s.update_item(
+        &a,
+        ItemUpdate {
+            status: Some(ItemStatus::Done),
+            ..Default::default()
+        },
+        &web(),
+    )
+    .await
+    .unwrap();
+    let (line, _) = last_feed(s, &a).await;
+    assert!(line.contains(" {status: in_progress → done}: "), "{line}");
+    let (line, v) = last_feed(s, &b).await;
+    assert!(
+        line.contains(&format!(
+            " unblock {b} \"Beta\" {{blocked: dependency → no; depends_on: {a} → none}}: \
+             Unblocked: {a} is done. [Owner]"
+        )),
+        "{line}"
+    );
+    assert_eq!(v["before"]["depends_on"], json!([a]));
+
+    // Labels: what was added and removed.
+    s.update_item(&c, set_labels(&["Physics", "Biomes"]), &web())
+        .await
+        .unwrap();
+    s.update_item(&c, set_labels(&["Physics", "Creatures"]), &web())
+        .await
+        .unwrap();
+    let (line, v) = last_feed(s, &c).await;
+    assert!(line.contains(" {labels: +Creatures −Biomes}: "), "{line}");
+    assert_eq!(v["before"], json!({ "labels": ["Biomes", "Physics"] }));
+    assert_eq!(v["fields"], json!({ "labels": ["Creatures", "Physics"] }));
+
+    // Moves: by the new neighbour. The queue is b, c (a is done).
+    s.move_item(&c, Place::Top, None, &web()).await.unwrap();
+    let (line, v) = last_feed(s, &c).await;
+    assert!(
+        line.contains(&format!(" {{moved: after {b} → top}}: Moved to the top. ")),
+        "{line}"
+    );
+    assert_eq!(v["fields"]["prev_id"], json!(null));
+    assert_eq!(v["before"], json!({ "prev_id": b }));
+    s.move_item(&c, Place::After(b.clone()), Some("after all"), &web())
+        .await
+        .unwrap();
+    let (line, _) = last_feed(s, &c).await;
+    assert!(
+        line.contains(&format!(" {{moved: top → after {b}}}: after all [Owner]")),
+        "{line}"
+    );
+    sound(s, "ubu").await;
+
+    // Assignee, title, and a gate-free edit.
+    s.update_item(
+        &c,
+        ItemUpdate {
+            assignee: Some("dev-3".into()),
+            title: Some("Gamma two".into()),
+            parallel: Some(true),
+            ..Default::default()
+        },
+        &mcp(),
+    )
+    .await
+    .unwrap();
+    let (line, v) = last_feed(s, &c).await;
+    assert!(
+        line.contains(" {assignee: none → dev-3; title: Gamma → Gamma two; parallel: no → yes}: "),
+        "{line}"
+    );
+    assert!(line.ends_with(" [Claude Test]"), "{line}");
+    assert_eq!(
+        v["before"],
+        json!({ "assignee": null, "title": "Gamma", "parallel": false })
+    );
+
+    // Acknowledging: the prior stamp is none.
+    s.acknowledge_done("ubu", &web()).await.unwrap();
+    let (_, v) = last_feed(s, &a).await;
+    assert_eq!(v["kind"], "acknowledge");
+    assert_eq!(v["before"], json!({ "acknowledged_at": null }));
+
+    // A create records no prior values.
+    let (_, v) = last_feed(s, &create(s, "ubu", "Delta").await).await;
+    assert_eq!(v["kind"], "create");
+    assert_eq!(v["before"], json!(null));
+}
+
+#[tokio::test]
+async fn specs_and_documents_record_what_they_changed_from() {
+    let f = fixture().await;
+    let s = &f.store;
+    s.create_spec(new_spec("tracker", vec![ms("m01", "Store", None)]), &mcp())
+        .await
+        .unwrap();
+    s.update_spec(
+        "p",
+        "tracker",
+        SpecUpdate {
+            state: Some(SpecState::Ready),
+            title: Some("Tracker two".into()),
+            ..Default::default()
+        },
+        &web(),
+    )
+    .await
+    .unwrap();
+    let (line, v) = last_feed(s, "tracker").await;
+    assert!(
+        line.starts_with("#") && line.contains(" status spec:tracker "),
+        "{line}"
+    );
+    assert!(line.contains("{state: draft → ready; title: "), "{line}");
+    assert_eq!(v["before"]["state"], "draft");
+    assert_eq!(v["fields"]["state"], "ready");
+    s.update_milestone(
+        "p",
+        "tracker",
+        "m01",
+        MilestoneUpdate {
+            approval: Some(Approval::Owner),
+            ..Default::default()
+        },
+        &web(),
+    )
+    .await
+    .unwrap();
+    let (line, _) = last_feed(s, "tracker/m01").await;
+    assert!(line.contains("{approval: unapproved → owner}"), "{line}");
+
+    let d = doc(s, "notes/a.md", "one").await;
+    let id = d.document.id.clone();
+    s.edit_document(&id, 1, Edit::Body("two".into()), None, &web())
+        .await
+        .unwrap();
+    let (line, v) = last_feed(s, &id).await;
+    assert!(
+        line.contains(&format!(" edit doc:{id} \"A doc\" {{revision: 1 → 2}}: ")),
+        "{line}"
+    );
+    assert_eq!(v["before"], json!({ "revision": 1 }));
+    s.rename_document(&id, Some("notes/b.md"), Some("B doc"), None, &web())
+        .await
+        .unwrap();
+    let (line, v) = last_feed(s, &id).await;
+    assert!(
+        line.contains("{title: A doc → B doc; path: notes/a.md → notes/b.md}"),
+        "{line}"
+    );
+    assert_eq!(
+        v["before"],
+        json!({ "path": "notes/a.md", "title": "A doc" })
+    );
+}
+
+#[tokio::test]
+async fn a_web_write_without_an_agent_is_recorded_as_owner() {
+    let f = fixture().await;
+    let s = &f.store;
+    let r = s
+        .create_item(new_item("ubu", "From the web"), &web())
+        .await
+        .unwrap();
+    assert_eq!(r.events[0].agent, "Owner");
+    // A blank agent is no agent.
+    let blank = Actor::new("owner@example.com", Some("  "), Surface::Web);
+    let r = s
+        .update_item(
+            &r.item.id,
+            ItemUpdate {
+                note: Some("noted".into()),
+                ..Default::default()
+            },
+            &blank,
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.events.last().unwrap().agent, "Owner");
+    // A named agent on the web keeps its name; an agent with none stays Unknown.
+    let named = Actor::new("owner@example.com", Some("Claude Test"), Surface::Web);
+    let r = s
+        .create_item(new_item("ubu", "Named"), &named)
+        .await
+        .unwrap();
+    assert_eq!(r.events[0].agent, "Claude Test");
+    let anon = Actor::new("dev@example.com", None, Surface::Mcp);
+    let r = s
+        .create_item(new_item("ubu", "Anonymous"), &anon)
+        .await
+        .unwrap();
+    assert_eq!(r.events[0].agent, "Unknown");
+    // Documents and attachments are stamped the same way.
+    let d = s
+        .create_document(
+            NewDocument {
+                project: "ubu".into(),
+                path: "notes/x.md".into(),
+                title: "X".into(),
+                body: "x".into(),
+                message: None,
+            },
+            &web(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(d.events[0].agent, "Owner");
+    assert_eq!(
+        s.list_revisions(&d.document.id).await.unwrap()[0].agent,
+        "Owner"
+    );
+    let att = s
+        .store_attachment(att("ubu", "a.txt", Some("text/plain"), b"hello"), &web())
+        .await
+        .unwrap();
+    assert_eq!(att.agent, "Owner");
+}
+
+#[tokio::test]
+async fn an_older_database_gains_the_prior_values_column_and_its_web_events_read_owner() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tracker.db");
+    // The schema as it was before rag-t0038: no `fields_before` column.
+    let old_schema = SCHEMA_SQL.replace(
+        "    fields       TEXT NOT NULL DEFAULT '{}',\n    fields_before TEXT\n",
+        "    fields       TEXT NOT NULL DEFAULT '{}'\n",
+    );
+    assert_ne!(old_schema, SCHEMA_SQL, "the column moved: update this test");
+    {
+        let opts = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true);
+        let pool = sqlx::SqlitePool::connect_with(opts).await.unwrap();
+        sqlx::query(&old_schema).execute(&pool).await.unwrap();
+        for sql in [
+            "INSERT INTO projects (name, head_id, tail_id, item_seq, created_at) \
+             VALUES ('old', 'old-t0001', 'old-t0001', 1, '2026-10-27T00:00:00Z')",
+            "INSERT INTO items (id, project, seq, type, title, status, approval, created_at, \
+             updated_at) VALUES ('old-t0001', 'old', 1, 'dev', 'from before', 'in_progress', \
+             'unapproved', '2026-10-27T00:00:00Z', '2026-10-27T00:00:00Z')",
+            // The owner on the web, recorded as Unknown; an agent that gave no name.
+            "INSERT INTO events (project, target_kind, target_id, ts, author_email, agent, \
+             surface, kind, body, fields) VALUES ('old', 'item', 'old-t0001', \
+             '2026-10-27T00:00:00Z', 'owner@example.com', 'Unknown', 'web', 'status', \
+             'Status: pending → in_progress.', '{\"status\":\"in_progress\"}')",
+            "INSERT INTO events (project, target_kind, target_id, ts, author_email, agent, \
+             surface, kind, body, fields) VALUES ('old', 'item', 'old-t0001', \
+             '2026-10-27T00:00:01Z', 'dev@example.com', 'Unknown', 'mcp', 'note', 'a note', '{}')",
+            "INSERT INTO documents (id, project, path, kind, title, revision, created_at, \
+             updated_at) VALUES ('old-d0001', 'old', 'notes/a.md', 'doc', 'A', 1, \
+             '2026-10-27T00:00:00Z', '2026-10-27T00:00:00Z')",
+            "INSERT INTO revisions (doc_id, revision, body, author_email, agent, surface, ts, \
+             message) VALUES ('old-d0001', 1, 'a', 'owner@example.com', 'Unknown', 'web', \
+             '2026-10-27T00:00:00Z', 'Created.')",
+            "INSERT INTO attachments (project, sha256, name, media_type, size, author_email, \
+             agent, surface, uploaded_at) VALUES ('old', 'abc', 'a.txt', 'text/plain', 1, \
+             'owner@example.com', 'Unknown', 'web', '2026-10-27T00:00:00Z')",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+        pool.close().await;
+    }
+    for pass in 0..2 {
+        // Opening twice: the second open adds and rewrites nothing.
+        let store = TrackerStore::open(&path, dir.path().join("att"))
+            .await
+            .unwrap();
+        let rec = item(&store, "old-t0001").await;
+        let (web_event, agent_event) = (&rec.events[0], &rec.events[1]);
+        assert_eq!(web_event.agent, "Owner", "pass {pass}");
+        assert_eq!(
+            agent_event.agent, "Unknown",
+            "an mcp write is not the owner"
+        );
+        // Recorded before prior values were: the new value alone.
+        assert_eq!(web_event.before, None);
+        let mut old_events = store
+            .events_after(&FeedFilter::default(), 0, Some(2))
+            .await
+            .unwrap();
+        let note = old_events.pop().unwrap();
+        let first = old_events.pop().unwrap();
+        assert!(
+            note.line().ends_with(": a note [Unknown]"),
+            "{}",
+            note.line()
+        );
+        assert_eq!(
+            first.line(),
+            "#1 old web status old-t0001 \"from before\" {status: in_progress}: Status: pending → \
+             in_progress. [Owner]"
+        );
+        assert_eq!(serde_json::to_value(&first).unwrap()["before"], json!(null));
+        assert_eq!(
+            store.list_revisions("old-d0001").await.unwrap()[0].agent,
+            "Owner"
+        );
+        assert_eq!(
+            store.list_attachments("old").await.unwrap()[0].agent,
+            "Owner"
+        );
+        if pass == 0 {
+            // A write after the migration records its prior values.
+            store
+                .update_item(
+                    "old-t0001",
+                    ItemUpdate {
+                        status: Some(ItemStatus::Done),
+                        ..Default::default()
+                    },
+                    &web(),
+                )
+                .await
+                .unwrap();
+        }
+        let rec = item(&store, "old-t0001").await;
+        assert_eq!(rec.events.len(), 3);
+        assert_eq!(
+            rec.events[2].before,
+            Some(json!({ "status": "in_progress", "done_at": null }))
+        );
+        store.check("old").await.unwrap();
+    }
+}
+
+// ---- Requests (rag-t0044) -----------------------------------------------------
+
+fn new_request(project: &str, title: &str) -> NewItem {
+    NewItem {
+        item_type: ItemType::Request,
+        approval: Approval::Owner,
+        ..new_item(project, title)
+    }
+}
+
+fn from(request: &str) -> Link {
+    Link {
+        kind: LinkKind::From,
+        target: request.into(),
+    }
+}
+
+fn became(item: &str) -> Link {
+    Link {
+        kind: LinkKind::Became,
+        target: item.into(),
+    }
+}
+
+async fn request(s: &TrackerStore, project: &str, title: &str) -> String {
+    let id = s
+        .create_item(new_request(project, title), &web())
+        .await
+        .unwrap()
+        .item
+        .id;
+    sound(s, project).await;
+    id
+}
+
+/// A request is queued, keeps its place in the list, and is drawn only in its
+/// own section, whatever its status or block: never in the queue, review,
+/// blocked or deferred, so nothing that reads the queue sees it.
+#[tokio::test]
+async fn a_request_has_its_own_section_and_is_never_in_the_queue() {
+    let f = fixture().await;
+    let s = &f.store;
+    let a = create(s, "p", "a").await;
+    let r = request(s, "p", "Idea").await;
+    let b = create(s, "p", "b").await;
+    assert_eq!(sound(s, "p").await, ids(&[&a, &r, &b]));
+    let v = s.queue_view("p").await.unwrap();
+    let section = |items: &[Item]| items.iter().map(|i| i.id.clone()).collect::<Vec<_>>();
+    assert_eq!(section(&v.requests), ids(&[&r]));
+    assert_eq!(section(&v.queue), ids(&[&a, &b]));
+    assert_eq!(v.requests[0].item_type, ItemType::Request);
+
+    // In progress and blocked, in review, deferred: still only a request.
+    set_status(s, &r, ItemStatus::InProgress).await;
+    s.update_item(
+        &r,
+        ItemUpdate {
+            block_reason: Some(BlockReason::Redesign),
+            ..Default::default()
+        },
+        &mcp(),
+    )
+    .await
+    .unwrap();
+    for to in [None, Some(ItemStatus::Review), Some(ItemStatus::Deferred)] {
+        if let Some(to) = to {
+            set_status(s, &r, ItemStatus::Pending).await;
+            set_status(s, &r, to).await;
+        }
+        let v = s.queue_view("p").await.unwrap();
+        assert_eq!(section(&v.requests), ids(&[&r]), "{to:?}");
+        for other in [&v.queue, &v.review, &v.blocked, &v.deferred] {
+            assert!(!section(other).contains(&r), "{to:?}");
+        }
+        let p = &s.list_projects().await.unwrap()[0];
+        assert_eq!((p.queued, p.requests), (3, 1), "{to:?}");
+        assert_eq!((p.blocked, p.review, p.deferred), (0, 0, 0), "{to:?}");
+        sound(s, "p").await;
+    }
+
+    // Done, it leaves the list as any item does, and shows under Done.
+    set_status(s, &r, ItemStatus::Done).await;
+    let v = s.queue_view("p").await.unwrap();
+    assert!(v.requests.is_empty());
+    assert_eq!(section(&v.done), ids(&[&r]));
+    assert_eq!(sound(s, "p").await, ids(&[&a, &b]));
+    assert_eq!(s.list_projects().await.unwrap()[0].requests, 0);
+}
+
+#[tokio::test]
+async fn a_request_has_no_gate_fields_and_is_never_parallel() {
+    let f = fixture().await;
+    let s = &f.store;
+    for bad in [
+        NewItem {
+            intensity: Some(Intensity::Quick),
+            ..new_request("p", "x")
+        },
+        NewItem {
+            release: true,
+            ..new_request("p", "x")
+        },
+        NewItem {
+            parallel: true,
+            ..new_request("p", "x")
+        },
+    ] {
+        assert!(s.create_item(bad, &web()).await.is_err());
+    }
+    let r = request(s, "p", "Idea").await;
+    for upd in [
+        ItemUpdate {
+            parallel: Some(true),
+            ..Default::default()
+        },
+        ItemUpdate {
+            intensity: Some(Intensity::Full),
+            ..Default::default()
+        },
+        ItemUpdate {
+            release: Some(true),
+            ..Default::default()
+        },
+    ] {
+        let e = s.update_item(&r, upd, &mcp()).await.unwrap_err();
+        assert!(matches!(e, TrackerError::Refused(_)), "{e}");
+    }
+    let e = s
+        .create_item(
+            NewItem {
+                parallel: true,
+                ..new_request("p", "x")
+            },
+            &web(),
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("never dispatched"), "{e}");
+}
+
+/// A ticket created `from` a request writes `became` on the request, with a
+/// link event there; adding and removing `from` later does the same both
+/// ways; the integrity check holds after each.
+#[tokio::test]
+async fn from_links_are_answered_by_became_on_the_request() {
+    let f = fixture().await;
+    let s = &f.store;
+    let r = request(s, "p", "Idea").await;
+    let t = s
+        .create_item(
+            NewItem {
+                links: vec![from(&r)],
+                approval: default_approval(&[from(&r)]),
+                ..new_item("p", "Design it")
+            },
+            &mcp(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(t.item.links, vec![from(&r)]);
+    assert_eq!(t.item.approval, Approval::Agent);
+    sound(s, "p").await;
+    let req = s.get_item(&r, true).await.unwrap().unwrap();
+    assert_eq!(req.item.links, vec![became(&t.item.id)]);
+    let last = req.events.last().unwrap();
+    assert_eq!(last.kind, EventKind::Link);
+    assert_eq!(last.body, format!("Became {}.", t.item.id));
+    assert_eq!(last.fields["links_added"][0]["kind"], "became");
+
+    // Added later, by update; then removed.
+    let u = create(s, "p", "Build it").await;
+    let add = ItemUpdate {
+        add_links: vec![from(&r)],
+        ..Default::default()
+    };
+    s.update_item(&u, add, &mcp()).await.unwrap();
+    sound(s, "p").await;
+    let req = s.get_item(&r, false).await.unwrap().unwrap();
+    assert_eq!(req.item.links, vec![became(&t.item.id), became(&u)]);
+    let rm = ItemUpdate {
+        remove_links: vec![from(&r)],
+        ..Default::default()
+    };
+    s.update_item(&u, rm, &mcp()).await.unwrap();
+    sound(s, "p").await;
+    let req = s.get_item(&r, true).await.unwrap().unwrap();
+    assert_eq!(req.item.links, vec![became(&t.item.id)]);
+    assert!(req
+        .events
+        .last()
+        .unwrap()
+        .body
+        .starts_with(&format!("No longer became {u}")));
+
+    // The default approval: agent only for a ticket from a request.
+    assert_eq!(default_approval(&[]), Approval::Unapproved);
+    assert_eq!(
+        default_approval(&[Link {
+            kind: LinkKind::Ledger,
+            target: "rag-0033".into()
+        }]),
+        Approval::Unapproved
+    );
+}
+
+#[tokio::test]
+async fn request_links_are_refused_where_they_do_not_belong() {
+    let f = fixture().await;
+    let s = &f.store;
+    let r = request(s, "p", "Idea").await;
+    let other = request(s, "q", "Elsewhere").await;
+    let dev = create(s, "p", "dev").await;
+    let refused_create = |links: Vec<Link>, ty: ItemType| NewItem {
+        links,
+        item_type: ty,
+        ..new_item("p", "x")
+    };
+    for (bad, why) in [
+        (
+            refused_create(vec![from(&dev)], ItemType::Dev),
+            "names a request",
+        ),
+        (
+            refused_create(vec![from(&other)], ItemType::Dev),
+            "own project",
+        ),
+        (
+            refused_create(vec![from("p-t0999")], ItemType::Dev),
+            "no ticket",
+        ),
+        (
+            refused_create(vec![became(&dev)], ItemType::Dev),
+            "written by the server",
+        ),
+        (
+            refused_create(vec![became(&dev)], ItemType::Request),
+            "written by the server",
+        ),
+        (
+            refused_create(vec![from(&r)], ItemType::Request),
+            "cannot come from another request",
+        ),
+    ] {
+        let e = s.create_item(bad, &mcp()).await.unwrap_err();
+        assert!(e.to_string().contains(why), "{why}: {e}");
+    }
+    // On update: became is the server's to add and to remove; a request takes no from.
+    let e = s
+        .update_item(
+            &dev,
+            ItemUpdate {
+                add_links: vec![became(&r)],
+                ..Default::default()
+            },
+            &mcp(),
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("written by the server"), "{e}");
+    s.update_item(
+        &dev,
+        ItemUpdate {
+            add_links: vec![from(&r)],
+            ..Default::default()
+        },
+        &mcp(),
+    )
+    .await
+    .unwrap();
+    let e = s
+        .update_item(
+            &r,
+            ItemUpdate {
+                remove_links: vec![became(&dev)],
+                ..Default::default()
+            },
+            &web(),
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("remove the from link"), "{e}");
+    let r2 = request(s, "p", "Another").await;
+    let e = s
+        .update_item(
+            &r2,
+            ItemUpdate {
+                add_links: vec![from(&r)],
+                ..Default::default()
+            },
+            &mcp(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        e.to_string().contains("cannot come from another request"),
+        "{e}"
+    );
+    // A concept takes neither.
+    for link in [from(&r), became(&dev)] {
+        let e = s
+            .create_concept(
+                NewConcept {
+                    project: "p".into(),
+                    slug: "c".into(),
+                    title: "C".into(),
+                    state: None,
+                    approval: Approval::Unapproved,
+                    body: String::new(),
+                    links: vec![link],
+                    note: None,
+                },
+                &web(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(e, TrackerError::Refused(_)), "{e}");
+    }
+    // Nothing refused left a trace: the request still became only `dev`.
+    let req = s.get_item(&r, false).await.unwrap().unwrap();
+    assert_eq!(req.item.links, vec![became(&dev)]);
+    sound(s, "p").await;
+}
+
+#[tokio::test]
+async fn the_integrity_check_finds_a_one_sided_request_link() {
+    let f = fixture().await;
+    let s = &f.store;
+    let r = request(s, "p", "Idea").await;
+    let t = s
+        .create_item(
+            NewItem {
+                links: vec![from(&r)],
+                ..new_item("p", "t")
+            },
+            &mcp(),
+        )
+        .await
+        .unwrap()
+        .item
+        .id;
+    sound(s, "p").await;
+    sqlx::query("DELETE FROM item_links WHERE item_id = ? AND kind = 'became'")
+        .bind(&r)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    let report = s.check("p").await.unwrap();
+    assert!(!report.ok);
+    assert_eq!(
+        report.problems,
+        vec![format!("{t} comes from {r}, which has no became link back")]
+    );
+    sqlx::query("INSERT INTO item_links (item_id, kind, target) VALUES (?, 'became', ?)")
+        .bind(&r)
+        .bind(&t)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM item_links WHERE item_id = ? AND kind = 'from'")
+        .bind(&t)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    let report = s.check("p").await.unwrap();
+    assert_eq!(
+        report.problems,
+        vec![format!("{r} became {t}, which has no from link back")]
+    );
+}
+
+/// A request's create frame says it is one; no other create names a change.
+#[test]
+fn a_requests_create_frame_says_request() {
+    let req = json!({ "type": "request", "title": "Idea" });
+    assert_eq!(
+        describe_changes(EventKind::Create, TargetKind::Item, &req, None),
+        vec!["type: request".to_string()]
+    );
+    let dev = json!({ "type": "dev", "title": "x" });
+    assert!(describe_changes(EventKind::Create, TargetKind::Item, &dev, None).is_empty());
 }

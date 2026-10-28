@@ -12,8 +12,8 @@ path = "src/main.rs"
 
 [dependencies]
 rag-core = { workspace = true }
-tokio = { workspace = true }
-axum = { workspace = true, features = ["multipart"] }
+tokio = { workspace = true, features = ["sync", "time"] }
+axum = { workspace = true, features = ["multipart", "ws"] }
 reqwest = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
@@ -26,3 +26,6 @@ dotenvy = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tempfile = "3"
+tokio-tungstenite = "0.29"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+sqlx = { workspace = true }

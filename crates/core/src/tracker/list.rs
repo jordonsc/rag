@@ -83,7 +83,7 @@ async fn links_of(
             .bind(id)
             .fetch_optional(&mut *conn)
             .await?;
-    row.ok_or_else(|| TrackerError::NotFound(format!("no item {id:?}")))
+    row.ok_or_else(|| TrackerError::NotFound(format!("no ticket {id:?}")))
 }
 
 /// Refuse an anchor that is not a queued item of `project`, or is `item` itself.
@@ -102,17 +102,17 @@ async fn check_anchor(
             .fetch_optional(&mut *conn)
             .await?;
     let Some((anchor_project, status)) = row else {
-        return refused(format!("no item {anchor:?} to place {item} relative to"));
+        return refused(format!("no ticket {anchor:?} to place {item} relative to"));
     };
     if anchor_project != project {
         return refused(format!(
-            "{anchor} belongs to project {anchor_project}, not {project}: items move only within their own queue"
+            "{anchor} belongs to project {anchor_project}, not {project}: tickets move only within their own queue"
         ));
     }
     let status: ItemStatus = status.parse()?;
     if !super::queued_status(status) {
         return refused(format!(
-            "{anchor} is {status} and not in the queue; place {item} relative to a queued item"
+            "{anchor} is {status} and not in the queue; place {item} relative to a queued ticket"
         ));
     }
     Ok(())
@@ -388,6 +388,8 @@ impl TrackerStore {
 
         // What blocked items wait on (rag-t0018).
         problems.extend(super::items::dependency_problems(&mut conn, project).await?);
+        // Each from link answered by its request's became, and back (rag-t0044).
+        problems.extend(super::items::request_link_problems(&mut conn, project).await?);
 
         Ok(IntegrityReport {
             project: project.to_string(),

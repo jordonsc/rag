@@ -237,6 +237,7 @@ pub(super) async fn insert_document(
         EventKind::Create,
         &message,
         &json!({ "path": path, "kind": owner.kind, "title": title, "revision": 1 }),
+        None,
         now,
     )
     .await?;
@@ -411,7 +412,7 @@ impl TrackerStore {
             &now,
         )
         .await?;
-        tx.commit().await?;
+        self.commit(tx).await?;
         self.get_document(&id, None, true)
             .await?
             .ok_or_else(|| TrackerError::Internal("document vanished after create".into()))
@@ -545,7 +546,7 @@ impl TrackerStore {
         };
         self.write_revision(&mut tx, &doc, &body, &who, &message, fields, &now)
             .await?;
-        tx.commit().await?;
+        self.commit(tx).await?;
         self.get_document(id, None, true)
             .await?
             .ok_or_else(|| TrackerError::Internal("document vanished after edit".into()))
@@ -579,6 +580,7 @@ impl TrackerStore {
             EventKind::Edit,
             message,
             &fields,
+            Some(&json!({ "revision": doc.revision })),
             now,
         )
         .await?;
@@ -602,6 +604,8 @@ impl TrackerStore {
         let mut tx = self.write_tx().await?;
         let doc = must_doc(&mut tx, id).await?;
         let mut fields = serde_json::Map::new();
+        // What changed held before (rag-t0038).
+        let mut before = serde_json::Map::new();
         if let Some(path) = new_path.map(str::trim).filter(|p| *p != doc.path) {
             validate_path(path)?;
             check_path_free(&mut tx, &doc.project, path, Some(id)).await?;
@@ -626,6 +630,7 @@ impl TrackerStore {
             .await?;
             fields.insert("path".into(), json!(path));
             fields.insert("old_path".into(), json!(doc.path));
+            before.insert("path".into(), json!(doc.path));
         }
         if let Some(title) = new_title {
             let title = require_title(title)?;
@@ -636,6 +641,7 @@ impl TrackerStore {
                     .execute(&mut *tx)
                     .await?;
                 fields.insert("title".into(), json!(title));
+                before.insert("title".into(), json!(doc.title));
             }
         }
         if fields.is_empty() {
@@ -667,10 +673,11 @@ impl TrackerStore {
             EventKind::Rename,
             &body,
             &serde_json::Value::Object(fields),
+            Some(&serde_json::Value::Object(before)),
             &now,
         )
         .await?;
-        tx.commit().await?;
+        self.commit(tx).await?;
         self.get_document(id, None, true)
             .await?
             .ok_or_else(|| TrackerError::Internal("document vanished after rename".into()))
@@ -752,7 +759,7 @@ impl TrackerStore {
         let fields = json!({ "revision": doc.revision + 1, "base_revision": base_revision, "restored_from": revision });
         self.write_revision(&mut tx, &doc, &old, &who, &message, fields, &now)
             .await?;
-        tx.commit().await?;
+        self.commit(tx).await?;
         self.get_document(id, None, true)
             .await?
             .ok_or_else(|| TrackerError::Internal("document vanished after restore".into()))
