@@ -325,7 +325,7 @@ ssh "$DEPLOY_HOST" 'sqlite3 ~/rag/ledger/ledger.db "SELECT topic_id, type, statu
 
 ## Tracker: reconcile now
 
-The tracker's documents and queue items (Qdrant `corpus = tracker`, what
+The tracker's documents and tickets (Qdrant `corpus = tracker`, what
 `search_corpus` with `corpus: "tracker"` finds) are reconciled from `tracker.db` by
 `rag-tracker-sync.service`. It runs automatically after every successful tracker write
 (rag-serve touches `~/rag/triggers/tracker-reindex`, watched by
@@ -338,7 +338,7 @@ ssh "$DEPLOY_HOST" journalctl --user -u rag-tracker-sync.service -n 30
 ```
 
 Like the ledger's, it is a pull-based diff (`tracker_id → tracker_hash`, one unit per
-document or item): only what changed is embedded, an edited or renamed document's points
+document or ticket): only what changed is embedded, an edited or renamed document's points
 are replaced (none of the old revision or path survive), and a unit gone from the store is
 purged. Its summary line counts documents and items, and the units it changed, removed and
 persisted. A burst of writes (a manager loading a project) costs one run, not one per write.
@@ -422,8 +422,9 @@ all, 30 s of CPU, of which the ledger's `zstd -10` is most.
 
 The live directories are only ever written with `rag-serve` stopped, and the old WAL and
 shared-memory files are removed first: a `-wal` left beside a restored database is
-replayed onto it when it is next opened (and `rag-serve` is SIGKILLed after its 10 s stop
-timeout, so its WAL is not always checkpointed away).
+replayed onto it when it is next opened (`rag-serve` stops on SIGTERM since rag-t0036, but
+before that it was SIGKILLed after its 10 s stop timeout, and either way a WAL is not
+guaranteed to be checkpointed away, so remove them regardless).
 
 ```bash
 # 1. fetch and verify into a scratch directory (newest daily copy; or give a stamp:

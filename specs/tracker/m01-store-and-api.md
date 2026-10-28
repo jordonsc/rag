@@ -3,6 +3,9 @@ m01: the store and the HTTP API
 **State: Done** (2026-10-27): built, tested, lint-clean; acceptance 2 and 3 (on the deployed server) wait for the
 release. Spec: [`master.md`](master.md), D1–D11, D18. **The HTTP contract is [`api.md`](api.md).**
 
+*Written before rag-t0050 (2026-10-28) named a queue record a **ticket**: this milestone's plan, its as-built and
+the addenda before that date keep the word *item* as they were written. The API keeps `item` ([`api.md`](api.md)).*
+
 Everything the other milestones build on: `core::tracker` and its routes on `rag-serve`. No UI and no MCP tools
 here; it is driven and tested through the store's API and the HTTP routes.
 
@@ -232,3 +235,154 @@ on create and update; exactly 10 with one at 32 characters and a duplicate is ac
 `an_older_database_gains_the_labels_table_and_keeps_its_items` (the schema without the table, an old row, opened
 twice), the snapshot test (labels sorted), and the route test
 `labels_go_through_create_update_the_vocabulary_and_the_items_filter` (plus `/tracker/p/labels` in the 503 list).
+
+### Addendum, 2026-10-27: the live event feed (rag-t0036)
+
+The owner: wake an idle manager when he acts in the web UI, without polling. D11 is amended; the contract is
+[`api.md`](api.md) § *The event feed*. **Store** (`tracker/feed.rs`): `TrackerStore` holds a `tokio::sync::broadcast`
+channel of `Arc<FeedEvent>` (`FEED_CAPACITY` = 1024 per subscriber; `with_feed_capacity` replaces it, for the lag
+tests). Every write that appends an event now ends `self.commit(tx)` instead of `tx.commit()` (items, specs,
+milestones, concepts, documents: 14 sites), which commits and then **publishes**: under a mutex holding the last id
+sent, it reads every event `event_id > last` (with its record's project, kind, id and **current title**, one query
+with a `CASE` of sub-selects) and sends them in id order. With no subscriber it reads only `MAX(event_id)`, read
+**before** the receivers are counted so a subscriber that arrives in between still replays everything up to it. A
+failed read logs and leaves the mark, so the next write's publish catches up. `open` starts the mark after the
+events already in the table (the open-time migrations' included). The index snapshot and the attachment upload
+append no event and commit as before. `FeedEvent` is the event plus `project`, `target_kind`, `target_id` and
+`title`; `line()` is the text frame and `moved()` its `{status=… approval=…}` part (status, state, approval, blocked,
+block_reason, assignee; never on a create; replaced by `changed()`, from → to, in rag-t0038's addendum below). `FeedFilter { project, surfaces, kinds }` (`None` = any) is applied in
+SQL by `events_after(filter, since, limit)` and `count_events_after`, and in Rust by `matches` for the live side;
+`latest_event_id()`, `subscribe()`, `feed_closing()` / `close_feed()` (the shutdown signal) complete it.
+`DEFAULT_FEED_KINDS` is create, status, block, unblock, approve, move, note, acknowledge, assign, edit. core's tokio
+gains the `sync` feature.
+
+**Routes** (`crates/serve/src/tracker/feed.rs`; axum's `ws` feature, serve's tokio `sync` and `time`): `GET
+/tracker/{project}/events/ws` (`*` for every project) validates the filter, refuses a replay of more than
+`MAX_REPLAY` = 500 events (400) **before** the upgrade, then subscribes, replays in pages of 200 and goes live,
+dropping ids at or below the last sent; a 30 s ping; a 10 s send timeout; close 1013 on `Lagged`, 1012 on shutdown,
+1011 on a replay error, each reason carrying `since=<last id sent>`. A request without the upgrade headers is a 426
+in the routes' JSON error shape. `GET /tracker/{project}/events` is the one-shot read (`limit` 1–1000, default 100;
+`latest_event_id`, `next_since`, `more`). `main.rs`: the shutdown signal now includes **SIGTERM** (`podman stop`;
+`rag-serve` is the container's PID 1, which ignored it until podman's SIGKILL), then `close_feed()` and a 300 ms grace
+when feeds are open. **Deploy**: nothing changes. The container uses host networking and binds 17793 itself, so no
+proxy sits between a client and the upgrade.
+
+Tests. Store (`tracker/tests.rs`): `the_feed_publishes_each_committed_event_after_its_write`,
+`a_refused_write_publishes_nothing`, `a_spec_with_milestones_publishes_every_event_it_wrote_in_id_order` (each
+record's label and title), `a_late_subscriber_gets_only_what_comes_after_it`,
+`a_reopened_store_starts_its_feed_after_the_events_already_there`,
+`events_after_applies_project_surface_and_kind_filters` (and `matches` agrees with the SQL),
+`concurrent_writers_publish_every_event_once_in_id_order` (4 writers × 10, multi-threaded),
+`a_feed_line_is_one_line_with_the_event_id_first`,
+`a_feed_line_repeats_the_state_a_change_moved_to_but_not_a_creates_fields`. Routes, over a real loopback socket with
+a `tokio-tungstenite` client (`tracker/feed/tests.rs`):
+`the_feed_replays_after_since_then_sends_each_new_event_live`, `without_since_the_feed_sends_only_what_comes_next`,
+`a_feed_resumed_by_id_loses_and_repeats_nothing_under_concurrent_writes` (60 writes, a third of them `mcp`, while
+the client drops and resumes three times),
+`by_default_a_web_write_reaches_the_feed_and_an_mcp_write_does_not` (through the HTTP routes; `surface=mcp` and
+`any`), `kinds_choose_the_events_and_the_default_leaves_out_housekeeping`,
+`a_project_feed_sends_its_own_project_and_star_sends_every_project`,
+`format_json_sends_each_event_as_one_json_line`, `bad_feed_requests_are_refused_before_the_upgrade`,
+`a_replay_longer_than_the_cap_is_refused_and_paged_by_the_read`,
+`the_read_gives_the_starting_id_and_the_events_after_since`,
+`a_lagging_client_is_closed_with_its_resume_id_and_resumes_without_loss` (capacity 4, a burst of 11 published at
+once on the single-threaded runtime), `closing_the_feed_sends_a_restart_close_with_the_resume_id`; and both routes
+in the 503 list. Proven by hand on a scratch `rag-serve`: Claude Code's `Monitor` (`ws` source) received the owner's
+two frames and not the agent's, and surfaced the 1012 close and its resume id on SIGTERM.
+
+### Addendum, 2026-10-27: from → to in every event, and web writes stamped Owner (rag-t0038)
+
+The ubu manager reading the feed asked for both values of each change, so it can act on a frame without fetching the
+item, and for the owner's web writes to stop reading `Unknown`.
+
+**Prior values.** `events` gains `fields_before TEXT` (nullable; `ADDED_COLUMNS`, so an older `tracker.db` gains it
+on open and every existing row reads `NULL`). `append_event` takes `before: Option<&Value>`, stored as JSON beside
+`fields`; `Event` and `FeedEvent` carry it as `before` (`null` on a create and on every event written before the
+column). Nothing is back-filled: the prior value of an old event is not recoverable without replaying the history,
+and a replay that disagrees with the live record would be worse than an honest gap. Who records what:
+`update_item` takes every key of `fields` from the item as loaded (`prior_values`, the item serialised), with
+`blocked` and `block_reason` always together; `move_item` reads the new `prev_id` after relinking and records it in
+`fields` beside `place`, the old one in `before`; `acknowledge_done` records `acknowledged_at: null`; the automatic
+unblock records `blocked: true, block_reason: dependency, depends_on: [...]`; the rag-t0024 migration its prior
+status and block. Specs, milestones and concepts record through `Changes::change(name, from, to, kind)` (title,
+state, approval, order); `Changes::set` stays for `links_added`/`links_removed`, which have no prior value.
+Documents: an edit or restore records the prior `revision`, a rename the prior `path` and `title`.
+
+**The frame** (`FeedEvent::changed()`, which replaced `moved()`, over `changes()`, the list): `{status:
+in_progress → done; blocked: dependency → no}`, `{labels: +Physics −Biomes}`, `{moved: after rag-t0010 → top}`,
+each change a frame names in a fixed order, separated by `; ` (lists use `, `). `blocked` and `block_reason` read as
+one field (the reason, or `no`). A move is named by the item's new neighbour (`top` or `after <id>`), not the place
+asked for: `before rag-t0013` and `after rag-t0012` can be the same position, and the neighbour is what a manager
+checks against its queue. A field with no recorded prior names its new value alone; an old move its requested
+place; an old rename its `old_path`. `[<who>]` is now `agent` on both surfaces. The full contract is
+[`api.md`](api.md) § *The event feed*.
+
+**Owner.** `Actor::validated` records a blank or absent agent as `OWNER_AGENT` (`"Owner"`) on `web` and
+`UNKNOWN_AGENT` (`"Unknown"`) on `mcp`: server-side, so every web write (items, specs, documents, revisions,
+attachments) is covered whatever the client sends; a named agent on the web keeps its name. **Existing rows: a
+migration, not a display rule** (`migrate_web_agent_to_owner`, run on every open after the column additions):
+`UPDATE events|revisions|attachments SET agent = 'Owner' WHERE surface = 'web' AND agent = 'Unknown'`. One
+statement per table, so every reader (the API, the web UI, the MCP tools, the feed, the search index, a hand-run
+`sqlite3`) sees one value, where a display rule would have to be repeated in each, and the live database's web
+rows were all written by the owner (D10: `web` is the owner at the keyboard). No event is appended: no record
+changed, only the name of who changed it. Idempotent. The web item page is unchanged: it already labels a web
+event by its email and "on the web" rather than by `agent`.
+
+Tests. Store: `a_feed_line_is_one_line_with_the_event_id_first` (updated), `a_feed_line_names_each_change_from_to`
+(every field kind), `an_event_from_before_its_prior_values_were_recorded_names_the_new_value_alone`,
+`every_write_records_what_it_changed_from_and_the_feed_says_it` (real item writes: status, approval, dependency block
+and the automatic unblock, labels, two moves, assignee/title/parallel, acknowledge, create; text and JSON),
+`specs_and_documents_record_what_they_changed_from`, `a_web_write_without_an_agent_is_recorded_as_owner` (and the
+negatives: a named agent on the web, an unnamed `mcp` write stays `Unknown`; documents, revisions, attachments),
+`an_older_database_gains_the_prior_values_column_and_its_web_events_read_owner` (a pre-rag-t0038 schema with web
+and mcp `Unknown` events, a revision and an attachment; opened twice). Routes:
+`a_web_write_without_an_agent_is_recorded_as_owner_with_its_prior_values` (HTTP) and
+`frames_say_what_a_change_moved_from_and_to_in_both_formats` (over the socket, text and JSON).
+
+### Addendum, 2026-10-27: the `request` type, and `from` / `became` links (rag-t0044)
+
+The owner files a **request**, a high-level idea with how to prioritise it; the manager, woken by the feed, breaks
+it into tickets linked back to it, places them, and closes the request as done listing what it became.
+
+**The type.** `ItemType::Request` (`"request"`). `create_item` refuses gate fields on it (as on any non-gate) and
+`parallel` (on create and update: *a request cannot be parallel: it is never dispatched, only broken into tickets,
+which may be*). It takes the statuses and transitions every item does, is queued and keeps its place in the list.
+**The queue view** gains `requests`: every queued request, whatever its status or block, in list order, checked
+first in the split, so a request is never in `queue`, `review`, `blocked` or `deferred`. `tracker_next` and a gate's
+batch read `queue` only, so neither can see one. `ProjectSummary` gains `requests`; `blocked`, `deferred` and
+`review` leave requests out, so each item is counted once. Done, a request is under `done` as any item is.
+
+**The links.** `LinkKind::From` (`from:<request id>`) and `LinkKind::Became` (`became:<item id>`). No schema
+change: `item_links.kind` is text, so nothing is migrated. `validate_link` refuses `became` always
+(`BECAME_IS_THE_SERVERS`, pointing at `from`), and `from` on a concept, naming the item itself, naming no item, an
+item of another project, or anything but a request. A request refuses a `from` of its own, on create and on
+`add_links`. **Reciprocity** is one helper, `reciprocate_from`, run in the write's own transaction after the item's
+event: adding a `from` (create, `add_links`) inserts `became` on the request and appends a `link` event there
+(`Became ubu-t0051.`, `fields.links_added`, `before: {}`); removing it (`remove_links`) deletes the reverse
+(`No longer became ubu-t0051: its from link was removed.`, `links_removed`). A `remove_links` naming `became` is
+refused with the `from` to remove instead. `link` is housekeeping and outside the feed's default kinds, so the
+manager's own breakdown does not wake it. **The integrity check** (`request_link_problems`) reports a `from` whose
+request has no `became` back, a `became` whose item has no `from`, and a `from` naming anything but a request.
+
+**Same project only.** A `from` must name a request of the item's own project: the manager, the feed and the
+dashboard are all per project, and a `became` event belongs in the request's project's history, so a cross-project
+breakdown would split one request's story across two feeds. Nothing asked for it.
+
+**The default approval** is `rag_core::tracker::default_approval(&links)`: `agent` when the create carries a
+`from`, else `unapproved`; `rag-serve` applies it when the body names no approval. An explicit `owner` (the request
+says the work is approved) stands.
+
+**The feed.** `describe_changes` says `{type: request}` for an item `create` of type `request`, and still nothing
+for any other create, so the frame that wakes the manager says what it is:
+`#13906 rag web create rag-t0044 "Weather" {type: request}: Created request item (approval: owner). [Owner]`.
+
+Tests. Store: `a_request_has_its_own_section_and_is_never_in_the_queue` (pending, in progress and blocked, review,
+deferred: only under `requests`; the project counts; done under Done), `a_request_has_no_gate_fields_and_is_never_parallel`,
+`from_links_are_answered_by_became_on_the_request` (on create and on update, added and removed, with their events;
+`default_approval`), `request_links_are_refused_where_they_do_not_belong` (every refusal above, and nothing left
+behind), `the_integrity_check_finds_a_one_sided_request_link` (each side deleted by hand),
+`a_requests_create_frame_says_request`. Routes: `a_request_has_its_own_section_and_its_tickets_link_back` (the
+view, the counts, the default and the explicit approval, `became` in order, done with a note, the check),
+`request_writes_are_refused_where_they_do_not_belong`, and over the socket
+`a_web_request_reaches_the_default_feed_saying_request` (the frame; the `became` link event stays out of the
+default feed).

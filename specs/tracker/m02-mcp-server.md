@@ -4,6 +4,9 @@ m02: the MCP server
 acceptance 1 and 2 (a live Claude Code session) wait for the release. Spec: [`master.md`](master.md), D12, R4. **Build from
 [`api.md`](api.md)**, the HTTP contract m01 built: every tool forwards to a route documented there.
 
+*Written before rag-t0050 (2026-10-28) named a queue record a **ticket**: this milestone's plan, its as-built and
+the addenda before that date keep the word *item* as they were written. The API keeps `item` ([`api.md`](api.md)).*
+
 The agents' surface: a `tracker` mode of `rag-mcp`, so tracker calls show as their own server, as the ledger's do.
 
 
@@ -203,3 +206,137 @@ labels shows nothing. `tracker_list` gained `what: labels` (`GET /tracker/{proje
 `Physics · 3 items · 2 queued`, or `No labels.`) and a `label` filter on `items` (refused on any other list). Tests:
 `queue_and_next_show_labels_after_the_assignee`,
 `create_and_update_carry_labels_and_list_filters_by_label`.
+
+### Addendum, 2026-10-27: the event feed needs no tool (rag-t0036)
+
+The live event feed (m01's addendum of the same date, [`api.md`](api.md) § *The event feed*) adds **no MCP tool**.
+A manager arms Claude Code's `Monitor` tool on `ws://<host>:17793/tracker/<project>/events/ws?since=<id>` directly
+(*on the server host `<host>` must be `127.0.0.1`: Monitor refuses a private address; see rag-t0039 below*),
+since `Monitor` opens a WebSocket itself and wakes the session per frame; a tool could not hold a socket open across
+turns. The starting id is the `latest_event_id` of `GET /tracker/<project>/events` (a `curl`: the MCP tools'
+history lines carry no event ids). `user-claude.md` § *Tracker* spells out the call, the re-arm with the last id
+seen, and how to react.
+
+### Addendum, 2026-10-27: from → to and Owner reach the tools unchanged (rag-t0038)
+
+No tool changes. A write's answer and `tracker_get`'s history carry each event's new `before` object (the prior
+values, [`api.md`](api.md) § *Event*) alongside `fields`, as the server's JSON. The owner's web writes now read
+`Owner` wherever a history line names the agent (`… · Owner via web …`), since the server stamps it and migrated
+the older ones; an agent that sends no `agent` is still `Unknown`. Tool descriptions and frame coalescing are
+rag-t0039's.
+
+### Addendum, 2026-10-27: the tracker's context cost cut (rag-t0039)
+
+The owner's finding: the tools burned a manager's context. Every tool definition is loaded each session, and a
+manager calls the tools all day, so every character of a definition or a reply is paid again and again.
+
+**Measured** both ways the same way, back to back on 2026-10-27 at about 23:00 UTC: `target/debug/rag-mcp --server
+tracker` driven over stdio with JSON-RPC against the live server (`RAG_SERVE_URL` its LAN address),
+read-only calls only, the item being ubu's first queued (`ubu-t0059`). Characters as the client receives them
+(`json.dumps` of each tool), tokens estimated at four characters each. The manager's own measurement the same day
+(an item with a longer history) had `tracker_get` at 17.1k by default and 1.9k without.
+
+| Call | Before | After |
+|---|---|---|
+| tool definitions (`tools/list`) | 31.8k chars, ~8.0k tokens, 12 tools (`tracker_create` 7.6k, `tracker_update` 7.4k) | 11.1k chars, ~2.8k tokens, 14 tools (10.4k compact JSON, ~2.6k tokens); the largest `tracker_create_record` 1.8k |
+| server instructions | 1.6k chars | 1.3k chars (now carrying every shared rule) |
+| `tracker_get ubu-t0059` (default) | 5.8k chars (history included) | 2.1k chars (no history) |
+| `tracker_get … history: 3` | refused (a boolean) | 3.1k chars |
+| `tracker_queue ubu` (default) | 5.1k chars | 5.1k chars (unchanged; now for status reports only) |
+| `tracker_next ubu n=3` | 2.7k chars | 2.7k chars (unchanged; read after each job) |
+
+Write replies cannot be measured on the live server read-only, so they were measured on a scratch `rag-serve` (a
+temporary database on 127.0.0.1:17899), the same calls through each binary, an item with a 600-character brief.
+The live `ubu-t0059` modelled as before (the record without its history plus its last event) is 2.5k:
+
+| Write | Before | After |
+|---|---|---|
+| `tracker_create` an item | 1.5k chars (the record as JSON) | 51: `ok created measure-b-t0001 [dev] "Measure one" (#7)` |
+| `tracker_update` status and assignee | 1.4k | 77: `ok measure-b-t0001 status: pending → in_progress; assignee: none → dev-1 (#9)` |
+| `tracker_update` a note alone | 1.3k | 29: `ok measure-b-t0001 note (#10)` |
+| `tracker_move` to the top | 1.3k | 59: `ok measure-b-t0002 moved: after measure-b-t0001 → top (#11)` |
+| `tracker_update` to done | 1.4k | 51 |
+
+**What changed**, by the item's five points:
+
+1. **`tracker_get` leaves the history out by default.** `history: true` gives every event, `history: N` the last N
+   with `events_omitted` counting the rest; the `events` key is absent otherwise. The MCP side asks the server for
+   `history=false` when none is wanted and trims to N itself (the HTTP API is unchanged: an N on the server would
+   only move the same trim). `tracker_doc_get` keeps its `history` flag, already off by default.
+2. **Tool definitions from 31.8k to 11.1k characters.** The rules every write shares (who may write, `agent`,
+   notes, `owner` and `ratified` approval, the one-line replies, `project` over each transport) are stated **once,
+   in the server's instructions**, not in each write tool. Descriptions and argument docs say only what a call
+   needs (the status transitions are gone from `tracker_update`: a refused move already names the allowed ones). The
+   schemas are compacted when the router is built (`compact_schema`: no `$schema`, `title`, `null` in optional
+   types, `format: uint32` or `minimum: 0`; only keyword values are touched). Links are `kind:target` strings
+   (`ledger:rag-0033`) instead of objects, which also drops a `$defs` entry from four tools. **`tracker_create`
+   and `tracker_update` are split**: `tracker_create` (items and gates: `type`, `title`, the gate and queue fields)
+   and `tracker_create_record` (`kind` spec, milestone, concept or doc); `tracker_update` (items: `id` an item id)
+   and `tracker_update_record` (`spec:`, `milestone:`, `concept:`). Each refuses the other's records by name. Claude
+   Code defers MCP tools and loads them one at a time, so a manager that never writes a spec never loads its
+   arguments. No compatibility shims: `kind: item` on `tracker_create`, `item_type`, `bottom` on create (the
+   default) and link objects are gone, as agents re-read the tool list each session.
+3. **Docs**: `user-claude.md` and the trial brief now say `tracker_next` at the start and after each job,
+   `tracker_queue` only for a status report, and with the feed armed re-read only when notified or after a job.
+4. **Feed frames** (`api.md` § *The event feed*; `rag_core::tracker::{burst_line, joins_burst}`, the serve feed's
+   `flush`): a burst (one project and surface, within `coalesce` seconds, default 3) is one text frame starting with
+   the burst's last id (`#13950 rag web burst #13946–#13950, 5 events: queue reordered: 5 moves (…) [Owner]`), so
+   resume-by-id is unchanged; JSON frames are never coalesced. A note past 200 characters ends `… (+812 chars in
+   #13950)`. **Monitor URLs are `127.0.0.1`** on the server host: Monitor's `ws` source refuses a private address
+   (`ws://<LAN address>:…` fails), so the docs say `ws://127.0.0.1:17793/…`, and from another host an ssh port
+   forward or a command-based Monitor.
+5. **Write replies are one line**: `ok <record> <changes from → to> (#<event id>)`, the changes said by
+   `rag_core::tracker::describe_changes`, the same function the feed's frames use; a create names what it made and
+   where (`after ubu-t0041`, `at the top`, a spec's and its milestones' documents), `tracker_doc_edit` the next
+   `base_revision`, `tracker_attach` the `att:` reference, `tracker_ack_done` the ids.
+
+Tests: `a_write_answers_with_one_line`, `links_are_kind_colon_target`,
+`create_takes_items_and_create_record_the_rest`, `update_takes_items_and_update_record_the_rest`,
+`history_is_none_by_default_all_or_the_last_n`, `tracker_get_leaves_the_history_out_unless_asked`,
+`compacting_a_schema_keeps_what_it_describes` and `the_tool_list_is_lean_and_says_the_rules_once` (a budget of
+11.5k characters for the compact tool list) in `crates/mcp`; `a_burst_joins_one_project_and_surface_within_its_window`,
+`a_burst_line_summarises_moves_and_names_each_record_once` and the cut note in `crates/core`;
+`a_burst_of_moves_is_one_frame_that_resumes_exactly`, `the_default_text_feed_coalesces_a_burst_within_three_seconds`,
+`a_burst_never_spans_two_surfaces_or_two_projects`, `closing_mid_burst_sends_the_burst_then_resumes_after_it` and
+the new refusals in `crates/serve` (the older feed tests run with `coalesce=0`, pinning one frame per event).
+
+### Addendum, 2026-10-27: requests (rag-t0044)
+
+**No new argument.** `tracker_create` takes `type: request` (its doc says `dev|design|recon|analysis|gate|request`)
+and a ticket's request as a link string, `from:<request id>` (the links doc's example names it), rather than a
+`from` argument: links are already `kind:target` strings, so a separate field would duplicate one in the schema
+every session pays for. The server writes `became` on the request and defaults the ticket's approval to `agent`.
+
+**`tracker_queue`** lists a **`Requests:`** section first, before Review (`requests` in `sections`, on by default),
+the header counts them (`ubu: 1 request, 1 in review, …`) and the footer counts any not shown (`1 request`).
+`tracker_list what=projects` counts them too. **`tracker_next`** never returns one: the server lists requests apart
+from `queue`, a stray request row is skipped by the walk, and the `type` filter refuses `request` (*requests are
+never dispatched: tracker_queue lists them, to break down*).
+
+**The routine** is in the server's instructions, once: a request is the owner's idea, never dispatched (its feed
+frame says `{type: request}`): create its tickets with links `from:<request id>` (approval defaults to agent), place
+them as it says (else the bottom), then set it done with a note listing them. `user-claude.md` § *Tracker* spells
+out the same routine for the manager's `Monitor` loop.
+
+**Measured** as rag-t0039's test measures it (the compact JSON of `tools/list`, and the instructions' length):
+tools **10,421 → 10,456** characters (+35: the type and link examples, `requests` in `sections`, the word in
+`tracker_queue`'s description), instructions **1,302 → 1,560** (the routine). Both within the 11.5k and 1.6k budgets.
+
+Tests: `requests_are_listed_first_and_counted_apart`, `next_never_returns_a_request_nor_counts_it_in_a_batch`,
+`create_takes_a_request_and_a_from_link`, the project list's request count, and the routine's phrases in
+`the_tool_list_is_lean_and_says_the_rules_once`.
+
+### Addendum, 2026-10-28: "ticket" for a queue record (rag-t0050)
+
+The owner's request rag-t0049: a queue record is a **ticket**. **Prose only**: the server's instructions, the tool
+and argument descriptions (`tracker_next`, `tracker_create`, `tracker_update`, `tracker_move`, `tracker_ack_done`,
+`tracker_get`'s `id`, a link's target), the reference forms an unreadable id is refused with, the few refusals the MCP
+crate writes itself, the corpus server's `corpus=tracker` wording, and the one-line replies (`dispatchable ticket`,
+`parallel tickets`, `acknowledged 2 done tickets`, a label's `3 tickets`), as the server's event bodies, feed lines
+and errors now say ticket too (api.md). **Unchanged**, so no caller breaks: the tool names and every argument and
+value (`what: "items"`, `kind: "item"`, the link kind `item:`). `tracker_list`'s description keeps `items`: it lists
+the `what` values.
+
+**Measured** as rag-t0039's test measures it: tools **10,456 → 10,458** characters, instructions **1,560 → 1,564**;
+both within budget. `the_tool_list_is_lean_and_says_the_rules_once` now also fails on the word *item* in the
+instructions or in any description but `tracker_list`'s.

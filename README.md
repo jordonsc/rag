@@ -280,10 +280,21 @@ soft-deletes a topic — retained in SQLite but excluded from `all_for_index` so
 reconciler drops it from the index entirely, hidden from `ledger_search` unless
 `archived = true` (a substring search over the soft-deleted set), and restorable.
 
+**Topic ids are `<repo>-l<seq:04>`**: `ubu-l1652`, *l* for ledger, which sets a topic
+apart from the tracker's `ubu-t0042` tickets and `ubu-d0007` documents. Topics minted
+before rag-t0051 keep their unmarked ids (`ubu-1651`, `shq-suite-0001`) for ever: none
+is migrated, and every reader (the routes, the MCP tools, the web UI's id boxes, the
+tracker's `ledger` links and their titles, search citations) takes both. The sequence
+is one per repo across both forms, so `ubu-1651` is followed by `ubu-l1652`, and a
+moved-away number is never reissued (the store reads the number back out of tombstones
+written before it recorded one). An id splits at its **final** hyphen, since a repo
+name may hold hyphens of its own; the one parser is `core::ledger::parse_topic_id`
+(`web/app/src/ledger/ids.ts` in the UI).
+
 ## Tracker
 
 An agent-first task tracker beside the ledger (`specs/tracker/master.md`; ledger
-rag-0033, rag-0034): per project, the **development queue** (items of type `dev`,
+rag-0033, rag-0034): per project, the **development queue** (tickets of type `dev`,
 `design`, `recon`, `analysis` and `gate`), the **specs** with their milestones, and the
 **concept documents**, all with their history. It is the source of truth for all three:
 specs and concepts move out of the project's repository into it, keeping their paths
@@ -296,18 +307,22 @@ specs and concepts move out of the project's repository into it, keeping their p
   the history records the change itself, `Status: pending → done.`); only *Add note* needs
   text.
 - **The queue is a doubly linked list**, reordered by `before` / `after` / `top` /
-  `bottom` moves, never by position numbers. Done and cancelled items leave it; a reopen
-  goes back in at the top; a blocked or deferred item keeps its place (`deferred`, work put
+  `bottom` moves, never by position numbers. Done and cancelled tickets leave it; a reopen
+  goes back in at the top; a blocked or deferred ticket keeps its place (`deferred`, work put
   aside on purpose, is a status apart from the blocked flag and has its own section; a
-  resume puts it back where it was; rag-t0017), and so does a `review` item (work waiting on
+  resume puts it back where it was; rag-t0017), and so does a `review` ticket (work waiting on
   the owner to confirm or review it, shown red above the queue; confirmed it is done, sent
   back it is in progress where it was; rag-t0024, which retired the block reason `approval`).
-  An item blocked with reason `dependency`
-  names what it waits on (`depends_on`, items of its project) and unblocks itself when the
-  last of them is done (rag-t0018); a `parallel` item may start before the gates above it
+  A **request** (`type: request`, rag-t0044) is the owner's idea, filed with *Add request*:
+  queued but listed apart, never dispatched; the manager breaks it into tickets linked
+  `from:<request id>` (the server writes `became` on the request, and the tickets default to
+  `agent` approval), then marks it done.
+  A ticket blocked with reason `dependency`
+  names what it waits on (`depends_on`, tickets of its project) and unblocks itself when the
+  last of them is done (rag-t0018); a `parallel` ticket may start before the gates above it
   and still lands after them (rag-t0013). `GET /tracker/{project}/check` proves the list
   sound.
-- **Labels** (rag-t0027): free-text subject tags on an item (`Physics`, `Biomes`), at most
+- **Labels** (rag-t0027): free-text subject tags on a ticket (`Physics`, `Biomes`), at most
   10, matched case-insensitively within a project whose existing casing wins, set wholesale;
   `GET /tracker/{project}/labels` lists a project's vocabulary with counts and
   `…/items?label=` filters by one. They show on the dashboard's rows (a filter in the URL),
@@ -319,37 +334,60 @@ specs and concepts move out of the project's repository into it, keeping their p
 - **HTTP API:** `/tracker/…` on `rag-serve`, documented route by route, with every request
   and response body, in [`specs/tracker/api.md`](specs/tracker/api.md). The routes answer
   503 when the store cannot open; `/info` reports `tracker_ready`.
+- **Live event feed** (rag-t0036): `GET /tracker/{project}/events/ws` is a WebSocket that
+  sends one line per event as its write commits (`#13901 rag web approve rag-t0040 "Title"
+  {approval: agent → ratified}: Go ahead. [Owner]`: each change from → to, since rag-t0038;
+  `format=json` for the whole event, its `fields` and their prior values in `before`), by
+  default only the owner's web actions; `since=<event id>` replays what came after it first,
+  so a client that reconnects with the last id it saw loses and repeats nothing. `*` for the
+  project watches every project. `GET /tracker/{project}/events` reads the same events once
+  and gives the starting id. Built so Claude Code's `Monitor` tool wakes an idle manager
+  (the pattern is in [`user-claude.md`](user-claude.md)); fed from the store's write path, no
+  polling; a 30 s ping; a lagging client is closed with the id to resume from. Text frames
+  coalesce a **burst** (rag-t0039): one project's and surface's events within 3 s
+  (`coalesce=<s>`, 0 to 60; `0` for one frame per event) share one frame starting with the
+  burst's last id (`#13950 rag web burst #13946–#13950, 5 events: queue reordered: 5 moves
+  (…) [Owner]`), so resuming by id stays exact; a note past 200 characters is cut with
+  `… (+812 chars in #13950)`. Monitor's `ws` source refuses private addresses, so on the
+  server host the URL is `ws://127.0.0.1:17793/…`.
+  `rag-serve` now also stops cleanly on SIGTERM.
 
 - **MCP tools** (m02): `rag-mcp --server tracker` (stdio) or `/tracker` on the gateway, each
   forwarding to the API (`crates/mcp/src/tracker.rs`): `tracker_queue` (the dashboard as
-  compact text: review first, then the queue with gate markers, blocked and deferred, bounded by `limit` (default 20),
+  compact text: requests first, then review, then the queue with gate markers, blocked and deferred, bounded by `limit` (default 20),
   `until_gate` and `sections`, done only counted unless asked for, a `Not shown:` count
-  footer), `tracker_next` (the next `n` dispatchable items in full, stopping at the first
-  gate; rag-t0006; then any `parallel` items below the gate, which may start now and land
-  after it, rag-t0013), `tracker_list`, `tracker_get`,
-  `tracker_create`, `tracker_update`, `tracker_move`, `tracker_doc_get`, `tracker_doc_edit`,
-  `tracker_attach`, `tracker_attachment_get` and `tracker_ack_done`. Every write carries
-  `surface: mcp`, the git email and the `agent` passed. Who may write what (the manager
-  writes the queue; a sub-agent edits documents and notes its own task) is in the tool
-  descriptions, not enforced. Over stdio, attachments are local files; over the gateway,
-  base64 of at most 10 MB.
+  footer), `tracker_next` (the next `n` dispatchable tickets in full, stopping at the first
+  gate; rag-t0006; then any `parallel` tickets below the gate, which may start now and land
+  after it, rag-t0013), `tracker_list`, `tracker_get` (history only when asked: `history:
+  true` or `N`, rag-t0039), `tracker_create` (tickets and gates), `tracker_create_record`
+  (specs, milestones, concepts, documents), `tracker_update` (tickets),
+  `tracker_update_record` (specs, milestones, concepts), `tracker_move`, `tracker_doc_get`,
+  `tracker_doc_edit`, `tracker_attach`, `tracker_attachment_get` and `tracker_ack_done`.
+  Every write carries `surface: mcp`, the git email and the `agent` passed, and answers with
+  one line (`ok ubu-t0042 status: in_progress → done (#13950)`). Who may write what (the
+  manager writes the queue; a sub-agent edits documents and notes its own task) and the
+  rules every write shares are in the server's instructions, once, not in each tool, and
+  are not enforced. The fourteen tool definitions come to about 10k characters (~2.6k
+  tokens), down from 32k for twelve (rag-t0039). Over stdio, attachments are local files;
+  over the gateway, base64 of at most 10 MB.
 
 - **The dashboard** (m03) in the web UI, at `/projects/<project>` (never `/tracker/…`, the
   API's prefix): the owner's view of the queue, read like the manager's status report.
-  **Done** (green, oldest first and the latest just above the queue, until *Acknowledge all done*), **Review** (red, a diamond,
+  **Done** (green, oldest first and the latest just above the queue, until *Acknowledge all done*), **Requests**
+  (the accent, the owner's ideas waiting to be broken down, filed with *Add request*; rag-t0044), **Review** (red, a diamond,
   *Confirm* and *Send back*; rag-t0024), **the queue** in list order
   (blue in progress, white pending, red failed, each colour beside its word; gates as
   full-width markers labelled with their intensity and *release*), and **Blocked** (amber,
   with reason, note and *Unblock*). Rows are two lines (status, id, title, approval; then
-  type, assignee and labels; rag-t0026; no link chips, which are on the item's page,
+  type, assignee and labels; rag-t0026; no link chips, which are on the ticket's page,
   rag-t0031), an in-progress row filled with
   the owner's blue, its text lightened to read on it (rag-t0023, rag-t0029).
   Rows and markers are dragged to reorder, by mouse or
   touch (each drop one `move`), or moved with Alt+↑ / Alt+↓ and the row menu's *Move to
-  top* / *Move to bottom*; *Add item* and *Add gate* join the bottom, *Remove* cancels (a
+  top* / *Move to bottom*; *Add ticket* and *Add gate* join the bottom, *Remove* cancels (a
   note optional). A filter shows the agent approvals not yet ratified. It refreshes every 10 s while
-  the tab is visible (a conditional request, 304 when nothing changed). Each item has a page,
-  `/projects/<project>/item/<id>`: its body rendered (`att:` images resolved), links, history
+  the tab is visible (a conditional request, 304 when nothing changed). Each ticket has a page,
+  `/projects/<project>/ticket/<id>` (the older `…/item/<id>` still opens it): its body rendered (`att:` images resolved), links, history
   with the surface and agent on every entry, and the writes: note, status, block or unblock,
   approve or ratify, edit. The bar's **Tracker** opens the project last used. See
   `web/README.md` § *The tracker*.
@@ -369,18 +407,18 @@ specs and concepts move out of the project's repository into it, keeping their p
   surface, message), each one's line diff and body, and *Restore* (with a message). The
   search view's **Corpus** filter searches the tracker (`corpus=tracker`).
 
-- **Search** (m05): every document (at its current revision, chunked) and every item (its
+- **Search** (m05): every document (at its current revision, chunked) and every ticket (its
   title, type, status, body and notes, done and cancelled ones included) is indexed as
   `corpus = tracker` by `rag-ingest reconcile-tracker`, a pull-based incremental reconcile in
   the ledger's style. `rag-serve` touches a trigger file after each successful tracker write
   (`server.tracker_reindex_trigger`), so a change is searchable within seconds; a 15-minute
   timer is the backstop. `search_corpus` takes `corpus: "tracker"` (and `repo` for the
   project), as does `POST /search` (`"filters": {"corpus": "tracker"}`). A tracker hit
-  carries `repo` (the project), `rel_path` (the document path, or the item id), `title`,
+  carries `repo` (the project), `rel_path` (the document path, or the ticket id), `title`,
   `kind` (`spec`, `milestone`, `concept`, `doc` or `item`), `tracker_id` (what `tracker_get`
-  takes), `revision`, `type` and `status` (items), a line range (documents), and
-  **`citation`**: `<project>:<path>@r<revision>` for a document chunk, the item id for an
-  item. The corpus sync never purges tracker or ledger points.
+  takes), `revision`, `type` and `status` (tickets), a line range (documents), and
+  **`citation`**: `<project>:<path>@r<revision>` for a document chunk, the ticket id for a
+  ticket. The corpus sync never purges tracker or ledger points.
 
 Built so far: the store and the API (m01), the MCP tools (m02), the dashboard (m03), the
 documents pages (m04) and search (m05). Off-box backups (m06) are to come; until then the

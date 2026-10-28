@@ -128,8 +128,8 @@ and embeds only what changed; each has its own circuit breaker, kept beside its 
 | Run now | `make reconcile-ledger` | `make reconcile-tracker` |
 
 The tracker reconcile indexes each document at its current revision (chunked; a hit cites
-`<project>:<path>@r<revision>`) and each queue item as one point (title, type, status, body and notes; a hit cites the
-item id). An edit, a rename or an item change replaces that unit's points; nothing of an old revision or an old path
+`<project>:<path>@r<revision>`) and each ticket as one point (title, type, status, body and notes; a hit cites the
+ticket id). An edit, a rename or a ticket change replaces that unit's points; nothing of an old revision or an old path
 survives a run. The corpus sync never touches either corpus: its repo purge is limited to `code` and `wiki` points.
 
 ## Retrieval service

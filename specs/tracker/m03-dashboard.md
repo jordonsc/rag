@@ -4,6 +4,9 @@ m03: the dashboard
 gate). Spec: [`master.md`](master.md), D14, D15, D17, R12. **Build from
 [`api.md`](api.md)**, the HTTP contract m01 built.
 
+*Written before rag-t0050 (2026-10-28) named a queue record a **ticket**: this milestone's plan, its as-built and
+the addenda before that date keep the word *item* as they were written. The API keeps `item` ([`api.md`](api.md)).*
+
 The owner's view of a project's queue and where the owner reorders it, in the existing web app and its design system
 (`web/app`, `@rag/ui`).
 
@@ -327,3 +330,212 @@ Blocked or Deferred, each with links of every kind; the labels at line two's end
 the assignee; *waits on* still linking its item; no `line2End` on a row without labels; the list on its own; the
 phone rules for the labels' wrap and width), `trackerLabels.test.tsx` (the labels at the right end, apart from the
 assignee, and no ledger chip on the row).
+
+### Addendum, 2026-10-27: the in-progress tint, assignees in one column (rag-t0033)
+
+The owner: rag-t0029's solid `#0b61ac` came out too light and bright; he meant a dark blue close to the normal row.
+**The tint.** An in-progress row is now `--rag-inprogress-row`, `color-mix(in srgb, var(--rag-inprogress) 20%,
+var(--rag-surface))`, the owner's blue as a low share over the panel the row sits on (opaque, so a lifted or
+overlapping row composes the same): `#162839`, 1.16:1 against a plain row (a plain row's hover is 1.13:1), a dark
+navy. Its hover, `--rag-inprogress-row-hover`, is the same blue at 28 % over the panel (`#152e44`). Not the 20 %
+tint over a plain row's hover grey (`--rag-surface2`): `--rag-dim` reads 4.35:1 there. On the tint the palette's own
+foregrounds all pass, so the row is back to them: `--rag-dim` 4.90:1 at rest and 4.55 on hover (the tightest),
+`--rag-crit` 5.27 and 4.89, `--rag-text` 9.4 and 8.7. rag-t0029's `--rag-inprogress-hover`, the seven
+`--rag-on-inprogress-*` tokens, the `.rowInProgress` re-pointing and the dark control fills are gone; Approve, Unblock
+and the ratify pill are the design system's tinted controls again (at rest over the tint: Approve 5.4:1, the pill
+5.8:1). Their hover shares (the `accent` button's 24 %, the pill's 30 %) read 4.0:1 on the tint, as they read 4.45
+and 4.1:1 on a plain row's hover today: a design-system property, not changed here. The focus ring is `--rag-acc`
+on the navy. **The column.** A row's type and status are **slotted** (`TypeBadge slotted` from `SecondLine`, `StatusDot slotted`
+from `FlatRow` and `QueueList`, so every section): each word is stacked over a hidden, zero-height stack of every
+word of its kind, one a line (`ITEM_TYPE_SIZER`, `STATUS_SIZER` in `vocab.ts`, drawn by the `::after` of
+`.typeSlotted > .typeLabel` and `.statusSlotted > .statusLabel` from `data-sizer`, `white-space: pre`), so each slot
+is the widest word's own rendered width in whatever font and scale the page has; never a fitted `px` or a guess in
+`ch`, and no word can overflow it. The status sizer is drawn at the status word's heaviest weight (600; pending's is
+500), so every row's slot is one width. The type and the assignee are one unit (`.line2Who`, never wider than the
+line), the name cut with an ellipsis (its full text the tooltip) rather than wrapped under the type. **Across
+sections** (the manager's call on the owner's "all"): a flat row (Done, Review, Blocked, Deferred) leads with the room
+the queue's grip column takes, empty, so its status word and its second line start at the queue's x. The queue's
+status sits 35 px into its section at desktop width (a 1 px border, the 28 px grip column, half the row's 12 px gap,
+the subgrid's inset) and 45 px on a phone (1 + 4 px padding + 28 + 12, no subgrid); a flat section's border is 3 px,
+so a flat row's left padding is 32 px (was 12) and 42 px on a phone. Its status column is `max-content` of the slot
+(was `7.5rem`), the queue's width, so the ids line up across sections too. A first cut narrowed it to a fitted
+`calc(7.5rem - 20px)`, which left *In progress* 2 px of room in DejaVu Sans and would clip in another font or at
+another scale; replaced by the sizer. Measured in headless Chromium against a scratch `rag-serve` (every section,
+every status shown but cancelled; each word checked against its own free width, and its right edge against the id):
+nothing clips, no horizontal scroll, the status slot exactly the widest word's width, the ids within 1 px across
+sections, and every assignee at one x in all five sections: default font (DejaVu Sans) 252.1 at 1400 px and 148.1 at
+375 px; text at 125 % 175.6 and 163.6; DejaVu Sans Mono 245.6 and 141.6; DejaVu Serif at 110 % 201.4 and 158.2.
+Gate markers are unchanged. Tests: `trackerQueue.test.tsx` (the
+tint and hover rules and tokens, the share and the composite measured, near a plain row but apart from it, the hover
+a visible step; every palette foreground at 4.5:1 on both, the 20 % over the grey shown to fail; no re-pointing, no
+`--rag-on-inprogress` left; the tinted Approve and pill measured at rest), `trackerTypeSlot.test.tsx` (every row's
+status and badge slotted in all five sections, the assignee straight after the badge, their own text unchanged; each
+sizer every word of its kind; the sizers' CSS, the status sizer at the heaviest weight; the pair's CSS; a flat row's
+32 px and 42 px lead and its `max-content` status column; status and badge unslotted off the rows).
+
+### Addendum, 2026-10-27: scroll memory, the review row, copying the id (rag-t0040, rag-t0041, rag-t0042)
+
+**Scroll memory** (rag-t0040, the owner: queue → item → back should land where he was). `tracker/scrollMemory.ts`,
+`useScrollMemory(key, ready)`, on the dashboard (`queue:<project>`), History (`history:<project>`) and Documents
+(`docs:<project>:<tab>`; Attachments loads on its own and is not remembered). The window's scroll is saved to
+`sessionStorage` (`rag.tracker.scroll.<key>`, guarded: a refusing browser restores nothing) on every scroll event
+once the visit has settled, and put back **once**, in a layout effect, when `ready` (the page's rows have rendered:
+the queue's `state.kind === 'ready'`, History's and Documents' lists loaded). Restoring once is what keeps the 10 s
+refresh from moving the reader; nothing is saved before the restore, so the short loading page never overwrites the
+position it returns to; the listener goes in the layout cleanup, before the next page's shorter layout clamps the
+scroll. **A return** restores: a router `POP` after a `popstate` (the browser's back and forward; a module-level
+listener added before the router's tells it from the first location, which React Router also calls `POP`), a link
+carrying `RETURN_STATE` as router state (the item page's crumb and Project link, a document's link to the documents
+page, the Queue / Documents / History tabs), and the page load itself when its navigation type is `reload` or
+`back_forward`. Anything else (a pasted link, the Tracker button, the picker, a label link) is a fresh visit: the
+stored position is dropped and the page goes to the top at once. A visit starts when the page mounts or its key
+changes, so a filter written into the URL is not a new visit; a Documents tab switch is. Router state rather than
+the browser's own restoration because the page draws a spinner first, so the browser restores into a page too short
+to scroll; `history.scrollRestoration` is left `auto` for the ledger's pages. Measured in headless Chromium (scratch
+`rag-serve` on :17895, 70 items, 30 cancelled; since stopped), at 1400 and 375 px: the crumb, browser back and the
+Queue tab restore the queue exactly (1109 → 1109, 2069 → 2069); History restores by its tab and by back; a pasted
+link opens at the top and a reload keeps the place; a refresh that adds a row at the bottom leaves `scrollY` as it
+was, and one that adds a row above leaves the rows in view where they were (Chromium's scroll anchoring); no
+horizontal scroll. Tests: `trackerScroll.test.tsx` (the rules; the storage, per key, junk and refusal; the hook's
+timing: no restore before the rows, once only across refreshes, nothing saved while short, a plain visit to the top
+and the position dropped, the first page fresh, a reload restoring; the real dashboard and item page by the crumb and
+by back, the scroll made only once the queue's rows are in the page, and across a changed 10 s refresh; History and
+the Documents tabs; the tabs carrying the return).
+
+**The review row** (rag-t0041). On the item page of an item in Review, **Confirm** and **Send back** are on a second
+row of their own (`role="group"`, *Review*) under the other writes: Confirm in the done green, the design system's
+new `good` button (`--rag-good` over `--rag-tint-good` 14 %, hover `--rag-tint-good-hover` 24 % with the text lifted
+by `--rag-tint-lift`, as rag-t0034's pair), Send back the `caution` button (the blocked amber). Focus changes only
+the ring, so the resting text is the focus text. `ui/src/__tests__/tintContrast.test.ts` holds `good` to 4.5:1 at
+rest and on hover on every ground (the "fails without the lift" case stays for `accent` and `caution` only: the green
+is light enough to pass unlifted); `trackerItem.test.tsx` the row, its order, its place under the rest, and none for
+other statuses.
+
+**Copying the id** (rag-t0042). A copy icon (the registry's `copy`, a `check` while it has copied) right after the id
+in the item page's top row, named *Copy <id>*, with "Copied" (or "Could not copy") in a live status for 1.5 s.
+`tracker/CopyButton.tsx`'s `copyText` uses `navigator.clipboard` in a secure context and otherwise, as on the LAN's
+plain http where it does not exist, or when it refuses, a hidden read-only textarea, selected, and
+`execCommand('copy')`, synchronously in the click, focus handed back to the button. Attachments' `att:` copy now
+uses it too (it failed on http the same way). Measured in headless Chromium against the scratch server on a
+non-localhost name (not a secure context, no `navigator.clipboard`): Enter on the focused button copied the id, read
+back from the clipboard on a secure page; the secure path too. Tests: `trackerCopy.test.tsx` (its place after the
+id; both paths; the fall-back on a refusal; refused both ways; no `execCommand`; Enter and Space; "Copied" clearing).
+
+### Addendum, 2026-10-27: requests (rag-t0044)
+
+**Add request**, an accent button at the right of the page's header (it is the owner's, not the queue's, so it is
+not beside Add item and Add gate), opens *Add a request*: a title (required) and the **Request** (markdown, a
+16-row box against an item body's 8), and the *Create it owner-approved* box, ticked, as every owner creation is.
+It sends `type: request` and nothing else of an item's (no type choice, labels, parallel or place). **Requests**, a
+section between Done and Review with the accent's left edge, lists the view's `requests` as two-line rows like
+Review's, with the approval control; it is drawn only when there are some, and the unratified and label filters
+apply to it. The row's type is the **Request** badge: its own word and glyph (`message-square`) in the accent
+(`.type[data-type='request']`), so a request never reads as work.
+
+**The item page.** A ticket with a `from` link shows **From request** in its header, each a link to the request.
+A request has a **Became · N tickets** panel above Links: each ticket its status, id (a link), type and title, read
+one by one (`history=false`); a ticket that cannot be read stays its id, still a link; with none, *Not broken down
+yet.* `from` and `became` are not repeated under Links. **Edit** never offers `became` (`addableLinkKinds`), never
+offers `from` on a request, draws no remove button on a `became` link (it goes with its ticket's `from`), and has
+no Parallel box on a request. A concept's Links dialog offers neither kind.
+
+Tests: `trackerRequest.test.tsx` (the section's place and rows, none without requests, the badge, never in the
+queue; Add request's body, its required title and its larger box; Became with a read and an unread ticket, the empty
+request, From request and Links without them; Edit's link kinds, no remove on `became`, no Parallel; the
+vocabulary's `addableLinkKinds`, `linkHref` and labels).
+
+### Addendum, 2026-10-27: dialogs that move, Send back's note, link titles (rag-t0045, rag-t0046)
+
+**Dialogs move** (rag-t0045). The shared `Dialog` in `@rag/ui` is dragged by its title bar, so every tracker dialog
+(confirm, send back, ratify, approve, block, defer, remove, rename, edit, add…) and the ledger's can be moved aside
+to read the page under it. Pointer events with the pointer captured (mouse, pen and touch; the header is
+`touch-action: none`, so a finger drags rather than scrolls); a press on the close button is not a drag. The dialog
+is a `translate` from its centred place, clamped so the whole box stays 8 px inside the viewport as it moves and
+again on a window or dialog resize (`clampDialogOffset`; a box larger than the viewport on an axis is pinned to its
+leading edge), and reset each time the dialog opens. A dialog's scrim is now `--rag-scrim-light` (black at 28 %, was
+`--rag-shadow`'s 55 %), permanently rather than only while dragging, so the page stays legible while a decision is
+being made over it; the drawer keeps the darker scrim. The keyboard is unchanged (focus on open, the Tab trap,
+Escape, focus back on close); there is no keyboard move. **Send back's note box is twice as tall** (6 rows against
+the note dialog's 3, `SEND_BACK_NOTE_ROWS`), on the item page and the dashboard's review rows: the reason an item
+goes back is usually the longest note.
+
+**Link titles** (rag-t0046). The item page's **Links** names each target beside its id, read from the target's own
+record: an item by `GET /tracker/items/{id}?history=false`, a ledger topic by `GET /ledger/{id}` (a moved id is
+followed to the topic it moved to, up to 3 hops, and says "moved to <id>"), a spec, concept or milestone by its
+record in the item's project (the milestone's read also gives the document path its link opens, so it is still read
+once). All are read at once and each lands on its own; the read is keyed on the links, not the record, so a re-read
+after a write that leaves them alone keeps the titles without re-reading. The id is shown at once and stays the
+link's name; the title fills a slot laid out from the first paint, one line cut with an ellipsis (the whole title its
+tooltip), whose size never depends on the title, so nothing moves when it lands (beside the id when the row has
+12rem to spare, on the next line otherwise, as at 375 px). A target that cannot be read says so, muted and in italic:
+*Not found* (404), *Moved to <id>, not found*, *Title unavailable* (any other failure). **From request** does the
+same, each request on its own line with its title in a fixed-width slot (`min(18rem, 55vw)`) so the meta row never
+reflows; **Became** already named its tickets (rag-t0044) and is unchanged.
+
+Measured in headless Chromium against a scratch `rag-serve` (:17896, scratch data; since stopped) at 1400 and 375 px:
+the Send back dialog dragged by mouse followed the pointer and clamped at 8 px from each edge (1400: x 872, y 510 for
+a 520 × 382 box in 1400 × 900; top-left 8, 8), dragged by touch at 375 px, kept focus on the dialog, closed on Escape
+and reopened centred; its note box 6 rows; the scrim `rgba(0, 0, 0, 0.28)`; no horizontal scroll. The Links panel
+named an item, a ledger topic, a milestone and a spec, and *Not found* for an unknown ledger id; From request named
+its request. Tests: `ui/src/__tests__/dialogDrag.test.tsx` (the clamp's arithmetic; a drag following the pointer,
+only while pressed and only for the pointer that started it, clamped to the viewport; the close button and a secondary
+button not dragging; reopening centred; focus, the Tab trap and Escape after a drag; the lighter scrim),
+`trackerItem.test.tsx` (Send back's rows twice the Confirm dialog's), `trackerLinkTitles.test.tsx`.
+
+### Addendum, 2026-10-28: "ticket" for a queue record (rag-t0050)
+
+The owner's request rag-t0049: the web UI calls a queue record a **ticket**: **Add ticket** and its dialog (*Add a
+ticket*), the dialogs' titles (*Remove this ticket?*, *Block this ticket*, …), the queue's count, the empty states,
+the label filter's tooltip, History's column and heading (*Finished tickets*), the Waits on picker and reason
+(*Waits on tickets*), the link kind's label (*Ticket*), a row's accessible name (*Ticket ubu-t0042: …*), the search
+page's *Document or ticket*, and the client's refusals (*A ticket needs a title.*). **The ticket page moved to
+`/projects/:project/ticket/:id`**, which every link now builds (`itemPath`); `/projects/:project/item/:id` still
+routes to it, so a bookmark or a pasted link keeps working. Code names (`ItemView`, `itemPath`, `Item`) and the API's
+routes and fields are unchanged. Tests: the strings throughout, and `trackerShell.test.tsx` opening a ticket at
+both addresses.
+
+### Addendum, 2026-10-28: attachments on the ticket page, and the image viewer (rag-t0053, rag-t0055)
+
+The owner's question (rag-t0053): attaching files to a ticket in review. **Every note field and every body on the
+ticket page takes a file**: Add note, Send back, Confirm, block, unblock, defer, resume, the status change, ratify,
+approve, withdraw (all `NoteDialog`), Edit's body and note, and Add ticket's and Add request's bodies. A paste, a
+drop, or the **Attach** button under the box uploads the file (`POST /tracker/{project}/attachments`) and writes
+`![name](att:…)` for an image or `[name](att:…)` for anything else at the cursor, through a placeholder
+(`![Uploading name…](#uploading-N)`) while it uploads; the box says *Uploading 1 file…* and the write's button
+waits. A failure removes only the placeholder: **the typed text is kept**, and the box says which file and why
+(*shot.png was not attached: the disk is full*); a file over 50 MB is refused before it is sent. The code is the
+documents editor's, moved into one shared module, `tracker/attach.tsx` (`useAttachments`, `AttachTextarea`,
+`AttachButton`), which the editor now uses too (m04 addendum below); `NoteDialog` and `ApprovalDialog` take a
+`project`.
+
+**Notes in the history render as Markdown**, `att:` resolved, through the body's renderer and its two barriers
+(`html: false`, then DOMPurify): they already did, and a test now holds it (an image inline, a `<script>` and an
+`onerror` left as text). An attached image there is a **thumbnail**, at most 24rem × 12rem and on its own line;
+`render.ts` wraps an attached image that is not already in a link in a link to its own file (same hex-only route,
+sanitised like the rest, a new tab). **The feed and MCP are unchanged**: a note's text carries the reference, and an
+agent fetches the file with `tracker_attachment_get` (`user-claude.md` says so, and that a frame may cut a long note
+before its reference).
+
+**The image viewer** (rag-t0055, from the owner's request rag-t0054): a plain click on an attached image, in a
+ticket's body or history, a document, the editor's preview or the Attachments list, opens it over the whole window
+(`tracker/ImageViewer.tsx`, the arithmetic in `viewerMath.ts`). It opens at 100 %, or narrower to fit the window's
+width; the **wheel zooms about the cursor**, from a quarter of the opening scale (never under 5 %) to 800 %, and
+`+`, `-` and `0` zoom about the middle and reset; a **left-button drag pans**, one finger pans and two pinch on a
+touch screen, and the picture never leaves the window (a smaller one stays wholly inside, a larger one opens no gap
+at its edge); a tall image opens at its top. **Esc**, the **X** top right or a **backdrop click** (a press that
+moved less than 4 px, not on the picture) closes it; Tab stays on the close button, focus comes back to the link
+clicked, the page does not scroll under it. The caption top left says the name and the zoom (*lamp · 88%*). A
+modifier-click or a middle click on the image is left to its link, which opens the file in a new tab. One new
+token, `--rag-scrim-viewer` (black at 90 %).
+
+Measured in headless Chromium against a scratch `rag-serve` (:17895, scratch data; since stopped): a ticket in
+review, **Send back** with a pasted 1600 × 1000 PNG wrote *The lamp is still cold. Screenshot:
+![lamp](att:8563fb58a9f3)*, sent it, and the history showed it inline at 306 × 192 (1400 px) and 281 × 176 (375 px),
+no horizontal scroll at either width; the Add note dialog at 375 px sat within 16–359 px with its Attach button.
+The viewer opened at 88 % (1600 px into 1400), three wheel notches at (300, 300) took it to 150 % with that pixel
+fixed, a 300 px drag moved it 300 px, a drag far past the edge stopped at it, Esc closed it and gave focus back to
+the link; at 375 px it opened at 23 % centred, the X at 331–363 px, and a backdrop click closed it; the Attachments
+list's preview opened it, and the X closed it. Tests: `trackerAttach.test.tsx` (9), `imageViewer.test.tsx` (17),
+`trackerDocUnits.test.ts` (3 more: the wrapping link, a writer's link kept, nothing without attachments),
+`trackerDocs.test.tsx` (Attach in the editor), `trackerClient.test.ts` (its link found by name, now the image has
+one too).

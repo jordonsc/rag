@@ -8,6 +8,14 @@ All routes are on `rag-serve` (port 17793), under `/tracker/`. The web UI's own 
 `/tracker/` (that prefix is the API's, and an API path never falls back to the SPA): the pages are at
 `/projects/…` (see *Web UI paths* at the end).
 
+**A queue record is a *ticket*** (rag-t0050, 2026-10-28): the web UI, the MCP tools, the server's generated event
+bodies and feed lines (`Created dev ticket.`, `acknowledged 2 done tickets`), its error messages and these documents
+say ticket. **Event bodies written before 2026-10-28 say *item*** (`Created dev item.`): history is kept as written,
+with no migration. **The API keeps the name `item`** wherever it is a name, so no client breaks: the routes
+(`/tracker/{project}/items`, `/tracker/items/{id}`), the JSON (`"items": […]`, and the shape sketched below as
+`Item`), the link kind `item`, `what=items` and `kind: "item"` on a search hit.
+A ticket's id keeps its `t` (`ubu-t0042`). The integrity check's problem lines (`/check`) still say item.
+
 
 Conventions
 -----------
@@ -18,7 +26,7 @@ Conventions
   | Field | | |
   |---|---|---|
   | `author_email` | string, required | who is writing |
-  | `agent` | string, optional | the acting agent's name; absent or blank is recorded as `"Unknown"` |
+  | `agent` | string, optional | the acting agent's name; absent or blank is recorded as `"Owner"` on a `web` write (the owner at the keyboard; rag-t0038) and `"Unknown"` on an `mcp` one |
   | `surface` | `"web"` \| `"mcp"`, required | the web app sends `web`, the MCP server `mcp` (D10) |
 
 * **Unknown fields are refused** (400), so a mistyped field name never becomes a silent no-op. Enum values are
@@ -26,8 +34,8 @@ Conventions
 * **Notes.** A `note` is optional on every write (D7, amended by the owner 2026-10-27); a blank one counts as none.
   Without one the event's body is generated from the change: `"Status: pending → done."`, `"Blocked (review)."`,
   `"Unblocked."`, `"Approval: agent → ratified."`, `"State: draft → ready."`, then `"Set title, body."` for the
-  other fields, joined in that order (`"Status: in_progress → done. Unblocked."` when a blocked item leaves the
-  queue). A create without one says what was created, with its approval when it starts approved (`"Created dev item
+  other fields, joined in that order (`"Status: in_progress → done. Unblocked."` when a blocked ticket leaves the
+  queue). A create without one says what was created, with its approval when it starts approved (`"Created dev ticket
   (approval: owner)."`); a move, rename or restore says where it went (`"Moved to the top."`, `"Restored revision
   2."`). Give a note when the reason is not obvious from the change. Before 2026-10-27 a status, block, unblock or
   approval change, and a create with an approval, were refused without one.
@@ -36,8 +44,9 @@ Conventions
   An update that changes nothing is refused unless it carries a non-blank note, which is then recorded as a `note`
   event (**Add note**: the one write a note is required for).
 * **Timestamps** are RFC 3339 UTC to the second (`2026-10-27T06:25:33Z`).
-* **History.** Record reads (`GET` an item, document, spec, milestone or concept) include `events`, oldest first.
-  `?history=false` returns the record with `"events": []`.
+* **History.** Record reads (`GET` a ticket, document, spec, milestone or concept) include `events`, oldest first.
+  `?history=false` returns the record with `"events": []`. The MCP `tracker_get` sends `history=false` unless the agent asks for the
+  history (`history: true`, or `history: N` for the last N, trimmed on the MCP side; rag-t0039).
 
 ### Errors
 Every error is JSON: `{"error": "<message for a person>"}`.
@@ -45,7 +54,7 @@ Every error is JSON: `{"error": "<message for a person>"}`.
 | Status | When |
 |---|---|
 | 400 | Refused: a malformed body or query, an unknown field, a bad enum value, a disallowed transition, an update with nothing to change and no note, a taken path, a bad link target. The message says which |
-| 404 | The record does not exist (item, document, revision, spec, milestone, concept, attachment) |
+| 404 | The record does not exist (ticket, document, revision, spec, milestone, concept, attachment) |
 | 409 | A document edit, write or restore named a `base_revision` that is no longer current. Body: `{"error", "current_revision": <int>, "current": <Document view, events omitted>}` so a client can show the newer text without another request. Nothing was written |
 | 503 | The tracker store did not open on this server (`/info` reports `"tracker_ready": false`) |
 | 500 | Storage failure |
@@ -56,9 +65,9 @@ An unmatched path under `/tracker/` is a 404.
 
 | Name | Values |
 |---|---|
-| item `type` | `dev`, `design`, `recon`, `analysis`, `gate` |
-| item `status` | `pending`, `in_progress`, `done`, `failed`, `cancelled`, `deferred` (added 2026-10-27, rag-t0017), `review` (added 2026-10-27, rag-t0024: waiting on the owner to confirm or review it) |
-| `block_reason` | `redesign`, `review`, `dependency` (added 2026-10-27, rag-t0018: waits on the items in `depends_on`). `approval` was retired 2026-10-27 (rag-t0024): a body sending it is 400, `the block reason approval was replaced by the status review (rag-t0024): set status review to put work in front of the owner` |
+| ticket `type` | `dev`, `design`, `recon`, `analysis`, `gate`, `request` (added 2026-10-27, rag-t0044: the owner's idea, broken into tickets by the manager; never dispatched) |
+| ticket `status` | `pending`, `in_progress`, `done`, `failed`, `cancelled`, `deferred` (added 2026-10-27, rag-t0017), `review` (added 2026-10-27, rag-t0024: waiting on the owner to confirm or review it) |
+| `block_reason` | `redesign`, `review`, `dependency` (added 2026-10-27, rag-t0018: waits on the tickets in `depends_on`). `approval` was retired 2026-10-27 (rag-t0024): a body sending it is 400, `the block reason approval was replaced by the status review (rag-t0024): set status review to put work in front of the owner` |
 | `intensity` (gates) | `quick`, `standard`, `full` |
 | `approval` | `unapproved`, `agent`, `ratified`, `owner` |
 | `surface` | `web`, `mcp` |
@@ -67,13 +76,13 @@ An unmatched path under `/tracker/` is a 404.
 | milestone `state` | `not_started`, `in_progress`, `done` |
 | concept `state` | `open`, `refining`, `refined`, `archived` |
 | document `kind` | `spec` (a spec's master), `milestone`, `concept`, `doc` (free-standing) |
-| link `kind` | `spec`, `milestone`, `concept`, `ledger`, `item` |
+| link `kind` | `spec`, `milestone`, `concept`, `ledger`, `item`, `from` and `became` (added 2026-10-27, rag-t0044: a ticket's request, and its reverse on the request, written by the server only) |
 
 ### Names and ids
 * **Project**: a repository name: letters, digits, `.`, `_`, `-`, starting with a letter or digit, at most 64
   characters. `items`, `docs`, `attachments` and `projects` are reserved. A project is created by its first write;
   reading an unknown project returns empty lists.
-* **Item id**: `<project>-t<seq:04>` (`ubu-t0042`), minted by the server, never reused.
+* **Ticket id**: `<project>-t<seq:04>` (`ubu-t0042`), minted by the server, never reused.
 * **Document id**: `<project>-d<seq:04>` (`ubu-d0007`).
 * **Slugs** (spec, concept) and **milestone codes**: lowercase letters, digits and `-`, starting with a letter or
   digit (`tracker`, `power-generation`, `m03`).
@@ -86,13 +95,13 @@ An unmatched path under `/tracker/` is a 404.
   | `spec` | spec slug (`tracker`) | exists in the same project |
   | `milestone` | `<spec slug>/<code>` (`tracker/m01`) | exists in the same project |
   | `concept` | concept slug | exists in the same project |
-  | `item` | item id, any project (`rag-t0003`) | exists, and is not the item itself |
+  | `item` | ticket id, any project (`rag-t0003`) | exists, and is not the ticket itself |
   | `ledger` | ledger topic id, any project (`ubu-1592`) | non-blank, no whitespace (held as text) |
 
 
 Records
 -------
-### Item
+### Ticket
 ```json
 {
   "id": "ubu-t0042",
@@ -122,30 +131,42 @@ Records
   "events": [ Event, … ]
 }
 ```
-* `queued` is true for `pending`, `in_progress`, `failed`, `deferred` and `review`: the item is in the linked list
-  and `prev_id` / `next_id` are its neighbours (`null` at an end). Done and cancelled items have both `null`.
-* `deferred` (rag-t0017) is work put aside on purpose. It is independent of `blocked`: an item can be both, and is
+* `queued` is true for `pending`, `in_progress`, `failed`, `deferred` and `review`: the ticket is in the linked list
+  and `prev_id` / `next_id` are its neighbours (`null` at an end). Done and cancelled tickets have both `null`.
+* `deferred` (rag-t0017) is work put aside on purpose. It is independent of `blocked`: a ticket can be both, and is
   then shown as deferred.
 * `review` (rag-t0024) is work waiting on the owner to confirm or review it. It is independent of `blocked` too, and
   shown as review when both.
+* `type: "request"` (rag-t0044) is the owner's idea with how to prioritise it. It never has gate fields and is
+  never `parallel` (both 400); it is queued and keeps its place like any ticket, but the queue view lists it only
+  under `requests`, whatever its status or block, so nothing that reads `queue` sees it.
+* **`from` and `became` links** (rag-t0044): `{"kind": "from", "target": "<request id>"}` on a ticket names the
+  request it was broken out of: a ticket of type `request` in the ticket's own project (else 400: `… names a
+  request`, `… own project`, `no ticket …`), never on a request itself (400: `cannot come from another request`).
+  Adding it (on create, or `add_links`) adds `{"kind": "became", "target": "<ticket id>"}` to the request in the
+  same transaction, with a `link` event on the request (`Became ubu-t0051.`, `fields.links_added`); removing it
+  (`remove_links`) removes the reverse (`No longer became ubu-t0051: its from link was removed.`). A body naming
+  `became` (create, `add_links`, `remove_links`) is 400, pointing at `from`; a concept refuses both kinds. The
+  integrity check reports a `from` without its `became`, a `became` without its `from`, and a `from` naming
+  anything but a request.
 * `block_reason` is set while `blocked`; `block_note` is the note the block was made with, `null` when it had none.
 * `intensity` is set on a gate and `null` otherwise; `release` is only ever `true` on a gate.
-* `parallel` (added 2026-10-27, rag-t0013): the item **may start before the gates above it clear, and still lands
+* `parallel` (added 2026-10-27, rag-t0013): the ticket **may start before the gates above it clear, and still lands
   after them**. Never `true` on a gate. It changes nothing in the list or the queue view; `tracker_next` offers such
-  an item while a gate above it is pending. An older database gains the column on open, every row `false`.
-* `depends_on` (added 2026-10-27, rag-t0018): the ids of the items it waits on, in the order given, **only while it
+  a ticket while a gate above it is pending. An older database gains the column on open, every row `false`.
+* `depends_on` (added 2026-10-27, rag-t0018): the ids of the tickets it waits on, in the order given, **only while it
   is blocked with reason `dependency`**; `[]` otherwise (any unblock, another reason, or leaving the queue clears
-  it). When an item becomes `done`, every item blocked with `dependency` whose `depends_on` are now all `done` is
+  it). When a ticket becomes `done`, every ticket blocked with `dependency` whose `depends_on` are now all `done` is
   unblocked in the same transaction, with an `unblock` event of its own (below). A dependency that is cancelled or
   fails unblocks nothing: a person decides then.
 * `done_at` is set when it went `done` (cleared by a reopen); `acknowledged_at` when the owner acknowledged it.
 * `links` are sorted by kind, then target.
 * `labels` (added 2026-10-27, rag-t0027): free-text subject tags, `[]` when it has none. Each is trimmed (inner runs
-  of whitespace become one space), non-blank, at most **32** characters, with no comma and no control character; an
-  item carries at most **10**. They match **case-insensitively within the project, whose existing casing wins**: a
-  write of `physics` when another item of the project carries `Physics` stores `Physics` (an item that alone
+  of whitespace become one space), non-blank, at most **32** characters, with no comma and no control character; a
+  ticket carries at most **10**. They match **case-insensitively within the project, whose existing casing wins**: a
+  write of `physics` when another ticket of the project carries `Physics` stores `Physics` (a ticket that alone
   carries a label may change its casing). Duplicates are merged, the first kept. Sorted case-insensitively, so the
-  order a write gives never matters. An older database gains the `item_labels` table on open, every item `[]`.
+  order a write gives never matters. An older database gains the `item_labels` table on open, every ticket `[]`.
 
 ### Event
 ```json
@@ -157,21 +178,35 @@ Records
   "surface": "mcp",
   "kind": "status",
   "body": "dispatched to dev-3",
-  "fields": {"status": "in_progress", "assignee": "dev-3"}
+  "fields": {"status": "in_progress", "assignee": "dev-3"},
+  "before": {"status": "pending", "assignee": null}
 }
 ```
 `fields` holds every field the write set, with its new value, so replaying the events reconstructs the record.
-Item keys: `type`, `title`, `body`, `status`, `done_at`, `acknowledged_at`, `blocked`, `block_reason`,
+`before` (added 2026-10-27, rag-t0038) holds what those fields were before the write, keyed the same way: the "from"
+of each from → to. It is `null` on a `create` (nothing came before) and on every event written before it was
+recorded (those name their new values only; nothing is back-filled). A key with no prior value to give is absent
+from it (`links_added`, `links_removed`, `unblocked_by`); `blocked` and `block_reason` are recorded together, so an
+unblock says which reason it lifted. A `move` records the ticket's new neighbour as `prev_id` in `fields` (`null`: the
+top) and the old one in `before`. A document `edit` or `restore` records the prior `revision`, a `rename` the prior
+`path` and `title`; spec, milestone and concept updates the prior `title`, `state`, `approval` and `order`.
+
+**Who wrote it.** `agent` is `"Owner"` on every `web` write that named no agent, stamped by the server whatever
+the client sends (rag-t0038); the web UI never sends one. Web events, revisions and attachments recorded before
+that read `"Unknown"`, and are **rewritten to `"Owner"` by a one-off open-time migration** (idempotent: only a `web`
+row whose agent is exactly `Unknown` changes, and no event is appended), so every reader sees one value. An `mcp`
+write with no agent is still `"Unknown"`.
+Ticket keys: `type`, `title`, `body`, `status`, `done_at`, `acknowledged_at`, `blocked`, `block_reason`,
 `depends_on`, `unblocked_by`, `approval`, `assignee`, `intensity`, `release`, `parallel`, `labels` (the whole set,
 on create and on every change: rag-t0027), `links` (on create),
 `links_added`, `links_removed`, `place` (create and move: `"top"`, `"bottom"`, `{"before": id}`, `{"after": id}`).
 
-**The automatic unblock** (rag-t0018) is an `unblock` event on the waiting item, written in the same transaction as
+**The automatic unblock** (rag-t0018) is an `unblock` event on the waiting ticket, written in the same transaction as
 the write that finished its last dependency and **by that write's author** (its `author_email`, `agent` and
 `surface`: the unblock is a consequence of that write, so it carries its author rather than an invented system
 identity); its body is generated, `Unblocked: rag-t0012 is done.` (`Unblocked: rag-t0012 is done, the last of
 rag-t0010, rag-t0012.` with several), and its fields are `{"blocked": false, "depends_on": [], "unblocked_by":
-"rag-t0012"}`. It follows the triggering item's own event (a higher `event_id`). Document keys: `path`, `old_path`, `kind`, `title`,
+"rag-t0012"}`. It follows the triggering ticket's own event (a higher `event_id`). Document keys: `path`, `old_path`, `kind`, `title`,
 `revision`, `base_revision`, `replacements` (a count), `restored_from`. Spec, milestone and concept keys: `title`,
 `state`, `approval`, `order`, `path`, `milestones`, `links`, `links_added`, `links_removed`.
 
@@ -266,16 +301,19 @@ Routes
 ### Projects and the queue
 
 #### `GET /tracker/projects`
-`{"projects": [{"name": "ubu", "created_at": "…", "queued": 12, "blocked": 2, "deferred": 1, "review": 1, "done_unacknowledged": 3}]}`,
-by name. `queued` counts review, blocked and deferred items too; `blocked` counts blocked items that are neither
-deferred nor in review, `deferred` every deferred item and `review` every item in review, blocked or not (each as
-the queue view sections them; `deferred` added 2026-10-27, rag-t0017; `review` the same day, rag-t0024).
+`{"projects": [{"name": "ubu", "created_at": "…", "queued": 12, "requests": 1, "blocked": 2, "deferred": 1, "review": 1, "done_unacknowledged": 3}]}`,
+by name. `queued` counts requests, review, blocked and deferred tickets too; `requests` counts every queued request
+(rag-t0044), whatever its status or block; `blocked` counts blocked tickets that are neither requests, deferred nor
+in review, `deferred` every deferred ticket and `review` every ticket in review, blocked or not, requests excluded
+(each as the queue view sections them; `deferred` added 2026-10-27, rag-t0017; `review` the same day, rag-t0024;
+`requests` the same day, rag-t0044).
 
 #### `GET /tracker/{project}` — the queue view (D14, R12)
 ```json
 {
   "project": "ubu",
   "exists": true,
+  "requests": [ Item, … ],
   "done":    [ Item, … ],
   "review":  [ Item, … ],
   "queue":   [ Item, … ],
@@ -283,26 +321,30 @@ the queue view sections them; `deferred` added 2026-10-27, rag-t0017; `review` t
   "deferred": [ Item, … ]
 }
 ```
-* **`done`**: items with status `done` and no `acknowledged_at`, **oldest first, newest last** (by `done_at`, then
+* **`requests`** (added 2026-10-27, rag-t0044): the queued tickets of type `request`, **whatever their status or
+  block**, in list order. A request is in no other array while queued (done, it is under `done`). The dashboard
+  shows them above Review and `tracker_queue` first; `tracker_next` never reads them. A client that predates it
+  may read its absence as empty.
+* **`done`**: tickets with status `done` and no `acknowledged_at`, **oldest first, newest last** (by `done_at`, then
   id), so the latest finished sits just above the queue, as the queue reads (*changed 2026-10-27, rag-t0029*: it
   was newest first).
-* **`review`** (added 2026-10-27, rag-t0024): the items in review, **blocked or not**, in list order, between
+* **`review`** (added 2026-10-27, rag-t0024): the tickets in review, **blocked or not**, in list order, between
   `done` and `queue` (the dashboard and `tracker_queue` show them above the queue). Each keeps its place: sending
   it back (`review` → `in_progress` or `pending`) leaves it where it was. A client that predates it may read its
   absence as empty.
-* **`queue`**: the linked list in order, head first, **gates included** as ordinary items of `type: "gate"` (draw
-  them as markers from `intensity` and `release`), and **without review, blocked or deferred items**. Statuses here are
+* **`queue`**: the linked list in order, head first, **gates included** as ordinary tickets of `type: "gate"` (draw
+  them as markers from `intensity` and `release`), and **without requests, review, blocked or deferred tickets**. Statuses here are
   `pending`, `in_progress` or `failed`.
-* **`blocked`**: the blocked queued items that are neither deferred nor in review, in list order. Each keeps its place in the list:
+* **`blocked`**: the blocked queued tickets that are neither deferred nor in review, in list order. Each keeps its place in the list:
   unblocking puts it back where it was, and `prev_id` / `next_id` still name its true neighbours (which may be
   blocked or deferred too).
-* **`deferred`** (added 2026-10-27, rag-t0017): the deferred items, **blocked or not**, in list order, after
+* **`deferred`** (added 2026-10-27, rag-t0017): the deferred tickets, **blocked or not**, in list order, after
   `blocked`. Each keeps its place: resuming it (`deferred` → `pending`) puts it back where it was. A client that
   predates it may read its absence as empty.
-* Items carry their `links` and `body`; no `events`.
+* Tickets carry their `links` and `body`; no `events`.
 * The route always returns the whole view. The MCP tools bound what they print from it on their own side
   (`tracker_queue`'s `limit`, `until_gate`, `sections`; `tracker_next`, rag-t0006, which also lists the
-  `parallel` items below the batch's gate, rag-t0013): there are no query
+  `parallel` tickets below the batch's gate, rag-t0013): there are no query
   parameters here, and the dashboard keeps the full list.
 * **Conditional requests**: the response has a strong `ETag` (a hash of the body) and `Cache-Control: no-cache`.
   A request with a matching `If-None-Match` gets **304** with no body. Any write that changes the view changes the
@@ -310,58 +352,58 @@ the queue view sections them; `deferred` added 2026-10-27, rag-t0017; `review` t
 * An unknown project is 200 with `"exists": false` and empty lists; an invalid project name is 400.
 
 To reorder relative to what the dashboard shows, use the neighbours in `queue`: a drop between rows A and B is
-`move` with `after: A` (or `before: B`). Review, blocked or deferred items sitting between them in the list are not
-disturbed. A deferred or review item is a valid anchor and can itself be moved.
+`move` with `after: A` (or `before: B`). Review, blocked or deferred tickets sitting between them in the list are not
+disturbed. A deferred or review ticket is a valid anchor and can itself be moved.
 
 #### `GET /tracker/{project}/check` — the integrity check (D5)
 `{"project", "ok": true, "queued": 5, "order": [ids, head first], "problems": []}`. `problems` lists each fault in
-words (a broken link, a cycle, a queued item the walk misses, a stale head or tail; since rag-t0018 also a
-`depends_on` on an item not blocked with `dependency`, one naming no item or another project's, an item blocked with
+words (a broken link, a cycle, a queued ticket the walk misses, a stale head or tail; since rag-t0018 also a
+`depends_on` on a ticket not blocked with `dependency`, one naming no ticket or another project's, a ticket blocked with
 `dependency` on nothing, or one whose dependencies are all done); `ok` is `problems` being empty.
 Always 200.
 
 #### `POST /tracker/{project}/ack-done`
-Body: the author fields only. Stamps every done, unacknowledged item `acknowledged_at` (one `acknowledge` event
+Body: the author fields only. Stamps every done, unacknowledged ticket `acknowledged_at` (one `acknowledge` event
 each). Response: `{"project": "ubu", "acknowledged": ["ubu-t0040", "ubu-t0041"]}`.
 
-### Items
+### Tickets
 
 #### `GET /tracker/{project}/items?status=<status>&label=<label>`
-`{"project", "items": [Item, …]}`, oldest first, no events. Every item of the project, done and cancelled included;
-`status` filters (any item status, `deferred` and `review` included; `blocked` is a flag, not a status, and is 400).
-`label` (rag-t0027) keeps the items carrying it, matched case-insensitively after the same trimming a write gets; a
+`{"project", "items": [Item, …]}`, oldest first, no events. Every ticket of the project, done and cancelled included;
+`status` filters (any ticket status, `deferred` and `review` included; `blocked` is a flag, not a status, and is 400).
+`label` (rag-t0027) keeps the tickets carrying it, matched case-insensitively after the same trimming a write gets; a
 blank one is no filter. Both may be given.
 
 #### `GET /tracker/{project}/labels` — the label vocabulary (rag-t0027)
 ```json
 {"project": "ubu", "labels": [{"label": "Biomes", "count": 3, "queued": 1}, {"label": "Physics", "count": 7, "queued": 4}]}
 ```
-Every label the project's items carry now, once each in the project's casing, sorted case-insensitively. `count` is
-the items carrying it, whatever their status; `queued` how many of those are in the queue (pending, in progress,
-failed, deferred, review). A label no item carries any more is not listed. An unknown project has `[]`; an invalid
+Every label the project's tickets carry now, once each in the project's casing, sorted case-insensitively. `count` is
+the tickets carrying it, whatever their status; `queued` how many of those are in the queue (pending, in progress,
+failed, deferred, review). A label no ticket carries any more is not listed. An unknown project has `[]`; an invalid
 project name is 400. The web app's label editors read it for their suggestions.
 
 #### `POST /tracker/{project}/items` — create
 | Field | | |
 |---|---|---|
-| `type` | required | item type |
+| `type` | required | ticket type |
 | `title` | required | non-blank |
 | `body` | optional | markdown, default `""` |
 | `assignee` | optional | |
-| `approval` | optional | default `unapproved`; not `ratified`; an agent sets `owner` only when the owner approved, and says where in `note` |
+| `approval` | optional | default `unapproved`, or `agent` when `links` carries a `from` (rag-t0044: a ticket broken out of a request is the agent's breakdown); not `ratified`; an agent sets `owner` only when the owner approved (a request saying its work is approved counts), and says where in `note` |
 | `links` | optional | `[Link]` |
 | `intensity` | gate: required; others: refused | |
 | `release` | optional, gate only | default `false` |
-| `parallel` | optional, any type but gate | default `false`; `true` on a gate is 400 (rag-t0013) |
-| `labels` | optional | `[string]`, default `[]` (rag-t0027); the rules under Item; a bad label or more than 10 is 400. A create event carrying labels says them in its generated body (`Created dev item. Labels: Biomes, Physics.`) and in `fields.labels` |
+| `parallel` | optional, any type but gate or request | default `false`; `true` on a gate (rag-t0013) or a request (rag-t0044) is 400 |
+| `labels` | optional | `[string]`, default `[]` (rag-t0027); the rules under Ticket; a bad label or more than 10 is 400. A create event carrying labels says them in its generated body (`Created dev ticket. Labels: Biomes, Physics.`) and in `fields.labels` |
 | `before` / `after` / `top` / `bottom` | optional, at most one | where it joins: `"before": "<id>"`, `"after": "<id>"`, `"top": true`, `"bottom": true`; default the bottom |
 | `note` | optional | the create event's body |
 | author fields | required | |
 
-Response: the Item with its `create` event. The new item is `pending`.
+Response: the Ticket with its `create` event. The new ticket is `pending`.
 
 #### `GET /tracker/items/{id}`
-The Item with `events`. 404 if unknown.
+The Ticket with `events`. 404 if unknown.
 
 #### `POST /tracker/items/{id}` — update
 Every field optional; absent leaves it alone; a value equal to the current one is not a change.
@@ -371,13 +413,13 @@ Every field optional; absent leaves it alone; a value equal to the current one i
 | `status` | a transition (below) |
 | `blocked` | `true` blocks (needs `block_reason`), `false` unblocks |
 | `block_reason` | with `blocked: true`, or alone to block or to change the reason |
-| `depends_on` | `[item id]`, replacing the list (rag-t0018). Only when the reason after the write is `dependency` (given now or already held), which needs at least one; a non-empty list with any other reason, or none, is 400. Each an item of the **same project** (another project's id is 400), not the item itself, not forming a cycle (an item that already waits, directly or through others, on this one); at least one not yet `done`. Blank entries and repeats are dropped |
+| `depends_on` | `[ticket id]`, replacing the list (rag-t0018). Only when the reason after the write is `dependency` (given now or already held), which needs at least one; a non-empty list with any other reason, or none, is 400. Each a ticket of the **same project** (another project's id is 400), not the ticket itself, not forming a cycle (a ticket that already waits, directly or through others, on this one); at least one not yet `done`. Blank entries and repeats are dropped |
 | `parallel` | `true` or `false`; any type but gate (on a gate, either is 400) |
-| `labels` | `[string]`, **replacing the set wholesale** (rag-t0027); `[]` clears them. The rules under Item; a bad label or more than 10 is 400. The same set in another order, or with duplicates, is not a change. A change is an `edit` event with `fields.labels` the whole new set and, without a note, the body `Labels: Biomes, Physics.` (`Labels: none.` when cleared) |
+| `labels` | `[string]`, **replacing the set wholesale** (rag-t0027); `[]` clears them. The rules under Ticket; a bad label or more than 10 is 400. The same set in another order, or with duplicates, is not a change. A change is an `edit` event with `fields.labels` the whole new set and, without a note, the body `Labels: Biomes, Physics.` (`Labels: none.` when cleared) |
 | `approval` | `ratified` only from `agent` (the owner confirming an agent's approval). An agent may set `owner` when the owner approved in conversation, and its note says so |
 | `assignee` | `""` clears it |
 | `title`, `body` | `title` non-blank |
-| `add_links`, `remove_links` | `[Link]`; removing a link the item does not have is refused |
+| `add_links`, `remove_links` | `[Link]`; removing a link the ticket does not have is refused |
 | `intensity`, `release` | gates only |
 | `note` | optional (the body is then generated from the change); alone, it is recorded as a `note` event and must not be blank |
 | author fields | required |
@@ -395,17 +437,17 @@ Every field optional; absent leaves it alone; a value equal to the current one i
 | `cancelled` | `pending` (a reopen: at the top) |
 
 `pending` → `done` (and `pending` → `failed`) is allowed so a manager can record quick work without first marking
-it in progress (the manager's change in m02; m01 refused it). `done` and `cancelled` take the item out of the queue
-and clear any block. Only a queued item can be blocked; a deferred item can be (and keeps its block when resumed).
-`deferred` (rag-t0017) never moves the item in the list; `deferred` → `failed` is refused (resume it first).
-`review` (rag-t0024) never moves the item either; `review` → `failed` and `review` → `deferred` are refused (send it
-back first), and so is `deferred` → `review`. A review item can be blocked, and keeps its block when sent back.
-Response: the updated Item with `events`.
+it in progress (the manager's change in m02; m01 refused it). `done` and `cancelled` take the ticket out of the queue
+and clear any block. Only a queued ticket can be blocked; a deferred ticket can be (and keeps its block when resumed).
+`deferred` (rag-t0017) never moves the ticket in the list; `deferred` → `failed` is refused (resume it first).
+`review` (rag-t0024) never moves the ticket either; `review` → `failed` and `review` → `deferred` are refused (send it
+back first), and so is `deferred` → `review`. A review ticket can be blocked, and keeps its block when sent back.
+Response: the updated Ticket with `events`.
 
 #### `POST /tracker/items/{id}/move`
 Exactly one of `"before": "<id>"`, `"after": "<id>"`, `"top": true`, `"bottom": true`; optional `note`; author
-fields. The item and the anchor must both be queued (deferred counts), in the same project, and different. A move never takes a
-position number, so it cannot go stale. Response: the Item with `events` (a `move` event).
+fields. The ticket and the anchor must both be queued (deferred counts), in the same project, and different. A move never takes a
+position number, so it cannot go stale. Response: the Ticket with `events` (a `move` event).
 
 ### Documents
 
@@ -506,7 +548,7 @@ The Milestone with events.
 
 #### `POST /tracker/{project}/specs/{slug}/milestones/{code}`
 `{"title", "state", "approval", "order", "note", …author}`, each optional, as for a spec. `order` is any integer;
-milestones sort by `order`, then code. Milestone states are set by the manager; nothing derives them from items.
+milestones sort by `order`, then code. Milestone states are set by the manager; nothing derives them from tickets.
 
 ### Concepts
 
@@ -554,10 +596,141 @@ with the first upload's `Content-Type`; raster images `Content-Disposition: inli
 prefix that matches two different files.
 
 
+The event feed (rag-t0036)
+--------------------------
+Every committed event, pushed as it happens, so a manager agent learns of the owner's actions on the web without
+polling. Claude Code's **Monitor** tool opens the socket itself and turns each text frame into a notification; the
+pattern a manager follows is in [`user-claude.md`](../../user-claude.md). **Monitor refuses a WebSocket URL in a
+private, link-local or cloud-metadata range** ("the address is in a private, link-local, or cloud-metadata
+range"), so on the server host it opens `ws://127.0.0.1:17793/…` (or `localhost`), never the LAN address; from
+another host, forward the port over ssh and use the same `127.0.0.1` URL, or run a command-based Monitor (`websocat`
+or any small client printing each text frame as a line). The one-shot read has no such limit. Built in `crates/core/src/tracker/feed.rs`
+(the channel) and `crates/serve/src/tracker/feed.rs` (the routes).
+
+**Event ids are global** (one sequence across every project), increase in commit order, and are the cursor: a
+client keeps the last id it was sent and resumes after it with `since`.
+
+### The filter (both routes)
+| Query | | |
+|---|---|---|
+| `{project}` (path) | a project, or **`*`** for every project | `*` cannot be a project name |
+| `surface` | `web` (default), `mcp`, `any` | `web`: the owner's actions in the web UI |
+| `kinds` | comma list of event kinds, or `all` | default: `create`, `status`, `block`, `unblock`, `approve`, `move`, `note`, `acknowledge`, `assign`, `edit` (left out: `link`, `rename`) |
+| `since` | an event id, `0` or more; exclusive | the events **after** it |
+
+Label changes are `edit` events (with `labels` in `fields`), which is why `edit` is in the default. Unknown query
+parameters, an unknown surface or kind, and a negative `since` are 400s, as everywhere.
+
+#### `GET /tracker/{project}/events/ws` — the feed (WebSocket)
+Upgrades to a WebSocket on the service's own port (17793). Nothing sits between the client and `rag-serve`: the
+container uses host networking and binds the port itself (`deploy/rag-serve.container`), so the upgrade needs no
+proxy configuration. With `since`, it first **replays** every matching event after it, oldest first, then sends each
+new one **live** as its write commits; without `since` it sends only what comes next. Query: the filter above, plus `format=text` (default) or
+`format=json`, and `coalesce=<seconds>` (text only, 0 to 60, default 3; rag-t0039). `limit` is refused here (it
+belongs to the read below), as is a `coalesce` above 0 with `format=json`.
+
+**Each event is one text frame, one line**, unless it is part of a burst (below). `text`:
+
+    #<event_id> <project> <surface> <kind> <target> "<title>" {<changes>}: <body> [<who>]
+    #13901 rag web approve rag-t0040 "Live event feed" {approval: agent → ratified}: Go ahead. [Owner]
+    #13902 rag web status rag-t0040 "Live event feed" {status: in_progress → done; blocked: dependency → no}: Status: in_progress → done. Unblocked. [Owner]
+    #13903 rag web edit rag-t0041 "Gas weight" {labels: +Physics −Biomes}: Set labels. [Owner]
+    #13904 rag web move rag-t0041 "Gas weight" {moved: after rag-t0010 → after rag-t0012}: Moved before rag-t0013. [Owner]
+    #13905 rag web create spec:feed "The feed": Created spec feed (approval: owner). [Owner]
+    #13906 rag web create rag-t0044 "Weather" {type: request}: Created request ticket (approval: owner). [Owner]
+
+* `<target>`: a ticket's id; `spec:<slug>`, `milestone:<spec>/<code>`, `concept:<slug>` or `doc:<document id>`.
+* `"<title>"`: the record's **current** title (cut at 100 characters); left out when the record is gone.
+* `{<changes>}` (from → to since rag-t0038): on a `create`, nothing, but a request's says `{type: request}`
+  (rag-t0044: the one create a manager acts on); on any other event each change it made, separated by `; `,
+  in this order: `moved: <from> → <to>` (a move, by the ticket's neighbour: `top` or `after <id>`), `status`, `state`,
+  `approval`, `blocked` (the reason while blocked, `no` while not: `blocked: dependency → no`, `blocked: no →
+  review`), `depends_on`, `assignee`, `labels` (what it added and removed: `+Physics −Biomes`), `links`
+  (`+item:rag-t0002 −ledger:rag-0033`), `title`, `body: edited`, `intensity`, `release`, `parallel`, `order`,
+  `path`, and a document edit's `revision`, each as `<field>: <from> → <to>`. Values: `none` for a cleared one or an
+  empty list, `yes`/`no` for a flag, a list comma-separated, each cut at 40 characters. An event written before
+  rag-t0038 recorded no prior values and names the new value alone (`status: done`, a move its requested place:
+  `moved: before rag-t0013`). `done_at`, `acknowledged_at` and `unblocked_by` are left out (the status and the body
+  say them). So a note given in place of the generated body still says what changed; left out when it changed
+  none of these.
+* `<body>`: the event's body (its note, or the generated description), whitespace and newlines folded to single
+  spaces. Past 200 characters it is cut with `…` and says how much more there is and which event holds it,
+  `… (+812 chars in #13950)` (rag-t0039): the whole note is that event's `body` in the read below
+  (`?since=13949&limit=1&surface=any&kinds=all`) and in the record's history (`tracker_get`, `history: N`).
+* `[<who>]`: the event's `agent`: `Owner` for the owner's web writes (rag-t0038; before it, the author's email),
+  the agent's name for an `mcp` one.
+
+**Bursts are one frame** (rag-t0039, text only). Events of one project and one surface committed within `coalesce`
+seconds of the first of them (by their own timestamps, to the second) share a frame, so a drag reorder or a run of
+edits notifies a monitoring agent once. Live, the burst is sent when its window has passed since its first event
+arrived, or as soon as an event from another project or surface arrives; a replay groups the same way by the events'
+timestamps. A burst of one is the event's own line. A burst of several:
+
+    #<last id> <project> <surface> burst #<first id>–#<last id>, <n> events: <summary> [<who>, …]
+    #13950 rag web burst #13946–#13950, 5 events: queue reordered: 5 moves (rag-t0042, rag-t0040, rag-t0051, rag-t0049, rag-t0050) [Owner]
+    #13953 rag web burst #13951–#13953, 3 events: rag-t0042 "Gas weight": 2 edits {title: Gas → Gas weight; labels: +Physics}; rag-t0050 "Feed": status {status: review → done} [Owner]
+
+* The frame starts with the burst's **last** id, the one to resume from, so resume-by-id is exactly as before: a
+  client that resumes with `since=<that id>` has seen every event up to it, in this frame.
+* `<summary>`, parts separated by `; `: the moves as `queue reordered: <n> moves (<ids>)`, the acknowledgements as
+  `acknowledged <n> done tickets (<ids>)` (at most five ids, then `+<k> more`), then each other record in the order it
+  first appears, as `<target> "<title>": <what>`. One event: its kind and changes (a note quoted, cut at 80
+  characters). Several: counts by kind (`3 edits, 1 status change`) and all their changes together, cut at 160
+  characters. At most five records are named, then `+<k> more records`.
+* The events themselves are one read away: `GET …/events?since=<first id − 1>`.
+* The server closing the feed (a restart, a lagging client, a failed replay) sends the open burst first, so the
+  close's resume id is always the last id sent.
+* `coalesce=0` sends one frame per event, as before rag-t0039; `format=json` always does (a program pays nothing per
+  frame).
+
+`json`: the event as one line of JSON, every field in full: `event_id`, `ts`, `project`, `target_kind`, `target_id`,
+`title` (or `null`), `author_email`, `agent`, `surface`, `kind`, `body`, `fields` (the new values: the "to") and
+`before` (the prior values: the "from", `null` on a create and on an event written before rag-t0038; see
+[Event](#event)).
+
+**Resume without loss or duplicates.** The server subscribes to the live channel **before** it replays from the
+events table, then drops any live event at or below the last id it has sent. An event committed before the
+subscription is in the replay; one committed after it is live; one committed in between is in both and sent once.
+Live events go out in id order. So a client that reconnects with `since=<the last id it saw>` receives exactly the
+events it has not seen, whatever was written meanwhile.
+
+**Live delivery** comes from the store's write path: each write commits, then publishes every event committed since
+the last publish (in id order, under one lock) on a broadcast channel. No database polling. A write that commits
+through another process (a second `rag-serve`, a tool opening `tracker.db` directly) is published by the next write
+through this one; nothing writes that way today.
+
+**Heartbeat**: a ping every 30 s (a control frame: no notification). **Anything the client sends is ignored.**
+
+**How a feed ends** (a close frame, its reason carrying the id to resume from):
+
+| Code | When | Reason |
+|---|---|---|
+| 1013 (Try Again Later) | the client fell more than 1024 events behind the channel; it is dropped rather than buffered without bound | `lagged <n> events behind; resume with since=<id>` |
+| 1012 (Service Restart) | the server is stopping (SIGTERM or Ctrl-C) | `server restarting; resume with since=<id>` |
+| 1011 (Internal Error) | the replay could not read the table | `replay failed; resume with since=<id>` |
+
+A frame the client does not take within 10 s drops the connection without a close frame. **Before the upgrade**: 503
+without a store; 400 for a bad filter; **400 when more than 500 events match after `since`** (a replay that long is a
+firehose to a client that notifies per frame: page through them with the read below, then open the feed from its
+`next_since`); 426 for a request that is not a WebSocket upgrade.
+
+#### `GET /tracker/{project}/events?since=<id>&limit=<n>` — the same events, read once
+The filter above; `limit` 1 to 1000 (default 100). Always JSON (`format` and `coalesce` are refused):
+
+```json
+{"events": [FeedEvent, …], "latest_event_id": 13903, "next_since": 13903, "more": false}
+```
+`events` are the `format=json` objects, oldest first. **Without `since`**, `events` is empty: the call is for
+`latest_event_id`, the newest event id in the store (every project), where a feed that wants only what comes next
+starts. `next_since` is where to read or open the feed from next: after the last event returned while `more` is
+true, otherwise past everything scanned (the events up to `latest_event_id` that did not match are not worth
+re-reading).
+
+
 Search (m05)
 ------------
 The tracker is searched through the service's general retrieval route, not a `/tracker/…` one. Every document (at its
-current revision, chunked) and every item (title, type, status, labels, body and notes; done and cancelled included) is
+current revision, chunked) and every ticket (title, type, status, labels, body and notes; done and cancelled included) is
 indexed as **`corpus = tracker`** by `rag-ingest reconcile-tracker`, which every successful tracker write triggers.
 
 #### `POST /search`
@@ -565,8 +738,8 @@ indexed as **`corpus = tracker`** by `rag-ingest reconcile-tracker`, which every
 {"query": "solar film on the roof", "top_k": 8, "filters": {"corpus": "tracker", "repo": "ubu", "path_prefix": "concepts/"}}
 ```
 `filters` is optional and each of its fields too: `corpus` is `code`, `wiki`, `ledger` or `tracker` (anything else is
-a 400); `repo` is the project; `path_prefix` matches a document's path (an item's `rel_path` is its id, so a path
-prefix leaves items out). `rerank` (default `true`) and `top_k` (default 8) as for any search. 503 without a Voyage
+a 400); `repo` is the project; `path_prefix` matches a document's path (a ticket's `rel_path` is its id, so a path
+prefix leaves tickets out). `rerank` (default `true`) and `top_k` (default 8) as for any search. 503 without a Voyage
 key.
 
 Response: `{"query", "top_k", "reranked", "candidates", "timings", "results": [hit, …]}`. A tracker hit:
@@ -575,21 +748,21 @@ Response: `{"query", "top_k", "reranked", "candidates", "timings", "results": [h
 |---|---|
 | `corpus` | `"tracker"` |
 | `repo` | the project |
-| `rel_path` | the document's path, or the item's id |
+| `rel_path` | the document's path, or the ticket's id |
 | `language` | `"markdown"` |
-| `start_line`, `end_line` | the chunk's 1-based line range in the document body; `0` on items |
-| `text` | the chunk, after a heading line `<title> · <project>:<path>`; an item's text is its title, `<project> <id> · <type> · <status>`, `Labels: …` when it has labels (rag-t0027), its body and its `Notes:` |
-| `title` | the document's or item's title |
+| `start_line`, `end_line` | the chunk's 1-based line range in the document body; `0` on tickets |
+| `text` | the chunk, after a heading line `<title> · <project>:<path>`; a ticket's text is its title, `<project> <id> · <type> · <status>`, `Labels: …` when it has labels (rag-t0027), its body and its `Notes:` |
+| `title` | the document's or ticket's title |
 | `kind` | `spec`, `milestone`, `concept`, `doc` or `item` |
-| `tracker_id` | the document id (`ubu-d0007`) or item id (`ubu-t0042`) |
+| `tracker_id` | the document id (`ubu-d0007`) or ticket id (`ubu-t0042`) |
 | `revision` | the document revision the chunk is from (documents only) |
-| `type`, `status` | the item's type and status (items only) |
-| `citation` | **`<project>:<path>@r<revision>`** for a document chunk, the item id for an item |
+| `type`, `status` | the ticket's type and status (tickets only) |
+| `citation` | **`<project>:<path>@r<revision>`** for a document chunk, the ticket id for a ticket |
 | `ann_score`, `rerank_score` | as for any hit |
 | `path` | `""` (tracker points have no file) |
 
 A web filter is this route with `"filters": {"corpus": "tracker", "repo": <project>}`; a hit links to
-`/projects/{project}/doc/{rel_path}` for a document and `/projects/{project}/item/{tracker_id}` for an item.
+`/projects/{project}/doc/{rel_path}` for a document and `/projects/{project}/ticket/{tracker_id}` for a ticket.
 
 
 Web UI paths
@@ -600,10 +773,10 @@ The API owns `/tracker/…`, and an API path never falls back to the single-page
 | Page | Path |
 |---|---|
 | The dashboard (D14) | `/projects/{project}` |
-| An item (D15) | `/projects/{project}/item/{id}` |
+| A ticket (D15) | `/projects/{project}/ticket/{id}`; the older `/projects/{project}/item/{id}` still opens it (rag-t0050) |
 | The documents page (D16) | `/projects/{project}/docs` |
 | A document | `/projects/{project}/doc/{path…}` |
-| The history: done, cancelled and failed items (rag-t0008) | `/projects/{project}/history` |
+| The history: done, cancelled and failed tickets (rag-t0008) | `/projects/{project}/history` |
 
 
 Example session

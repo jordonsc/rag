@@ -5,6 +5,9 @@ to m04 (the manager's call). Acceptance 1 waits for the release (a live reconcil
 acceptance 2 is the trial itself, with the owner. Spec: [`master.md`](master.md),
 D13, R15, R16.
 
+*Written before rag-t0050 (2026-10-28) named a queue record a **ticket**: this milestone's plan, its as-built and
+the addenda before that date keep the word *item* as they were written. The API keeps `item` ([`api.md`](api.md)).*
+
 
 Work items
 ----------

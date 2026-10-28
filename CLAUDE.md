@@ -126,10 +126,13 @@ unless you explicitly want the Skill instead.
 | Building the ledger web UI (dev loop, design system, tests) | `web/README.md`, the Node stage in `Containerfile` |
 | The tracker store (`[tracker] db_path`, `attachments_dir`; queue, specs, concepts, attachments) | `crates/core/src/tracker/`, `deploy/rag-serve.container` |
 | The tracker HTTP API (`/tracker/…`) and its contract | `crates/serve/src/tracker.rs`, `specs/tracker/api.md` |
+| The tracker's live event feed (`/tracker/{project}/events/ws`: the broadcast after commit, replay and resume, burst coalescing, the `Monitor` pattern on `127.0.0.1`) | `crates/core/src/tracker/feed.rs`, `crates/serve/src/tracker/feed.rs`, `specs/tracker/api.md` § *The event feed*, `user-claude.md` § *Tracker* |
 | The tracker's design and milestones | `specs/tracker/master.md` |
-| The tracker MCP tools (`--server tracker`, `/tracker` on the gateway) | `crates/mcp/src/tracker.rs` |
+| The tracker MCP tools (`--server tracker`, `/tracker` on the gateway; the shared rules in its `INSTRUCTIONS`, the definitions' size budget, one-line write replies) | `crates/mcp/src/tracker.rs`, `specs/tracker/m02-mcp-server.md` (rag-t0039 addendum) |
 | Tracker search (`corpus = tracker`: the reconcile, its trigger and units, the citation) | `crates/ingest/src/tracker_reconcile.rs`, `crates/core/src/tracker/index.rs`, `deploy/rag-tracker-*`, `deploy/RUNBOOK.md` § *Tracker: reconcile now* |
 | A project's manager loading its work into the tracker (the trial brief) | `specs/tracker/trial-brief.md` |
-| The tracker dashboard, item page and documents pages (web UI at `/projects/…`: docs, a document, its editor, drafts, history, attachments; its client for every `/tracker/…` route) | `web/app/src/tracker/`, `web/README.md` § *The tracker* |
+| The tracker dashboard, ticket page and documents pages (web UI at `/projects/…`: docs, a document, its editor, drafts, history, attachments; its client for every `/tracker/…` route) | `web/app/src/tracker/`, `web/README.md` § *The tracker* |
+| Attaching files to a note or body (paste, drop, Attach) and the image viewer (rag-t0053, rag-t0055) | `web/app/src/tracker/attach.tsx`, `ImageViewer.tsx`, `viewerMath.ts`; `specs/tracker/m03-dashboard.md` addendum 2026-10-28 |
 | MCP registration | `.mcp.json.example` |
+| Ledger topic ids (`<repo>-l<seq:04>` since rag-t0051, legacy `<repo>-<seq:04>` still read; the one sequence per repo) | `crates/core/src/ledger.rs` (`format_topic_id`, `parse_topic_id`), `web/app/src/ledger/ids.ts`, `README.md` § *Ledger* |
 | Example user-level agent instructions | `user-claude.md` |

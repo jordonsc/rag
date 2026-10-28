@@ -3,6 +3,9 @@ m04: documents in the web UI
 **State: Done** (2026-10-27; acceptance 1–3 on the server's UI pending the release). Spec: [`master.md`](master.md), D4, D8, D9, D16, R13, R14. **Build
 from [`api.md`](api.md)**, the HTTP contract m01 built.
 
+*Written before rag-t0050 (2026-10-28) named a queue record a **ticket**: this milestone's plan, its as-built and
+the addenda before that date keep the word *item* as they were written. The API keeps `item` ([`api.md`](api.md)).*
+
 Where the owner writes concept documents and reads and edits specs.
 
 
@@ -139,3 +142,13 @@ Tests: `trackerDocRename.test.tsx` (12, against a stateful fake server: a rename
 at the old path redirecting with both writes in History; title writes; moves, a refused move, the identity prompt;
 negatives for a bad path, a blank title and an unchanged rename) and `trackerMilestoneOrder.test.ts` (8, including
 300 random lists with ties). Web: app 490 and ui 200 tests pass; typecheck and the format check are clean.
+
+### Addendum 2026-10-28: Attach in the editor, the image viewer (rag-t0053, rag-t0055)
+
+The editor's paste and drop code moved into `tracker/attach.tsx`, shared with the ticket page's bodies and note
+fields (m03's addendum of the same date); the editor's behaviour is unchanged, and its Markdown pane's head gains an
+**Attach** button beside *Paste or drop a file to attach it*. The documents pages' own note fields (rename, title,
+a concept's links) and `NoteDialog`'s (state changes, restore) take files the same way. A plain click on an
+attached image in a document, the editor's preview or the **Attachments** list (its preview is now a button,
+*View <name>*) opens the image viewer (`tracker/ImageViewer.tsx`): 100 % or fitted to the width, wheel zoom about
+the cursor, drag to pan, Esc, the X or a backdrop click to close. Checked in headless Chromium with the m03 check.
