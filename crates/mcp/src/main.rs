@@ -113,7 +113,7 @@ struct SearchArgs {
     rerank: Option<bool>,
     /// Restrict to a corpus: "code" (source repos), "wiki" (the document library),
     /// "ledger" (the decision/incident ledger) or "tracker" (the tracker's specs,
-    /// milestones, concepts and queue items). Use "ledger" to run a semantic + rerank
+    /// milestones, concepts and tickets). Use "ledger" to run a semantic + rerank
     /// search over the ledger — richer than the ledger server's keyword search — and
     /// "tracker" to find planned, specced or queued work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -182,7 +182,7 @@ struct LedgerSearchArgs {
 /// Arguments for `ledger_move`.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct LedgerMoveArgs {
-    /// The topic id to move, e.g. "myrepo-0005".
+    /// The topic id to move, e.g. "myrepo-l0005" (older ids: "myrepo-0005").
     topic_id: String,
     /// Destination project (repo name). The topic is reassigned a brand-new id in
     /// this repo (a fresh number too); the old id is removed.
@@ -197,7 +197,7 @@ struct LedgerMoveArgs {
 /// Arguments for `ledger_archive`.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct LedgerArchiveArgs {
-    /// The topic id to archive or restore, e.g. "rag-0042".
+    /// The topic id to archive or restore, e.g. "rag-l0042" (older ids: "rag-0042").
     topic_id: String,
     /// `true` (default) archives (soft-delete + drop from the index); `false` restores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -212,7 +212,7 @@ struct LedgerArchiveArgs {
 /// Arguments for `ledger_get`.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct LedgerGetArgs {
-    /// The topic id, e.g. "rag-0042".
+    /// The topic id, e.g. "rag-l0042" (older ids: "rag-0042").
     topic_id: String,
 }
 
@@ -247,7 +247,7 @@ struct LedgerCreateArgs {
 /// Arguments for `ledger_append`.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct LedgerAppendArgs {
-    /// The topic id to append to, e.g. "rag-0042".
+    /// The topic id to append to, e.g. "rag-l0042" (older ids: "rag-0042").
     topic_id: String,
     /// The monologue entry — what happened / what was learned / what changed.
     body: String,
@@ -412,9 +412,9 @@ impl CorpusServer {
         (code|wiki|ledger|tracker), repo, language, path_prefix. Pass corpus=\"ledger\" to \
         semantically search the decision/incident ledger (better recall than the ledger \
         server's keyword search). Pass corpus=\"tracker\" to search the tracker's specs, \
-        milestones, concepts and queue items (search it before re-planning work); repo is then \
+        milestones, concepts and tickets (search it before re-planning work); repo is then \
         the project, and each hit's `citation` is `<project>:<path>@r<revision>` for a document \
-        chunk (read it with tracker_doc_get) or the item id (tracker_get)."
+        chunk (read it with tracker_doc_get) or the ticket id (tracker_get)."
     )]
     async fn search_corpus(
         &self,
@@ -468,9 +468,9 @@ impl ServerHandler for CorpusServer {
             after pushing changes (it otherwise updates every 15 minutes). The decision/incident \
             ledger is indexed too: pass corpus=\"ledger\" to `search_corpus` for a semantic search \
             over it (better recall than the ledger server's keyword search). The tracker's \
-            documents and queue items are indexed too: pass corpus=\"tracker\" to find planned, \
+            documents and tickets are indexed too: pass corpus=\"tracker\" to find planned, \
             specced or queued work; each hit's `citation` is `<project>:<path>@r<revision>` or an \
-            item id. Writing to the ledger (create/append) and exact lookups are on the separate \
+            ticket id. Writing to the ledger (create/append) and exact lookups are on the separate \
             `ledger_*` MCP server; the tracker's are on the `tracker_*` server.",
         )
     }
@@ -532,7 +532,7 @@ impl LedgerServer {
     /// Fetch one ledger topic in full: metadata, summary, current state, the
     /// complete append-only monologue, and links to related topics.
     #[tool(
-        description = "Fetch a single ledger topic by id (e.g. \"rag-0042\") with its full \
+        description = "Fetch a single ledger topic by id (e.g. \"rag-l0042\"; older ids \"rag-0042\") with its full \
         structured record: summary, current state, the complete monologue history, and links \
         (supersedes/superseded_by/related/caused_by). Use after ledger_search to read the detail. \
         If the id was moved to another project, returns a redirect pointer \
@@ -559,7 +559,7 @@ impl LedgerServer {
         layer' topic). Provide type, title, a fixed summary, and the initial current-state — \
         keep current-state a concise status, not a growing multi-point dossier. The creator \
         email is taken from git config and the repo from the current git repo (override with \
-        `repo`). Returns the new topic_id (e.g. \"rag-0042\"). Append later updates with \
+        `repo`). Returns the new topic_id (e.g. \"rag-l0042\"). Append later updates with \
         ledger_append — never edit history, append to it."
     )]
     async fn ledger_create(

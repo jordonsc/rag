@@ -30,6 +30,8 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use rag_core::tracker::{describe_changes, EventKind, TargetKind};
+
 use crate::{git_repo, identity_email, resolve_agent};
 
 /// The most bytes an attachment may carry over the HTTP gateway, either way.
@@ -41,6 +43,28 @@ const UPLOAD_MAX_BYTES: u64 = 50 * 1024 * 1024;
 
 const NO_PROJECT: &str = "project not given and could not be inferred from a git repository: \
      pass `project` (the repository name, e.g. \"ubu\"; always needed over the HTTP gateway)";
+
+/// The server's instructions: the rules every tool shares, said once here
+/// rather than in each tool's description, which an agent pays for again in
+/// every session (rag-t0039).
+const INSTRUCTIONS: &str = "The project tracker: each project's work queue (tickets of type dev, \
+design, recon, analysis, gate, request), its specs with milestones, its concepts and documents. \
+specs/... and concepts/... paths named in repositories and the ledger live here.
+Reading: tracker_next after each job (what to dispatch next); tracker_queue for a status report; \
+tracker_get for one record (history: true, or N for the last N events, only when needed); \
+search_corpus corpus=tracker to find work by meaning.
+Writing: queue writes (creating tickets, status, block, approval, assignee, moves, acknowledging) are \
+for the agent working with the owner, in practice the manager. A sub-agent reads anything, edits \
+documents (tracker_doc_edit) and notes its own task (tracker_update with a note alone). Pass agent \
+(your model name) on every write, or it is recorded as Unknown. A note is optional: give one when the \
+reason is not obvious. approval owner only when the owner approved (in conversation counts), the \
+note saying where; ratified only from agent, when the owner confirms. A write replies with one \
+line: ok, the record, what changed, the event id.
+project defaults to the current git repository over stdio; the HTTP gateway needs it, and takes \
+attachments as base64 (at most 10 MB) rather than local paths. Decisions go in the ledger.
+A request is the owner's idea, never dispatched (its feed frame says {type: request}): create its \
+tickets with links from:<request id> (approval defaults to agent), place them as it says (else the \
+bottom), then set it done with a note listing them.";
 
 /// Replace `body_path` with the file's contents in `body`, so the request builders
 /// see an ordinary body. Over the HTTP gateway a path is refused: it cannot read the
@@ -200,7 +224,7 @@ enum Target {
     Concept(String),
 }
 
-const TARGET_FORMS: &str = "an item id (ubu-t0042), a document id (ubu-d0007), a document path \
+const TARGET_FORMS: &str = "a ticket id (ubu-t0042), a document id (ubu-d0007), a document path \
      (specs/audio/master.md), spec:<slug>, milestone:<slug>/<code> or concept:<slug>";
 
 fn parse_target(raw: &str) -> Result<Target, String> {
@@ -243,6 +267,13 @@ fn parse_target(raw: &str) -> Result<Target, String> {
             return Ok(Target::Doc(s.to_string()));
         }
     }
+    // A ledger topic (`ubu-l1652`, or a legacy `ubu-1592`) is the commonest
+    // wrong guess here: say where it lives rather than list the tracker's forms.
+    if rag_core::ledger::parse_topic_id(s).is_some() {
+        return Err(format!(
+            "`{s}` is a ledger topic id, not a tracker reference: read it with ledger_get"
+        ));
+    }
     Err(format!(
         "`{s}` is not a tracker reference: give {TARGET_FORMS}"
     ))
@@ -279,441 +310,677 @@ fn only(fields: &Map<String, Value>, allowed: &[&str], what: &str) -> Result<(),
 }
 
 // ---- Tool arguments -----------------------------------------------------------
+//
+// Every argument doc below is the JSON-Schema description an agent pays for in
+// every session (rag-t0039), so each says only what a call needs: the rules
+// that apply to every write (`agent`, notes, approval, who may write) are said
+// once, in the server's instructions ([`INSTRUCTIONS`]). The schemas are
+// compacted further when the router is built ([`compact_schema`]).
 
-/// A link from a record to another (api.md § Names and ids).
+// A link from a record to another (api.md § Names and ids).
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 struct LinkArg {
-    /// spec | milestone | concept | ledger | item.
+    /// spec|milestone|concept|ledger|item
     kind: String,
-    /// spec: its slug; milestone: "<spec slug>/<code>"; concept: its slug; item: an
-    /// item id (any project); ledger: a ledger topic id (any project, e.g. "rag-0033").
+    /// slug, slug/code, ticket id or ledger id
     target: String,
 }
 
-/// A milestone created with its spec.
+// A milestone created with its spec.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(inline)]
 struct MilestoneArg {
-    /// Code, e.g. "m01".
+    /// e.g. m01
     code: String,
-    /// Title, e.g. "The store and the HTTP API".
     title: String,
-    /// File-name part: the document is specs/<spec>/<code>-<name>.md. Defaults to the
-    /// title slugified; pass it to keep a repository's existing file name.
+    /// File name part; default the title
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
-    /// not_started (default) | in_progress | done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     state: Option<String>,
-    /// unapproved (default) | agent | owner. With owner, say in the spec's or this note
-    /// where the owner approved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     approval: Option<String>,
-    /// The milestone document's markdown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     body: Option<String>,
-    /// Instead of `body`: a local file holding the markdown, read by the local (stdio)
-    /// server, so a long document never passes through the conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     body_path: Option<String>,
-    /// The milestone's create note (defaults to the spec's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     note: Option<String>,
 }
 
-/// An exact-text replacement for `tracker_doc_edit`.
+// An exact-text replacement for `tracker_doc_edit`.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(inline)]
 struct ReplacementArg {
-    /// Exact text that must occur exactly once in the document as it stands.
+    /// Exact text, occurring once
     old: String,
-    /// Its replacement (empty deletes it).
     new: String,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 struct TrackerQueueArgs {
-    /// Project (repository name, e.g. "ubu"). Defaults to the current git repository;
-    /// always needed over the HTTP gateway.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     project: Option<String>,
-    /// The most queue rows to list, top first (gates count as rows). Default 20; at
-    /// least 1. The rest are counted in the `Not shown:` footer.
+    /// Queue rows; default 20
     #[serde(default, skip_serializing_if = "Option::is_none")]
     limit: Option<u32>,
-    /// List only the batch up to the next gate, that gate included (a gate already in
-    /// progress is passed over: the batch after it is the next one). Default false.
+    /// Only the batch up to the next gate
     #[serde(default, skip_serializing_if = "Option::is_none")]
     until_gate: Option<bool>,
-    /// Which sections to list in full: any of review, done, queue, blocked, deferred.
-    /// Default review, queue, blocked and deferred; the done items are then only counted.
-    /// Done lists oldest first, the latest finished last (rag-t0029).
-    /// `[]` gives the counts alone.
+    /// Of requests, review, done, queue, blocked, deferred; default all but done; [] counts only
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sections: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 struct TrackerNextArgs {
-    /// Project (repository name, e.g. "ubu"). Defaults to the current git repository;
-    /// always needed over the HTTP gateway.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     project: Option<String>,
-    /// How many items to return at most. Default 1; at least 1.
+    /// Default 1
     #[serde(default, skip_serializing_if = "Option::is_none")]
     n: Option<u32>,
-    /// Only items of this type: dev | design | recon | analysis | gate. Items of other
-    /// types are passed over (they do not hold the walk), but the gate still ends it.
+    /// dev|design|recon|analysis|gate
     #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
     item_type: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 struct TrackerListArgs {
-    /// What to list: projects | items | labels | specs | concepts | docs | attachments.
+    /// projects|items|labels|specs|concepts|docs|attachments
     what: String,
-    /// Project (repository name). Defaults to the current git repository; not used
-    /// for `projects`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     project: Option<String>,
-    /// items only: pending | in_progress | done | failed | cancelled | deferred | review.
+    /// items
     #[serde(default, skip_serializing_if = "Option::is_none")]
     status: Option<String>,
-    /// items only: only items carrying this label (case-insensitive), e.g. "Physics".
+    /// items
     #[serde(default, skip_serializing_if = "Option::is_none")]
     label: Option<String>,
-    /// concepts only: open | refining | refined | archived.
+    /// concepts
     #[serde(default, skip_serializing_if = "Option::is_none")]
     state: Option<String>,
-    /// docs only: spec | milestone | concept | doc.
+    /// docs: spec|milestone|concept|doc
     #[serde(default, skip_serializing_if = "Option::is_none")]
     kind: Option<String>,
-    /// docs only: a path prefix, e.g. "specs/audio/".
+    /// docs: path prefix
     #[serde(default, skip_serializing_if = "Option::is_none")]
     prefix: Option<String>,
 }
 
+/// `history`: `true` or `false`, or a number of events (the last N).
+fn history_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": ["boolean", "integer"],
+        "description": "true: every event; N: the last N; default none"
+    })
+}
+
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 struct TrackerGetArgs {
-    /// What to read: an item id (ubu-t0042), a document id (ubu-d0007) or path
-    /// (specs/audio/master.md), spec:<slug>, milestone:<slug>/<code> or concept:<slug>.
+    /// Ticket id, doc id or path, spec:<slug>, milestone:<slug>/<code>, concept:<slug>
     id: String,
-    /// Project, for a path, spec, milestone or concept (ids carry their own). Defaults
-    /// to the current git repository.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     project: Option<String>,
-    /// Include the history (events, oldest first). Default true; false for the record alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    history: Option<bool>,
+    #[schemars(schema_with = "history_schema")]
+    history: Option<Value>,
 }
 
+/// How much history a read asks for (rag-t0039): none by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum History {
+    None,
+    All,
+    Last(usize),
+}
+
+fn history_of(v: Option<&Value>) -> Result<History, String> {
+    match v {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => Ok(History::None),
+        Some(Value::Bool(true)) => Ok(History::All),
+        Some(Value::Number(n)) => match n.as_u64() {
+            Some(0) => Ok(History::None),
+            Some(n) => Ok(History::Last(n as usize)),
+            None => Err("history is true, false or a number of events (0 or more)".into()),
+        },
+        Some(_) => Err("history is true, false or a number of events (0 or more)".into()),
+    }
+}
+
+/// Links as the tools take them, `kind:target` (`ledger:rag-0033`,
+/// `milestone:audio/m01`), the way the queue's lines show them: a string each
+/// costs an agent far less to read in a schema than an object (rag-t0039).
+fn links_of(links: Option<Vec<String>>) -> Result<Option<Vec<LinkArg>>, String> {
+    links
+        .map(|ls| {
+            ls.iter()
+                .map(|l| match l.split_once(':') {
+                    Some((kind, target))
+                        if !kind.trim().is_empty() && !target.trim().is_empty() =>
+                    {
+                        Ok(LinkArg {
+                            kind: kind.trim().to_string(),
+                            target: target.trim().to_string(),
+                        })
+                    }
+                    _ => Err(format!(
+                        "link `{l}` is kind:target, e.g. ledger:rag-0033 or milestone:audio/m01"
+                    )),
+                })
+                .collect()
+        })
+        .transpose()
+}
+
+// `tracker_create`: a queue item or a gate.
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
-struct TrackerCreateArgs {
-    /// What to create: item (a queue entry), gate (an item of type gate), spec (with
-    /// its master document and optional milestones), milestone (added to an existing
-    /// spec), concept (with its document) or doc (a free-standing document at a path).
-    kind: String,
-    /// Project (repository name, e.g. "ubu"). Defaults to the current git repository;
-    /// always needed over the HTTP gateway. Created by its first write.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    project: Option<String>,
-    /// item: dev | design | recon | analysis | gate.
-    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
-    item_type: Option<String>,
-    /// Every kind: the title (non-blank).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    title: Option<String>,
-    /// item: the brief, scope and acceptance (markdown). spec, milestone, concept, doc:
-    /// the document's markdown.
+struct CreateItemArgs {
+    /// dev|design|recon|analysis|gate|request
+    #[serde(rename = "type")]
+    item_type: String,
+    title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     body: Option<String>,
-    /// Instead of `body`: a local file holding the markdown (a repository file being
-    /// moved into the tracker, a brief), read by the local (stdio) server so a long
-    /// document never passes through the conversation. At most 4 MB of UTF-8. Not
-    /// available over the HTTP gateway, which cannot read your disk.
+    /// stdio: a local file, instead of body
     #[serde(default, skip_serializing_if = "Option::is_none")]
     body_path: Option<String>,
-    /// item: who works it (the sub-agent's name), for the manager's bookkeeping.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     assignee: Option<String>,
-    /// item, spec, milestone, concept: unapproved (default) | agent | owner. owner only
-    /// when the owner approved; give a note saying where.
+    /// unapproved|agent|owner
     #[serde(default, skip_serializing_if = "Option::is_none")]
     approval: Option<String>,
-    /// item, concept: links to specs, milestones, concepts, items and ledger topics.
+    /// kind:target, e.g. ledger:rag-0033, item:ubu-t0042, from:<request id>
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    links: Option<Vec<LinkArg>>,
-    /// gate: quick | standard | full (required for a gate).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    intensity: Option<String>,
-    /// gate: true marks a release after it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    release: Option<bool>,
-    /// item (not a gate): true lets it start before the gates above it clear; it still
-    /// lands after them. tracker_next then offers it while a gate above it is pending.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    parallel: Option<bool>,
-    /// item, gate: free-text labels naming its subject, e.g. ["Physics", "Biomes"]: at most
-    /// 10, each at most 32 characters, no commas. Matched case-insensitively within the
-    /// project, whose existing casing wins; reuse the project's labels (tracker_list
-    /// what=labels) rather than coining near-duplicates.
+    links: Option<Vec<String>>,
+    /// Reuse the project's (tracker_list what=labels)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     labels: Option<Vec<String>>,
-    /// item: join the queue just before this item id (at most one of before/after/top/bottom; default the bottom).
+    /// Gate: quick|standard|full
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    intensity: Option<String>,
+    /// Gate: a release follows
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    release: Option<bool>,
+    /// May start before the gates above it; lands after them
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parallel: Option<bool>,
+    /// Join before this id (default the bottom)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     before: Option<String>,
-    /// item: join the queue just after this item id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     after: Option<String>,
-    /// item: true joins at the top of the queue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     top: Option<bool>,
-    /// item: true joins at the bottom (the default).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    bottom: Option<bool>,
-    /// spec, concept: the slug (lowercase letters, digits and -), e.g. "power-generation".
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    slug: Option<String>,
-    /// milestone: the slug of the spec it joins (added after its last milestone).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    spec: Option<String>,
-    /// milestone: its code, e.g. "m03".
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    code: Option<String>,
-    /// milestone: file-name part (specs/<spec>/<code>-<name>.md); defaults to the title slugified.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-    /// spec: draft (default) | ready | in_development | done | superseded. milestone:
-    /// not_started (default) | in_progress | done. concept: open (default) | refining | refined | archived.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    state: Option<String>,
-    /// spec: its milestones, created with it in one transaction, in this order.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    milestones: Option<Vec<MilestoneArg>>,
-    /// doc: its path, e.g. "notes/terrain.md" (segments of letters, digits, . _ -; ends in .md).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    path: Option<String>,
-    /// doc: the first revision's one-line message.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
-    /// item, spec, milestone, concept: the create event's note. Optional; give one when
-    /// the reason is not obvious (an approval: who approved, and where).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     note: Option<String>,
-    /// The acting agent — always pass this, set to your own model name (e.g. "Claude
-    /// Opus 5 (1M context)"). Absent, the write is recorded as "Unknown".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    project: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
 }
 
+// `tracker_create_record`: a spec, a milestone, a concept or a document.
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
-struct TrackerUpdateArgs {
-    /// What to change: an item id (ubu-t0042), spec:<slug>, milestone:<slug>/<code> or
-    /// concept:<slug>. Documents are changed with tracker_doc_edit.
-    id: String,
-    /// Project, for a spec, milestone or concept. Defaults to the current git repository.
+struct CreateRecordArgs {
+    /// spec|milestone|concept|doc
+    kind: String,
+    title: String,
+    /// spec, concept
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    project: Option<String>,
-    /// Why. Optional with a change (the history then records the change itself, e.g.
-    /// "Status: pending → done."); give one when the reason is not obvious from the
-    /// change. Alone, it is recorded as a note on the record's history and must not be blank.
+    slug: Option<String>,
+    /// milestone: its spec's slug
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    note: Option<String>,
-    /// item: pending | in_progress | done | failed | cancelled | deferred | review. Allowed:
-    /// pending <-> in_progress; pending or in_progress -> done or failed; any queued ->
-    /// cancelled; done, failed or cancelled -> pending (a reopen; done and cancelled rejoin
-    /// at the top); pending, in_progress or failed -> deferred (put aside on purpose,
-    /// keeping its place); deferred -> pending (a resume, in place), in_progress or done;
-    /// pending, in_progress or failed -> review (waiting on the owner to confirm or review
-    /// it, keeping its place); review -> done (confirmed), in_progress or pending (sent
-    /// back).
+    spec: Option<String>,
+    /// milestone: e.g. m03
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    status: Option<String>,
-    /// item: true blocks (with block_reason), false unblocks. A blocked item keeps its place.
+    code: Option<String>,
+    /// milestone: file name part; default the title
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    blocked: Option<bool>,
-    /// item: redesign | review | dependency (waits on other items: give depends_on).
-    /// Work waiting on the owner's confirmation is status review, not a block.
+    name: Option<String>,
+    /// doc: e.g. notes/terrain.md
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    block_reason: Option<String>,
-    /// item, with block_reason dependency (given now or already held): the item ids it
-    /// waits on, replacing the list. Items of the same project; at least one not yet
-    /// done. It unblocks itself, with a note, when the last of them is done; a cancelled
-    /// or failed one never frees it (unblock it yourself). Cleared by any unblock.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    depends_on: Option<Vec<String>>,
-    /// item, spec, milestone, concept: unapproved | agent | ratified (only from agent,
-    /// when the owner confirms) | owner (only when the owner approved; the note says where).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    approval: Option<String>,
-    /// item: who works it; "" clears it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    assignee: Option<String>,
-    /// item, spec, milestone, concept: a new title.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    title: Option<String>,
-    /// item: a new body (markdown).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    body: Option<String>,
-    /// item, concept: links to add.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    add_links: Option<Vec<LinkArg>>,
-    /// item, concept: links to remove (each must exist).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    remove_links: Option<Vec<LinkArg>>,
-    /// gate: quick | standard | full.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    intensity: Option<String>,
-    /// gate: the release flag.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    release: Option<bool>,
-    /// item (not a gate): may start before the gates above it clear, landing after them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    parallel: Option<bool>,
-    /// item, gate: its labels, replacing the set wholesale (send the full list, not just
-    /// the ones being added; [] clears them). At most 10, each at most 32 characters, no
-    /// commas; the project's existing casing wins (tracker_list what=labels lists them).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    labels: Option<Vec<String>>,
-    /// spec: draft | ready | in_development | done | superseded. milestone: not_started
-    /// | in_progress | done. concept: open | refining | refined | archived.
+    path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     state: Option<String>,
-    /// milestone: its sort order within the spec.
+    /// unapproved|agent|owner
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    order: Option<i64>,
-    /// The acting agent — always pass this, set to your own model name. Absent, the
-    /// write is recorded as "Unknown".
+    approval: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    body: Option<String>,
+    /// stdio: a local file, instead of body
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    body_path: Option<String>,
+    /// concept: kind:target, e.g. spec:audio, ledger:rag-0033
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    links: Option<Vec<String>>,
+    /// spec: created with it, in order
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    milestones: Option<Vec<MilestoneArg>>,
+    /// doc: the first revision's message
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    project: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
+}
+
+/// Every create, flat: the shape [`create_req`] checks and sends. The two
+/// tools' arguments ([`CreateItemArgs`], [`CreateRecordArgs`]) fill it.
+#[derive(Debug, Default, Serialize)]
+struct TrackerCreateArgs {
+    kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project: Option<String>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    item_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    assignee: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    approval: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    links: Option<Vec<LinkArg>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    intensity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    release: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parallel: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    labels: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    before: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    after: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bottom: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slug: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    spec: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    milestones: Option<Vec<MilestoneArg>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent: Option<String>,
+}
+
+impl TryFrom<CreateItemArgs> for TrackerCreateArgs {
+    type Error = String;
+
+    fn try_from(a: CreateItemArgs) -> Result<Self, String> {
+        Ok(Self {
+            kind: "item".into(),
+            project: a.project,
+            item_type: Some(a.item_type),
+            title: Some(a.title),
+            body: a.body,
+            body_path: a.body_path,
+            assignee: a.assignee,
+            approval: a.approval,
+            links: links_of(a.links)?,
+            intensity: a.intensity,
+            release: a.release,
+            parallel: a.parallel,
+            labels: a.labels,
+            before: a.before,
+            after: a.after,
+            top: a.top,
+            note: a.note,
+            agent: a.agent,
+            ..Default::default()
+        })
+    }
+}
+
+impl TryFrom<CreateRecordArgs> for TrackerCreateArgs {
+    type Error = String;
+
+    fn try_from(a: CreateRecordArgs) -> Result<Self, String> {
+        let kind = a.kind.trim().to_ascii_lowercase();
+        if matches!(kind.as_str(), "item" | "gate") {
+            return Err("tickets and gates are created with tracker_create".into());
+        }
+        Ok(Self {
+            kind,
+            project: a.project,
+            title: Some(a.title),
+            slug: a.slug,
+            spec: a.spec,
+            code: a.code,
+            name: a.name,
+            path: a.path,
+            state: a.state,
+            approval: a.approval,
+            body: a.body,
+            body_path: a.body_path,
+            links: links_of(a.links)?,
+            milestones: a.milestones,
+            message: a.message,
+            note: a.note,
+            agent: a.agent,
+            ..Default::default()
+        })
+    }
+}
+
+// `tracker_update`: a queue item (or gate).
+#[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
+struct UpdateItemArgs {
+    /// e.g. ubu-t0042
+    id: String,
+    /// pending|in_progress|done|failed|cancelled|deferred|review
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    blocked: Option<bool>,
+    /// redesign|review|dependency
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    block_reason: Option<String>,
+    /// With reason dependency: the ids it waits on; it unblocks when all are done
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    depends_on: Option<Vec<String>>,
+    /// unapproved|agent|ratified|owner
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    approval: Option<String>,
+    /// "" clears
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    assignee: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    body: Option<String>,
+    /// kind:target, e.g. ledger:rag-0033, item:ubu-t0042
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    add_links: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    remove_links: Option<Vec<String>>,
+    /// The whole set; [] clears
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    labels: Option<Vec<String>>,
+    /// Gate: quick|standard|full
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    intensity: Option<String>,
+    /// Gate
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    release: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parallel: Option<bool>,
+    /// Why; alone, a note on the history
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent: Option<String>,
+}
+
+// `tracker_update_record`: a spec, a milestone or a concept.
+#[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
+struct UpdateRecordArgs {
+    /// spec:<slug>, milestone:<slug>/<code> or concept:<slug>
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    state: Option<String>,
+    /// unapproved|agent|ratified|owner
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    approval: Option<String>,
+    /// concept: kind:target
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    add_links: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    remove_links: Option<Vec<String>>,
+    /// milestone: its place in the spec
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    order: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent: Option<String>,
+}
+
+/// Every update, flat: the shape [`update_req`] checks and sends.
+#[derive(Debug, Default, Serialize)]
+struct TrackerUpdateArgs {
+    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blocked: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    block_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    depends_on: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    approval: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    assignee: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    add_links: Option<Vec<LinkArg>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remove_links: Option<Vec<LinkArg>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    intensity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    release: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parallel: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    labels: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    order: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent: Option<String>,
+}
+
+impl TryFrom<UpdateItemArgs> for TrackerUpdateArgs {
+    type Error = String;
+
+    fn try_from(a: UpdateItemArgs) -> Result<Self, String> {
+        match parse_target(&a.id)? {
+            Target::Item(_) => {}
+            Target::Doc(_) | Target::Path(_) => {
+                return Err("documents are changed with tracker_doc_edit".into())
+            }
+            _ => {
+                return Err(
+                    "tracker_update changes tickets; a spec, milestone or concept is \
+                     changed with tracker_update_record"
+                        .into(),
+                )
+            }
+        }
+        Ok(Self {
+            id: a.id,
+            note: a.note,
+            status: a.status,
+            blocked: a.blocked,
+            block_reason: a.block_reason,
+            depends_on: a.depends_on,
+            approval: a.approval,
+            assignee: a.assignee,
+            title: a.title,
+            body: a.body,
+            add_links: links_of(a.add_links)?,
+            remove_links: links_of(a.remove_links)?,
+            intensity: a.intensity,
+            release: a.release,
+            parallel: a.parallel,
+            labels: a.labels,
+            agent: a.agent,
+            ..Default::default()
+        })
+    }
+}
+
+impl TryFrom<UpdateRecordArgs> for TrackerUpdateArgs {
+    type Error = String;
+
+    fn try_from(a: UpdateRecordArgs) -> Result<Self, String> {
+        match parse_target(&a.id)? {
+            Target::Item(_) => {
+                return Err("tickets are changed with tracker_update".into());
+            }
+            Target::Doc(_) | Target::Path(_) => {
+                return Err("documents are changed with tracker_doc_edit".into())
+            }
+            _ => {}
+        }
+        Ok(Self {
+            id: a.id,
+            project: a.project,
+            title: a.title,
+            state: a.state,
+            approval: a.approval,
+            add_links: links_of(a.add_links)?,
+            remove_links: links_of(a.remove_links)?,
+            order: a.order,
+            note: a.note,
+            agent: a.agent,
+            ..Default::default()
+        })
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 struct TrackerMoveArgs {
-    /// The item id to move (it must be queued: pending, in progress, failed or deferred).
+    /// The queued item to move
     id: String,
-    /// Put it just before this item id. Exactly one of before / after / top / bottom.
+    /// Just before this id
     #[serde(default, skip_serializing_if = "Option::is_none")]
     before: Option<String>,
-    /// Put it just after this item id.
+    /// Just after this id
     #[serde(default, skip_serializing_if = "Option::is_none")]
     after: Option<String>,
-    /// true: to the top of the queue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     top: Option<bool>,
-    /// true: to the bottom of the queue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bottom: Option<bool>,
-    /// Optional: why.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     note: Option<String>,
-    /// The acting agent — always pass this, set to your own model name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 struct TrackerDocGetArgs {
-    /// The document: its id (ubu-d0007) or path (specs/audio/m03-music.md), or the
-    /// record that owns it: spec:<slug> (its master), milestone:<slug>/<code>, concept:<slug>.
+    /// Doc id or path, spec:<slug>, milestone:<slug>/<code>, concept:<slug>
     doc: String,
-    /// Project, for a path, spec, milestone or concept. Defaults to the current git repository.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     project: Option<String>,
-    /// body (default): the text and the revision to edit against. revisions: every
-    /// revision's author, time and message. diff: a unified diff between two revisions.
+    /// body (default)|revisions|diff
     #[serde(default, skip_serializing_if = "Option::is_none")]
     view: Option<String>,
-    /// body view: read this older revision instead of the current one.
+    /// body: an older revision
     #[serde(default, skip_serializing_if = "Option::is_none")]
     revision: Option<i64>,
-    /// body view: include the history (events). Default false.
+    /// body: with its events
     #[serde(default, skip_serializing_if = "Option::is_none")]
     history: Option<bool>,
-    /// diff view: the older revision (default: to - 1).
+    /// diff: default to - 1
     #[serde(default, skip_serializing_if = "Option::is_none")]
     from: Option<i64>,
-    /// diff view: the newer revision (default: the current one).
+    /// diff: default the current one
     #[serde(default, skip_serializing_if = "Option::is_none")]
     to: Option<i64>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 struct TrackerDocEditArgs {
-    /// The document: its id (ubu-d0007) or path, or spec:<slug>, milestone:<slug>/<code>, concept:<slug>.
+    /// Doc id or path, spec:<slug>, milestone:<slug>/<code>, concept:<slug>
     doc: String,
-    /// Project, for a path, spec, milestone or concept. Defaults to the current git repository.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     project: Option<String>,
-    /// The revision you read (from tracker_doc_get). Required for replacements, body and
-    /// restore; refused if the document has moved on since.
+    /// The revision you read; required but for a rename
     #[serde(default, skip_serializing_if = "Option::is_none")]
     base_revision: Option<i64>,
-    /// Exact-text replacements, applied in order; each `old` must occur exactly once, or nothing is written.
+    /// Applied in order, all or nothing
     #[serde(default, skip_serializing_if = "Option::is_none")]
     replacements: Option<Vec<ReplacementArg>>,
-    /// A whole new body (markdown), instead of replacements.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     body: Option<String>,
-    /// A whole new body read from a local file (stdio only, at most 4 MB), instead of
-    /// `body`.
+    /// stdio: a local file, instead of body
     #[serde(default, skip_serializing_if = "Option::is_none")]
     body_path: Option<String>,
-    /// Restore this older revision's body as a new revision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     restore_revision: Option<i64>,
-    /// Rename: a new path (the old one keeps redirecting here).
+    /// Rename; the old path redirects
     #[serde(default, skip_serializing_if = "Option::is_none")]
     new_path: Option<String>,
-    /// Rename: a new title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     new_title: Option<String>,
-    /// One line saying what changed (the revision's message; a rename's note).
+    /// One line: what changed
     #[serde(default, skip_serializing_if = "Option::is_none")]
     message: Option<String>,
-    /// The acting agent — always pass this, set to your own model name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 struct TrackerAttachArgs {
-    /// Project. Defaults to the current git repository; always needed over the HTTP gateway.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     project: Option<String>,
-    /// stdio only: a local file to upload (at most 50 MB).
+    /// stdio: a local file, at most 50 MB
     #[serde(default, skip_serializing_if = "Option::is_none")]
     path: Option<String>,
-    /// The file's bytes as base64, instead of path (the HTTP gateway's only way; at most 10 MB there).
+    /// gateway: the bytes, at most 10 MB, with name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     base64: Option<String>,
-    /// The file name to record (default: the path's file name; required with base64).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
-    /// The media type, e.g. "application/pdf". Default: from the name's extension for
-    /// common documents; images are recognised by their bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     media_type: Option<String>,
-    /// The acting agent — always pass this, set to your own model name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 struct TrackerAttachmentGetArgs {
-    /// The attachment: its att: reference (att:3fa9c2e1b07d) or sha256 (at least 12 hex characters).
+    /// att:<hash>
     #[serde(rename = "ref")]
     reference: String,
-    /// stdio only: where to write it. Default: under the system temp directory, named
-    /// <hash prefix>-<file name>; the path is in the result.
+    /// stdio: where to write it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     out_path: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 struct TrackerAckDoneArgs {
-    /// Project. Defaults to the current git repository; always needed over the HTTP gateway.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     project: Option<String>,
-    /// The acting agent — always pass this, set to your own model name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
 }
@@ -937,7 +1204,7 @@ fn create_req(
                 Some("gate") => {}
                 Some(other) => {
                     return Err(format!(
-                        "kind gate creates an item of type gate, not `{other}`"
+                        "kind gate creates a ticket of type gate, not `{other}`"
                     ))
                 }
             }
@@ -993,7 +1260,7 @@ fn update_req(
         Target::Item(id) => (
             ITEM_UPDATE,
             format!("/tracker/items/{}", enc(&id)),
-            "an item",
+            "a ticket",
         ),
         Target::Spec(slug) => (
             SPEC_UPDATE,
@@ -1037,7 +1304,7 @@ fn update_req(
 fn move_req(args: &TrackerMoveArgs, who: &Author) -> Result<Req, String> {
     let id = match parse_target(&args.id)? {
         Target::Item(id) => id,
-        _ => return Err("only queue items move: give an item id (ubu-t0042)".to_string()),
+        _ => return Err("only tickets move: give a ticket id (ubu-t0042)".to_string()),
     };
     let mut f = present(args);
     for k in ["id", "agent"] {
@@ -1405,7 +1672,8 @@ fn gate_marker(it: &Value) -> String {
 /// `tracker_queue`'s default row limit.
 const QUEUE_LIMIT: u32 = 20;
 
-/// The item types, for `tracker_next`'s filter.
+/// The item types, for `tracker_next`'s filter: every type but `request`,
+/// which is never dispatched (rag-t0044).
 const ITEM_TYPES: &[&str] = &["dev", "design", "recon", "analysis", "gate"];
 
 /// What `tracker_queue` lists, checked before any request.
@@ -1415,6 +1683,7 @@ struct QueueOpts {
     limit: usize,
     /// Stop after the gate that ends the next batch.
     until_gate: bool,
+    requests: bool,
     review: bool,
     done: bool,
     queue: bool,
@@ -1429,12 +1698,13 @@ fn queue_opts(args: &TrackerQueueArgs) -> Result<QueueOpts, String> {
             "limit must be at least 1 (to list no queue rows, leave queue out of sections)".into(),
         );
     }
-    let (mut review, mut done, mut queue, mut blocked, mut deferred) =
-        (true, false, true, true, true);
+    let (mut requests, mut review, mut done, mut queue, mut blocked, mut deferred) =
+        (true, true, false, true, true, true);
     if let Some(list) = &args.sections {
-        (review, queue, blocked, deferred) = (false, false, false, false);
+        (requests, review, queue, blocked, deferred) = (false, false, false, false, false);
         for raw in list {
             match raw.trim().to_ascii_lowercase().as_str() {
+                "requests" => requests = true,
                 "review" => review = true,
                 "done" => done = true,
                 "queue" => queue = true,
@@ -1442,7 +1712,8 @@ fn queue_opts(args: &TrackerQueueArgs) -> Result<QueueOpts, String> {
                 "deferred" => deferred = true,
                 other => {
                     return Err(format!(
-                        "unknown section {other:?}: review, done, queue, blocked or deferred"
+                        "unknown section {other:?}: requests, review, done, queue, blocked or \
+                         deferred"
                     ))
                 }
             }
@@ -1451,6 +1722,7 @@ fn queue_opts(args: &TrackerQueueArgs) -> Result<QueueOpts, String> {
     Ok(QueueOpts {
         limit: limit as usize,
         until_gate: args.until_gate.unwrap_or(false),
+        requests,
         review,
         done,
         queue,
@@ -1469,6 +1741,11 @@ fn next_opts(args: &TrackerNextArgs) -> Result<(usize, Option<String>), String> 
         None => None,
         Some(raw) => {
             let t = raw.trim().to_ascii_lowercase();
+            if t == "request" {
+                return Err(
+                    "requests are never dispatched: tracker_queue lists them, to break down".into(),
+                );
+            }
             if !ITEM_TYPES.contains(&t.as_str()) {
                 return Err(format!(
                     "unknown type {raw:?}: dev, design, recon, analysis or gate"
@@ -1497,8 +1774,8 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 /// The `Not shown:` footer of `tracker_queue` and `tracker_next`: every item of the
 /// queue view not listed above, counted once each under the first that applies:
 /// blocked, then gate (any status), then its status (pending, in progress, failed),
-/// then the deferred items (blocked or not), the items in review (blocked or not) and
-/// the done items not yet acknowledged.
+/// then the requests (rag-t0044), the deferred items (blocked or not), the items in
+/// review (blocked or not) and the done items not yet acknowledged.
 /// Zero counts are left out.
 fn not_shown(v: &Value, shown: &BTreeSet<&str>) -> String {
     let hidden = |k: &str| {
@@ -1519,7 +1796,8 @@ fn not_shown(v: &Value, shown: &BTreeSet<&str>) -> String {
             _ => pending += 1,
         }
     }
-    let (blocked, deferred, review, done) = (
+    let (requests, blocked, deferred, review, done) = (
+        hidden("requests").len(),
         hidden("blocked").len(),
         hidden("deferred").len(),
         hidden("review").len(),
@@ -1530,6 +1808,7 @@ fn not_shown(v: &Value, shown: &BTreeSet<&str>) -> String {
         (running, format!("{running} in progress")),
         (failed, format!("{failed} failed")),
         (gates, plural(gates, "gate", "gates")),
+        (requests, plural(requests, "request", "requests")),
         (blocked, format!("{blocked} blocked")),
         (deferred, format!("{deferred} deferred")),
         (review, format!("{review} in review")),
@@ -1555,8 +1834,9 @@ fn unknown_project(v: &Value) -> Option<String> {
     })
 }
 
-/// `tracker_queue`'s text: a header of totals, then the sections asked for (review,
-/// first, rag-t0024: the work waiting on the owner; done not yet acknowledged; the
+/// `tracker_queue`'s text: a header of totals, then the sections asked for (the
+/// owner's requests first, rag-t0044: work to break down; review, rag-t0024: the work
+/// waiting on the owner; done not yet acknowledged; the
 /// queue in order with gate markers, cut at the limit or the gate with a line saying
 /// how many more; blocked; deferred), then the `Not shown:` footer.
 /// Compact and stable (a golden test pins it).
@@ -1564,7 +1844,8 @@ fn render_queue(v: &Value, o: &QueueOpts) -> String {
     if let Some(t) = unknown_project(v) {
         return t;
     }
-    let (review, done, queue, blocked, deferred) = (
+    let (requests, review, done, queue, blocked, deferred) = (
+        arr(v, "requests"),
         arr(v, "review"),
         arr(v, "done"),
         arr(v, "queue"),
@@ -1572,8 +1853,9 @@ fn render_queue(v: &Value, o: &QueueOpts) -> String {
         arr(v, "deferred"),
     );
     let mut out = vec![format!(
-        "{}: {} in review, {} in the queue, {} blocked, {} deferred, {} done not acknowledged",
+        "{}: {}, {} in review, {} in the queue, {} blocked, {} deferred, {} done not acknowledged",
         s(v, "project"),
+        plural(requests.len(), "request", "requests"),
         review.len(),
         queue.len(),
         blocked.len(),
@@ -1589,6 +1871,14 @@ fn render_queue(v: &Value, o: &QueueOpts) -> String {
             out.extend(rows.into_iter().map(|r| format!("  {r}")));
         }
     };
+    if o.requests {
+        shown.extend(requests.iter().map(|it| s(it, "id")));
+        section(
+            &mut out,
+            "Requests",
+            requests.iter().map(item_line).collect(),
+        );
+    }
     if o.review {
         shown.extend(review.iter().map(|it| s(it, "id")));
         section(&mut out, "Review", review.iter().map(item_line).collect());
@@ -1656,8 +1946,8 @@ fn item_full_with(it: &Value, parallel_note: Option<&str>) -> String {
 /// `tracker_next`'s text: a header saying what was picked and where the batch ends,
 /// each picked item in full, then the `Not shown:` footer.
 ///
-/// The walk goes down the queue (review, blocked and deferred items are not in it, so
-/// none of them holds a gate), takes the first `n`
+/// The walk goes down the queue (requests, review, blocked and deferred items are not
+/// in it, so none of them holds a gate), takes the first `n`
 /// pending items of the wanted type, passes over the rest (in progress, failed, other
 /// types) and stops at the first gate not already in progress. That gate is itself the
 /// next job, and is returned, only when nothing at all is queued above it.
@@ -1678,6 +1968,11 @@ fn render_next(v: &Value, n: usize, ty: Option<&str>) -> String {
     let queue = arr(v, "queue");
     let mut below: &[Value] = &[];
     for (at, it) in queue.iter().enumerate() {
+        // Never a request (rag-t0044): the server lists them apart; a stray
+        // one is neither offered nor counted.
+        if s(it, "type") == "request" {
+            continue;
+        }
         if is_gate(it) {
             if ends_batch(it) {
                 gate = Some(it);
@@ -1728,8 +2023,8 @@ fn render_next(v: &Value, n: usize, ty: Option<&str>) -> String {
                 picked.len(),
                 plural(
                     eligible,
-                    &format!("dispatchable {kind}item"),
-                    &format!("dispatchable {kind}items")
+                    &format!("dispatchable {kind}ticket"),
+                    &format!("dispatchable {kind}tickets")
                 ),
             ));
         }
@@ -1787,8 +2082,8 @@ fn render_next(v: &Value, n: usize, ty: Option<&str>) -> String {
     let parallel_items = |k: usize| {
         plural(
             k,
-            &format!("parallel {kind}item"),
-            &format!("parallel {kind}items"),
+            &format!("parallel {kind}ticket"),
+            &format!("parallel {kind}tickets"),
         )
     };
     if !parallel.is_empty() {
@@ -1912,18 +2207,201 @@ fn render_diff(v: &Value) -> String {
     )
 }
 
-/// A write's answer: the record as the server returned it, but with only the event
-/// this write appended (`event`) instead of the whole history, which grows with
-/// every write and is one `tracker_get` away.
-fn write_result(mut v: Value) -> String {
-    if let Some(obj) = v.as_object_mut() {
-        if let Some(Value::Array(events)) = obj.remove("events") {
-            if let Some(last) = events.into_iter().last() {
-                obj.insert("event".into(), last);
+/// The name a write reply gives the record the server returned: an item's id,
+/// a document's id, `spec:<slug>`, `milestone:<slug>/<code>` or
+/// `concept:<slug>`, and its kind for [`describe_changes`].
+fn record_of(v: &Value) -> (String, TargetKind) {
+    let has = |k: &str| v.get(k).is_some();
+    if has("status") && has("type") {
+        (s(v, "id").to_string(), TargetKind::Item)
+    } else if has("revision") && has("path") && has("id") {
+        (s(v, "id").to_string(), TargetKind::Document)
+    } else if has("code") && has("spec") {
+        (
+            format!("milestone:{}/{}", s(v, "spec"), s(v, "code")),
+            TargetKind::Milestone,
+        )
+    } else if has("milestones") {
+        (format!("spec:{}", s(v, "slug")), TargetKind::Spec)
+    } else {
+        (format!("concept:{}", s(v, "slug")), TargetKind::Concept)
+    }
+}
+
+/// `(ubu-d0007 specs/audio/master.md)`: where a record's document is.
+fn doc_of(v: &Value) -> String {
+    format!("({} {})", s(v, "doc_id"), s(v, "path"))
+}
+
+/// A write's answer as one line (rag-t0039): `ok`, the record, what changed
+/// from → to, and the event id, e.g. `ok ubu-t0042 status: in_progress → done
+/// (#13950)`. A create names what it made and where (`ok created ubu-t0042
+/// [dev] "Title" after ubu-t0041 (#13951)`, a spec its document and its
+/// milestones'); a note reads `note`. The record is one `tracker_get` away;
+/// the reply used to be the whole record as JSON, some 2.5k characters.
+fn write_line(v: &Value) -> String {
+    if let Some(acked) = v.get("acknowledged").and_then(Value::as_array) {
+        let ids: Vec<&str> = acked.iter().filter_map(Value::as_str).collect();
+        return if ids.is_empty() {
+            format!("ok {}: nothing to acknowledge", s(v, "project"))
+        } else {
+            format!(
+                "ok {}: acknowledged {}: {}",
+                s(v, "project"),
+                plural(ids.len(), "done ticket", "done tickets"),
+                ids.join(", ")
+            )
+        };
+    }
+    let (label, target_kind) = record_of(v);
+    let event = arr(v, "events").last();
+    let tag = event
+        .and_then(|e| e.get("event_id"))
+        .and_then(Value::as_i64)
+        .map(|id| format!(" (#{id})"))
+        .unwrap_or_default();
+    let kind = event
+        .map(|e| s(e, "kind"))
+        .unwrap_or("")
+        .parse::<EventKind>()
+        .ok();
+    let what = match (kind, target_kind) {
+        (Some(EventKind::Create), TargetKind::Item) => {
+            let place = match (v.get("prev_id"), v.get("next_id")) {
+                (Some(Value::String(p)), _) => format!(" after {p}"),
+                (Some(Value::Null), Some(Value::String(_))) => " at the top".to_string(),
+                _ => String::new(),
+            };
+            let ty = if s(v, "type") == "gate" {
+                gate_label(v)
+            } else {
+                s(v, "type").to_string()
+            };
+            return format!(
+                "ok created {label} [{ty}] \"{}\"{place}{tag}",
+                s(v, "title")
+            );
+        }
+        (Some(EventKind::Create), TargetKind::Document) => {
+            return format!(
+                "ok created {label} {} r{}{tag}",
+                s(v, "path"),
+                v.get("revision").and_then(Value::as_i64).unwrap_or(0)
+            );
+        }
+        (Some(EventKind::Create), TargetKind::Spec) => {
+            let mut out = format!("ok created {label} {}", doc_of(v));
+            let ms: Vec<String> = arr(v, "milestones")
+                .iter()
+                .map(|m| format!("milestone:{}/{} {}", s(m, "spec"), s(m, "code"), doc_of(m)))
+                .collect();
+            if !ms.is_empty() {
+                out.push_str(&format!("; {}", ms.join(", ")));
+            }
+            return format!("{out}{tag}");
+        }
+        (Some(EventKind::Create), _) => {
+            return format!("ok created {label} {}{tag}", doc_of(v));
+        }
+        (Some(EventKind::Note), _) => "note".to_string(),
+        (Some(k), _) => {
+            let e = event.expect("a kind comes from an event");
+            let said = describe_changes(
+                k,
+                target_kind,
+                e.get("fields").unwrap_or(&Value::Null),
+                e.get("before").filter(|b| !b.is_null()),
+            );
+            if said.is_empty() {
+                k.to_string()
+            } else {
+                said.join("; ")
+            }
+        }
+        (None, _) => "written".to_string(),
+    };
+    format!("ok {label} {what}{tag}")
+}
+
+/// A record read's history cut to what was asked (rag-t0039): none (the
+/// `events` key goes), all, or the last `n`, with `events_omitted` counting
+/// the older ones left out.
+fn trim_history(v: &mut Value, history: History) {
+    let Some(obj) = v.as_object_mut() else {
+        return;
+    };
+    match history {
+        History::All => {}
+        History::None => {
+            obj.remove("events");
+        }
+        History::Last(n) => {
+            if let Some(Value::Array(events)) = obj.get_mut("events") {
+                let omitted = events.len().saturating_sub(n);
+                if omitted > 0 {
+                    events.drain(..omitted);
+                    obj.insert("events_omitted".into(), json!(omitted));
+                }
             }
         }
     }
-    v.to_string()
+}
+
+/// A tool's input schema with what an agent need not read taken out
+/// (rag-t0039): the `$schema` and `title` keywords, `null` in an optional
+/// field's type (an absent field is the default), and the `format` and
+/// `minimum: 0` schemars adds to an unsigned integer. Only keyword values are
+/// touched (a `title` *property* is an object, not a string), so the schema
+/// still describes exactly what the tool takes.
+fn compact_schema(v: &mut Value) {
+    match v {
+        Value::Object(m) => {
+            for k in ["$schema", "title", "format"] {
+                if m.get(k).is_some_and(Value::is_string) {
+                    m.remove(k);
+                }
+            }
+            if m.get("minimum").and_then(Value::as_i64) == Some(0) {
+                m.remove("minimum");
+            }
+            if let Some(Value::Array(types)) = m.get("type") {
+                let kept: Vec<Value> = types
+                    .iter()
+                    .filter(|t| t.as_str() != Some("null"))
+                    .cloned()
+                    .collect();
+                m.insert(
+                    "type".into(),
+                    match kept.as_slice() {
+                        [one] => one.clone(),
+                        _ => Value::Array(kept),
+                    },
+                );
+            }
+            // `Option<Struct>`: anyOf [the struct, null] is the struct.
+            if let Some(Value::Array(any)) = m.get("anyOf") {
+                let kept: Vec<Value> = any
+                    .iter()
+                    .filter(|t| t.get("type").and_then(Value::as_str) != Some("null"))
+                    .cloned()
+                    .collect();
+                if let ([one], 2) = (kept.as_slice(), any.len()) {
+                    let one = one.clone();
+                    m.remove("anyOf");
+                    if let Value::Object(inner) = one {
+                        for (k, val) in inner {
+                            m.entry(k).or_insert(val);
+                        }
+                    }
+                }
+            }
+            for val in m.values_mut() {
+                compact_schema(val);
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(compact_schema),
+        _ => {}
+    }
 }
 
 fn approval_tag(v: &Value) -> String {
@@ -1937,10 +2415,11 @@ fn render_list(what: &str, v: &Value) -> String {
             .map(|p| {
                 let n = |k: &str| p.get(k).and_then(Value::as_i64).unwrap_or(0);
                 format!(
-                    "{} · {} in review · {} in the queue · {} blocked · {} deferred · {} done not acknowledged",
+                    "{} · {} · {} in review · {} in the queue · {} blocked · {} deferred · {} done not acknowledged",
                     s(p, "name"),
+                    plural(n("requests") as usize, "request", "requests"),
                     n("review"),
-                    n("queued") - n("blocked") - n("deferred") - n("review"),
+                    n("queued") - n("requests") - n("blocked") - n("deferred") - n("review"),
                     n("blocked"),
                     n("deferred"),
                     n("done_unacknowledged")
@@ -1955,7 +2434,7 @@ fn render_list(what: &str, v: &Value) -> String {
                 format!(
                     "{} · {} · {} queued",
                     s(l, "label"),
-                    plural(n("count") as usize, "item", "items"),
+                    plural(n("count") as usize, "ticket", "tickets"),
                     n("queued")
                 )
             })
@@ -2077,6 +2556,29 @@ impl TrackerServer {
         })
     }
 
+    /// `tracker_create` and `tracker_create_record`: read any `body_path`, then
+    /// send the create.
+    async fn create(&self, mut args: TrackerCreateArgs) -> Result<CallToolResult, McpError> {
+        inline_body(self.transport, &mut args.body, &mut args.body_path).await?;
+        for m in args.milestones.iter_mut().flatten() {
+            inline_body(self.transport, &mut m.body, &mut m.body_path).await?;
+        }
+        let project = resolve_project(args.project.clone());
+        let who = Author::resolve(args.agent.clone());
+        let req = create_req(&args, project.as_deref(), &who).map_err(bad)?;
+        let v = self.call(req).await?;
+        Ok(text(write_line(&v)))
+    }
+
+    /// `tracker_update` and `tracker_update_record`.
+    async fn update(&self, args: TrackerUpdateArgs) -> Result<CallToolResult, McpError> {
+        let project = resolve_project(args.project.clone());
+        let who = Author::resolve(args.agent.clone());
+        let req = update_req(&args, project.as_deref(), &who).map_err(bad)?;
+        let v = self.call(req).await?;
+        Ok(text(write_line(&v)))
+    }
+
     /// The id of the document a reference names (a record's reference reads the
     /// record for its `doc_id`; a path reads the document for its id).
     async fn doc_id(&self, target: &Target, project: Option<&str>) -> Result<String, McpError> {
@@ -2094,7 +2596,7 @@ impl TrackerServer {
                     .await?;
                 id_of(&v, "id")
             }
-            Target::Item(_) => Err(bad("an item is not a document: read it with tracker_get")),
+            Target::Item(_) => Err(bad("a ticket is not a document: read it with tracker_get")),
             _ => {
                 let v = self
                     .call(record_get_req(target, project, false).map_err(bad)?)
@@ -2108,35 +2610,24 @@ impl TrackerServer {
 #[tool_router]
 impl TrackerServer {
     pub fn new(http: reqwest::Client, base_url: &str, transport: Transport) -> Self {
+        let mut tool_router = Self::tool_router();
+        for route in tool_router.map.values_mut() {
+            let mut schema = Value::Object((*route.attr.input_schema).clone());
+            compact_schema(&mut schema);
+            if let Value::Object(m) = schema {
+                route.attr.input_schema = std::sync::Arc::new(m);
+            }
+        }
         Self {
             http,
             base: base_url.trim_end_matches('/').to_string(),
             transport,
-            tool_router: Self::tool_router(),
+            tool_router,
         }
     }
 
     #[tool(
-        description = "Read a project's work queue as compact text: a header of totals, then \
-        the items in review first (status review: work waiting on the owner to confirm or \
-        review it; each keeps its place in the queue), then \
-        the queue in order (top first) with gates drawn as markers (`── ubu-t0043 gate: \
-        standard · release ──`), then the blocked items, then the deferred items (work put \
-        aside on purpose, blocked or not; each keeps its place in the queue), then a `Not \
-        shown:` line counting every item not listed (`Not shown: 38 pending · 2 gates · 5 done \
-        not acknowledged`; blocked counts first, then gates, then status, then deferred, then \
-        review). One \
-        line an item: `● ubu-t0042 [dev] title · in progress · agent: dev-3 · [Physics, Biomes] · \
-        approval: agent` (● in progress, ○ pending, ✗ failed, ◌ deferred, ◆ review, ✓ done; the \
-        item's labels in brackets when it has any; approval shown unless unapproved; `parallel` on an item that may start before the gates above it and lands \
-        after them; a blocked item's reason, and with reason dependency `waits on ubu-t0040`). \
-        Bounded by default: `limit` queue rows (default 20), `until_gate` for only \
-        the batch up to the next gate (that gate included; a gate already in progress is passed \
-        over), `sections` (review, done, queue, blocked, deferred; default review, queue, blocked \
-        and deferred, so the done items are only counted; listed, done reads oldest first, \
-        the latest finished last, as the dashboard shows it). A cut queue says so (`… 18 more queued (limit 20)`). To dispatch, \
-        `tracker_next` is one call. Read it at the start of a session: the tracker, not your \
-        scratch files, is the source of truth for the queue. Any agent may read."
+        description = "A project's dashboard as text: requests, review, the queue (gates as markers), blocked, deferred, then a Not shown: count. For status reports; to dispatch, tracker_next."
     )]
     async fn tracker_queue(
         &self,
@@ -2151,22 +2642,7 @@ impl TrackerServer {
     }
 
     #[tool(
-        description = "The next work to dispatch, each item in full (its queue line, then its \
-        body between `-----` rules), so a dispatch is one call: the first `n` (default 1) \
-        pending, unblocked items in queue order (never a deferred or review one, and neither \
-        holds a gate, as a blocked one does not), passing over items in \
-        progress, failed ones \
-        and, with `type`, items of other types. The walk stops at the first gate not already \
-        in progress: the items above it are the batch it gates. That gate is itself the next \
-        job, and is returned, only when nothing is queued above it (a running gate counts). \
-        With nothing to dispatch it says why (the gate waits on work in progress or a failed \
-        item, or the queue is empty). Then, up to `n` in all (the batch first), it lists \
-        PARALLEL items found below the gate (pending, unblocked, marked parallel, in queue \
-        order, the `type` filter applying), each marked `parallel: lands after gate \
-        ubu-t0043`, the nearest gate above it: dispatch it now, but apply its work only once \
-        that gate has passed. Ends with the `Not shown:` line tracker_queue has. Any \
-        agent may read; dispatching it (status in_progress, assignee) is a queue write, for \
-        the manager, with tracker_update."
+        description = "The next n dispatchable tickets in full: pending, unblocked, in queue order, stopping at the first gate not in progress (itself returned when nothing is above it); then parallel tickets below it, which may start now and land after that gate. Read it after each job."
     )]
     async fn tracker_next(
         &self,
@@ -2181,13 +2657,7 @@ impl TrackerServer {
     }
 
     #[tool(
-        description = "List a project's records, one line each: what = projects (every \
-        project with its counts), items (every item, done and cancelled included; filter \
-        status, label), labels (the project's label vocabulary with how many items carry \
-        each: reuse these when labelling), specs (each spec with its milestones and their document paths), concepts \
-        (filter state), docs (every document with its id, path and revision; filter kind, \
-        prefix) or attachments. Use it to find what tracker_get and tracker_doc_get take. \
-        Any agent may read."
+        description = "One line per record: projects, items, labels, specs (with milestones), concepts, docs or attachments."
     )]
     async fn tracker_list(
         &self,
@@ -2202,23 +2672,19 @@ impl TrackerServer {
     }
 
     #[tool(
-        description = "Read one record with its links and history (events, oldest first; \
-        history=false for the record alone): an item (ubu-t0042), spec:<slug> (with its \
-        milestones), milestone:<slug>/<code>, concept:<slug>, or a document by id (ubu-d0007) \
-        or path (specs/audio/master.md; a renamed path redirects). Records come back as JSON; \
-        a document as text with the revision to edit against. A reference to specs/… or \
-        concepts/… in a repository or the ledger now lives here: resolve it with this tool or \
-        tracker_doc_get. Any agent may read."
+        description = "One record as JSON (a document as text with the revision to edit against), without its history unless asked."
     )]
     async fn tracker_get(
         &self,
         Parameters(args): Parameters<TrackerGetArgs>,
     ) -> Result<CallToolResult, McpError> {
         let target = parse_target(&args.id).map_err(bad)?;
+        let history = history_of(args.history.as_ref()).map_err(bad)?;
         let project = resolve_project(args.project);
-        let history = args.history.unwrap_or(true);
-        let req = record_get_req(&target, project.as_deref(), history).map_err(bad)?;
-        let v = self.call(req).await?;
+        let req =
+            record_get_req(&target, project.as_deref(), history != History::None).map_err(bad)?;
+        let mut v = self.call(req).await?;
+        trim_history(&mut v, history);
         Ok(text(match target {
             Target::Doc(_) | Target::Path(_) => render_doc(&v),
             _ => v.to_string(),
@@ -2226,90 +2692,47 @@ impl TrackerServer {
     }
 
     #[tool(
-        description = "Create a queue item, a gate, a spec (with its master document at \
-        specs/<slug>/master.md and optional milestones at specs/<slug>/<code>-<name>.md), a \
-        milestone on an existing spec, a concept (its document at concepts/<slug>.md) or a \
-        free-standing document (kind=doc, at a path). WHO MAY CALL: creating queue items and \
-        gates is a queue write, for the agent working with the owner (in practice the \
-        manager) only; a sub-agent never adds to the queue. Specs, milestones, concepts and \
-        documents are document content, which any agent may create when its task says so. A \
-        new item joins the bottom of the queue unless before/after/top/bottom says otherwise; \
-        a gate needs an intensity (quick, standard, full) and carries no version number. \
-        Fields that do not apply to the kind are refused. A long body (a repository file \
-        being moved in) is better passed as `body_path`, a local file the stdio server reads, \
-        than pasted as `body`. A note is optional; give one when the reason is not obvious. Set \
-        approval=owner only when the owner approved (in conversation counts), and say where in \
-        the note. Pass `agent` (your model name) on every write: absent, it \
-        is recorded as Unknown."
+        description = "Create a ticket, or a gate (type gate, with intensity). It joins the bottom unless placed. Manager only."
     )]
     async fn tracker_create(
         &self,
-        Parameters(mut args): Parameters<TrackerCreateArgs>,
+        Parameters(args): Parameters<CreateItemArgs>,
     ) -> Result<CallToolResult, McpError> {
-        inline_body(self.transport, &mut args.body, &mut args.body_path).await?;
-        for m in args.milestones.iter_mut().flatten() {
-            inline_body(self.transport, &mut m.body, &mut m.body_path).await?;
-        }
-        let project = resolve_project(args.project.clone());
-        let who = Author::resolve(args.agent.clone());
-        let req = create_req(&args, project.as_deref(), &who).map_err(bad)?;
-        let v = self.call(req).await?;
-        Ok(text(write_result(v)))
+        self.create(args.try_into().map_err(bad)?).await
     }
 
     #[tool(
-        description = "Change an item (ubu-t0042), a spec (spec:<slug>), a milestone \
-        (milestone:<slug>/<code>) or a concept (concept:<slug>): status, block or unblock \
-        (blocked + block_reason redesign|review|dependency), approval, assignee, \
-        title, body, links, labels, parallel, a gate's intensity and release flag, a record's state \
-        or a milestone's order. An item that waits on other items is blocked with reason \
-        dependency and depends_on (item ids of the same project): it unblocks itself, with a \
-        note, when the last of them is done, but not when one is cancelled or fails (unblock \
-        it then). An item marked parallel (any type but gate) may be started before the \
-        gates above it clear and still lands after them: tracker_next offers it. Labels \
-        (free-text subject tags such as Physics or Biomes) are set wholesale: send the full \
-        list. Reuse the project's existing labels (tracker_list what=labels); a label is \
-        matched case-insensitively and the project's casing wins. \
-        A note is optional with a change: without one the history records the change itself \
-        (\"Status: pending → done.\"), so give one when the reason is not obvious from the \
-        change. A note alone is recorded on the history (how a sub-agent reports progress on \
-        its task) and must not be blank. WHO MAY CALL: changing an \
-        item's status, block, approval, assignee or gate fields, and any spec, milestone or \
-        concept state or approval, is a queue write, for the agent working with the owner (in \
-        practice the manager) only. A sub-agent may only add a note to the task it was given. \
-        One MCP process serves a whole session, so this is not enforced: the `agent` recorded \
-        on the write shows who broke it — always pass `agent` (your model name); absent, it is \
-        recorded as Unknown. Status moves: pending <-> in_progress; pending or in_progress -> \
-        done or failed; any queued -> cancelled (how an item or gate is removed); done, failed \
-        or cancelled -> pending (a reopen; done and cancelled rejoin at the top); pending, \
-        in_progress or failed -> deferred (put aside on purpose: it keeps its place, is listed \
-        under Deferred and is never offered by tracker_next); deferred -> pending (a resume, in \
-        place), in_progress or done; pending, in_progress or failed -> review (work waiting on \
-        the owner to confirm or review it: it keeps its place, is listed first under Review \
-        and is never offered by tracker_next; there is no block reason approval, use this); \
-        review -> done (the owner confirmed), in_progress or pending (sent back). Approval: \
-        agent when an agent approves; ratified only from agent, when the owner confirms it; \
-        owner only when the owner approved (in conversation counts), the note saying where. \
-        Approval is a record, not a lock. Documents are changed with tracker_doc_edit."
+        description = "Create a spec (its master document, optional milestones), a milestone on a spec, a concept, or a free document (kind doc, at path)."
+    )]
+    async fn tracker_create_record(
+        &self,
+        Parameters(args): Parameters<CreateRecordArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.create(args.try_into().map_err(bad)?).await
+    }
+
+    #[tool(
+        description = "Change a ticket, or note on it: a note alone is how a sub-agent reports on its task; any other change is the manager's. A refused status move names the allowed ones."
     )]
     async fn tracker_update(
         &self,
-        Parameters(args): Parameters<TrackerUpdateArgs>,
+        Parameters(args): Parameters<UpdateItemArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let project = resolve_project(args.project.clone());
-        let who = Author::resolve(args.agent.clone());
-        let req = update_req(&args, project.as_deref(), &who).map_err(bad)?;
-        let v = self.call(req).await?;
-        Ok(text(write_result(v)))
+        self.update(args.try_into().map_err(bad)?).await
     }
 
     #[tool(
-        description = "Move a queued item or gate to just before or after another item, or to \
-        the top or bottom of the queue (exactly one of before, after, top, bottom). Positions \
-        are relative, never numbers, so a move cannot go stale. To place it between two rows \
-        tracker_queue shows, use after=<the upper one>. WHO MAY CALL: a queue write, for the \
-        agent working with the owner (in practice the manager) only. Pass `agent` (your model \
-        name); absent, it is recorded as Unknown."
+        description = "Change a spec, milestone or concept: title, state, approval, links (concept), order (milestone); or note on it."
+    )]
+    async fn tracker_update_record(
+        &self,
+        Parameters(args): Parameters<UpdateRecordArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.update(args.try_into().map_err(bad)?).await
+    }
+
+    #[tool(
+        description = "Move a queued ticket just before or after another, or to the top or bottom (exactly one). Manager only."
     )]
     async fn tracker_move(
         &self,
@@ -2317,18 +2740,11 @@ impl TrackerServer {
     ) -> Result<CallToolResult, McpError> {
         let who = Author::resolve(args.agent.clone());
         let v = self.call(move_req(&args, &who).map_err(bad)?).await?;
-        Ok(text(write_result(v)))
+        Ok(text(write_line(&v)))
     }
 
     #[tool(
-        description = "Read a document (a spec's master, a milestone, a concept or a free \
-        document) by id (ubu-d0007), path (specs/audio/m03-music.md; a renamed path redirects) \
-        or its record (spec:<slug>, milestone:<slug>/<code>, concept:<slug>). view=body \
-        (default) gives the text and the REVISION TO EDIT AGAINST (pass it as base_revision to \
-        tracker_doc_edit), or an older body with revision=N; history=true adds its events. \
-        view=revisions lists every revision (who, when, message); view=diff gives a unified \
-        diff (from, to; default the last change). Attachments appear as ![name](att:<hash>): \
-        fetch them with tracker_attachment_get. Any agent may read."
+        description = "Read a document by id, path or its record, with the revision to edit against; or view its revisions or a diff."
     )]
     async fn tracker_doc_get(
         &self,
@@ -2385,15 +2801,7 @@ impl TrackerServer {
     }
 
     #[tool(
-        description = "Edit a document against the revision you read: exact-text replacements \
-        (each `old` must occur exactly once, applied in order, all or nothing), or a whole new \
-        body (`body`, or `body_path`: a local file the stdio server reads), or restore an older revision as a new one; or rename it (new_path, the old path \
-        keeps redirecting; new_title). Give exactly one of those. base_revision is REQUIRED \
-        (except for a rename): the revision tracker_doc_get showed. If the document changed \
-        since, the edit is REFUSED with the current revision (never merged): re-read and edit \
-        again. Add a one-line message. WHO MAY CALL: any agent may edit document content \
-        (specs, milestones, concepts, documents) when its task says so. Pass `agent` (your \
-        model name); absent, it is recorded as Unknown."
+        description = "Edit a document against base_revision: replacements, a whole body, restore_revision, or a rename (new_path, new_title); exactly one. A stale base is refused: re-read and edit again."
     )]
     async fn tracker_doc_edit(
         &self,
@@ -2410,21 +2818,21 @@ impl TrackerServer {
             .call(doc_edit_req(&id, &args, &who).map_err(bad)?)
             .await?;
         let rev = v.get("revision").and_then(Value::as_i64).unwrap_or(0);
+        let tag = arr(&v, "events")
+            .last()
+            .and_then(|e| e.get("event_id"))
+            .and_then(Value::as_i64)
+            .map(|id| format!(" (#{id})"))
+            .unwrap_or_default();
         Ok(text(format!(
-            "{} · {} · {} is now at revision {rev}; edit next with base_revision {rev}.",
+            "ok {} {} r{rev}: edit next with base_revision {rev}{tag}",
             s(&v, "id"),
             s(&v, "path"),
-            s(&v, "title")
         )))
     }
 
     #[tool(
-        description = "Upload a file (an image, a PDF, any file) to a project's attachments and \
-        get its reference, att:<hash>, to embed in a document as ![name](att:<hash>) with \
-        tracker_doc_edit. Over the local (stdio) server pass `path`, a local file (at most 50 \
-        MB). Over the HTTP gateway, which cannot read your disk, pass `base64` and `name` (at \
-        most 10 MB). The same bytes are stored once. WHO MAY CALL: any agent, for a document \
-        it may edit. Pass `agent` (your model name)."
+        description = "Upload a file and get att:<hash>, to embed in a document as ![name](att:<hash>)."
     )]
     async fn tracker_attach(
         &self,
@@ -2523,18 +2931,18 @@ impl TrackerServer {
             McpError::internal_error(format!("rag-serve answered with invalid JSON: {e}"), None)
         })?;
         Ok(text(format!(
-            "{v}\nEmbed it in a document as ![{}]({})",
+            "ok {} {} {} {} B: embed as ![{}]({})",
+            s(&v, "ref"),
+            s(&v, "name"),
+            s(&v, "media_type"),
+            v.get("size").and_then(Value::as_i64).unwrap_or(0),
             s(&v, "name"),
             s(&v, "ref")
         )))
     }
 
     #[tool(
-        description = "Fetch an attachment by its att:<hash> reference (or sha256). Over the \
-        local (stdio) server it is written to a local file (out_path, or a file under the \
-        system temp directory) and the path is returned: Read that file to view an image. \
-        Over the HTTP gateway an image comes back as an image, any other file as base64 (at \
-        most 10 MB). Any agent may read."
+        description = "Fetch an attachment: over stdio it is written to a local file to Read; over the gateway it comes back inline."
     )]
     async fn tracker_attachment_get(
         &self,
@@ -2613,12 +3021,7 @@ impl TrackerServer {
         }
     }
 
-    #[tool(
-        description = "Acknowledge every done item in a project: they leave the dashboard's \
-        Done section (they stay in history and search). WHO MAY CALL: the agent working with \
-        the owner (in practice the manager), normally when the owner asks. Pass `agent` (your \
-        model name)."
-    )]
+    #[tool(description = "Acknowledge every done ticket of a project, when the owner asks.")]
     async fn tracker_ack_done(
         &self,
         Parameters(args): Parameters<TrackerAckDoneArgs>,
@@ -2628,34 +3031,15 @@ impl TrackerServer {
         let v = self
             .call(ack_req(project.as_deref(), &who).map_err(bad)?)
             .await?;
-        Ok(text(write_result(v)))
+        Ok(text(write_line(&v)))
     }
 }
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for TrackerServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "The project tracker: each project's work queue (items of type dev, design, recon, \
-            analysis and gate), its specs with their milestones, and its concept documents. It \
-            is the source of truth for all three: specs/… and concepts/… paths referred to in \
-            repositories and the ledger live here (read them with `tracker_doc_get`). Start with \
-            `tracker_queue` (bounded: `limit`, `until_gate`, `sections`); `tracker_next` gives the \
-            next item to dispatch in full, and any `parallel` items below the gate that may \
-            start now and land after it. Work waiting on other items is blocked with reason \
-            `dependency` and `depends_on`, and unblocks itself when they are done. WHO WRITES: queue writes (creating items and gates, status, block, \
-            approval, assignee, moves, acknowledging done) are for the agent working with the \
-            owner, in practice the manager. A sub-agent reads anything, edits document content \
-            (`tracker_doc_edit`, against the revision it read) and adds notes to its own task \
-            (`tracker_update` with a note), and nothing else. A note is optional on a status \
-            change, block or approval: give one when the reason is not obvious from the change. \
-            `owner` approval is recorded only when the owner gave it. Always pass `agent` (your model name): absent, writes are recorded as \
-            Unknown. To find work by meaning rather than by id or path (has this been planned \
-            or specced before?), call `search_corpus` with corpus=\"tracker\" on the corpus \
-            server: it searches every project's documents and items, and each hit cites \
-            `<project>:<path>@r<revision>` or the item id. Decisions and incidents go in the \
-            separate ledger (`ledger_*`).",
-        )
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_instructions(INSTRUCTIONS)
     }
 }
 
