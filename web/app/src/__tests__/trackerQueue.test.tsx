@@ -1355,8 +1355,9 @@ describe('review (rag-t0024)', () => {
       expect(dot).toHaveAttribute('data-state', 'review');
       expect(dot).toHaveTextContent('Review');
       expect(dot).not.toHaveTextContent('Failed');
-      expect(within(row).getByRole('button', { name: /^Confirm demo-t/ })).toBeInTheDocument();
-      expect(within(row).getByRole('button', { name: /^Send back demo-t/ })).toBeInTheDocument();
+      // Green and amber, as on the ticket page.
+      expect(within(row).getByRole('button', { name: /^Confirm demo-t/ })).toHaveClass('good');
+      expect(within(row).getByRole('button', { name: /^Send back demo-t/ })).toHaveClass('caution');
     }
     // In review and blocked: shown under Review, its block and note beside it.
     expect(within(rows[1]!).getByText('Needs redesign')).toBeInTheDocument();

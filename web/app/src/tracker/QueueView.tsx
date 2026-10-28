@@ -552,7 +552,7 @@ function Dashboard({ project }: { project: string }) {
                     />
                     <Button
                       size="sm"
-                      variant="accent"
+                      variant="good"
                       aria-label={`Confirm ${item.id}`}
                       onClick={() => setConfirming(item)}
                     >
@@ -561,6 +561,7 @@ function Dashboard({ project }: { project: string }) {
                     </Button>
                     <Button
                       size="sm"
+                      variant="caution"
                       aria-label={`Send back ${item.id}`}
                       onClick={() => setSendingBack(item)}
                     >
