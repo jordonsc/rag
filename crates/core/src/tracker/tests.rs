@@ -674,6 +674,8 @@ async fn disallowed_transitions_are_refused() {
         (Review, InProgress),
         (Review, Pending),
         (Review, Cancelled),
+        // Owner, 2026-10-28: a review ticket may be deferred.
+        (Review, Deferred),
     ];
     for from in ItemStatus::ALL {
         for to in ItemStatus::ALL {
@@ -939,17 +941,23 @@ async fn review_keeps_its_place_and_is_confirmed_or_sent_back() {
     assert_eq!(rec.item.status, ItemStatus::Done);
     assert!(rec.item.done_at.is_some() && !rec.item.blocked);
     assert_eq!(sound(s, "p").await, ids(&[&b, &a, &d]));
-    // Negative: review -> failed and review -> deferred are refused, and
-    // deferred, done or cancelled -> review.
+    // Defer (owner, 2026-10-28): in place, and resumed in place.
     set_status(s, &a, ItemStatus::Review).await;
-    for to in [ItemStatus::Failed, ItemStatus::Deferred] {
-        let e = s.update_item(&a, status(to, ""), &mcp()).await.unwrap_err();
-        assert!(
-            e.to_string()
-                .contains(&format!("cannot go from review to {to}")),
-            "{e}"
-        );
-    }
+    set_status(s, &a, ItemStatus::Deferred).await;
+    assert_eq!(sound(s, "p").await, ids(&[&b, &a, &d]));
+    set_status(s, &a, ItemStatus::Pending).await;
+    assert_eq!(sound(s, "p").await, ids(&[&b, &a, &d]));
+    // Negative: review -> failed is refused, and deferred, done or
+    // cancelled -> review.
+    set_status(s, &a, ItemStatus::Review).await;
+    let e = s
+        .update_item(&a, status(ItemStatus::Failed, ""), &mcp())
+        .await
+        .unwrap_err();
+    assert!(
+        e.to_string().contains("cannot go from review to failed"),
+        "{e}"
+    );
     for from in [&d, &c] {
         let e = s
             .update_item(from, status(ItemStatus::Review, ""), &mcp())

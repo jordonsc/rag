@@ -386,3 +386,11 @@ view, the counts, the default and the explicit approval, `became` in order, done
 `request_writes_are_refused_where_they_do_not_belong`, and over the socket
 `a_web_request_reaches_the_default_feed_saying_request` (the frame; the `became` link event stays out of the
 default feed).
+
+### Addendum, 2026-10-28: a review ticket may be deferred
+
+The owner could not defer a ticket in review from its page, and asked for it. `review` → `deferred` is now allowed
+(`items::transition_allowed`); the ticket keeps its place, as every move between queued statuses does. `deferred` →
+`review` and `review` → `failed` stay refused. The web's `TRANSITIONS` table offers it, so the ticket page shows
+*Defer* beside *Confirm* and *Send back*. Tests: the exhaustive table in `disallowed_transitions_are_refused`,
+`review_keeps_its_place_and_is_confirmed_or_sent_back` (defer and resume in place), and `trackerItem.test.tsx`.

@@ -481,8 +481,8 @@ describe('the item page', () => {
     expect(dot).toHaveAttribute('data-state', 'review');
     expect(dot).toHaveTextContent('Review');
     expect(dot).not.toHaveTextContent('Failed');
-    // A review item is not deferred from its page.
-    expect(screen.queryByRole('button', { name: 'Defer' })).toBeNull();
+    // A review item may be deferred from its page (owner, 2026-10-28).
+    expect(screen.getByRole('button', { name: 'Defer' })).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /Status…/ }));
     const statusDialog = screen.getByRole('dialog', { name: 'Change the status' });
@@ -491,7 +491,7 @@ describe('the item page', () => {
       within(select)
         .getAllByRole('option')
         .map((o) => o.getAttribute('value')),
-    ).toEqual(['done', 'in_progress', 'pending', 'cancelled']);
+    ).toEqual(['done', 'in_progress', 'pending', 'deferred', 'cancelled']);
     await user.click(within(statusDialog).getByRole('button', { name: 'Cancel' }));
 
     await user.click(screen.getByRole('button', { name: 'Confirm' }));

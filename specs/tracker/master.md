@@ -74,7 +74,7 @@ Design
     `pending`, `in_progress` or `failed`, and leaves for `pending` (a resume, in place), `in_progress`, `done` or
     `cancelled`); *`review` added by the owner, 2026-10-27, rag-t0024*: work waiting on the owner to confirm or
     review it. It is reached from `pending`, `in_progress` or `failed`, and leaves for `done` (confirmed),
-    `in_progress` or `pending` (sent back, in place) or `cancelled`. Like `deferred` it is queued and keeps its
+    `in_progress` or `pending` (sent back, in place), `deferred` (*owner, 2026-10-28*) or `cancelled`. Like `deferred` it is queued and keeps its
     place; `tracker_next` never offers it, and like a blocked ticket it is outside `tracker_next`'s walk, so it does
     not hold the gate below it (D12). It is independent of the blocked flag, and wins over it in the queue view;
   * a **blocked** flag, with a **reason** (`redesign`, `review` or `dependency`) and an optional note,

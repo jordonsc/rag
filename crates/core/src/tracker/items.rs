@@ -45,7 +45,9 @@ pub(super) const QUEUED_IN: &str = "('pending', 'in_progress', 'failed', 'deferr
 ///   2026-10-27, rag-t0017). A deferred item stays in the list;
 /// * `pending`, `in_progress` or `failed` → `review`, and `review` → `done`
 ///   (confirmed), `in_progress` or `pending` (sent back) (owner, 2026-10-27,
-///   rag-t0024). A review item stays in the list.
+///   rag-t0024). A review item stays in the list;
+/// * `review` → `deferred`, put aside without sending it back (owner,
+///   2026-10-28). `deferred` → `review` stays refused.
 pub fn transition_allowed(from: ItemStatus, to: ItemStatus) -> bool {
     use ItemStatus::*;
     matches!(
@@ -56,7 +58,7 @@ pub fn transition_allowed(from: ItemStatus, to: ItemStatus) -> bool {
             | (Pending | InProgress, Failed)
             | (Pending | InProgress | Failed | Deferred | Review, Cancelled)
             | (Done | Failed | Cancelled | Deferred | Review, Pending)
-            | (Pending | InProgress | Failed, Deferred)
+            | (Pending | InProgress | Failed | Review, Deferred)
             | (Deferred | Review, InProgress)
             | (Pending | InProgress | Failed, Review)
     )
@@ -970,9 +972,9 @@ impl TrackerStore {
             if !transition_allowed(item.status, to) {
                 return refused(format!(
                     "{id} cannot go from {} to {to} (allowed: pending <-> in_progress, pending|in_progress -> done|failed, \
-                     any queued -> cancelled, done|failed|cancelled -> pending, pending|in_progress|failed -> deferred, \
+                     any queued -> cancelled, done|failed|cancelled -> pending, pending|in_progress|failed|review -> deferred, \
                      deferred -> pending|in_progress|done, pending|in_progress|failed -> review, \
-                     review -> done|in_progress|pending)",
+                     review -> done|in_progress|pending|deferred)",
                     item.status
                 ));
             }

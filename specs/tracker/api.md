@@ -432,7 +432,7 @@ Every field optional; absent leaves it alone; a value equal to the current one i
 | `in_progress` | `pending`, `done`, `failed`, `deferred`, `review`, `cancelled` |
 | `failed` | `pending` (stays where it is in the queue), `deferred`, `review`, `cancelled` |
 | `deferred` | `pending` (a resume: stays where it is), `in_progress`, `done`, `cancelled` |
-| `review` | `done` (confirmed), `in_progress` or `pending` (sent back: stays where it is), `cancelled` |
+| `review` | `done` (confirmed), `in_progress` or `pending` (sent back: stays where it is), `deferred` (stays where it is), `cancelled` |
 | `done` | `pending` (a reopen: back into the queue **at the top**) |
 | `cancelled` | `pending` (a reopen: at the top) |
 
@@ -440,8 +440,8 @@ Every field optional; absent leaves it alone; a value equal to the current one i
 it in progress (the manager's change in m02; m01 refused it). `done` and `cancelled` take the ticket out of the queue
 and clear any block. Only a queued ticket can be blocked; a deferred ticket can be (and keeps its block when resumed).
 `deferred` (rag-t0017) never moves the ticket in the list; `deferred` → `failed` is refused (resume it first).
-`review` (rag-t0024) never moves the ticket either; `review` → `failed` and `review` → `deferred` are refused (send it
-back first), and so is `deferred` → `review`. A review ticket can be blocked, and keeps its block when sent back.
+`review` (rag-t0024) never moves the ticket either; `review` → `failed` is refused (send it back first), and so is
+`deferred` → `review`. `review` → `deferred` was refused too until the owner allowed it on 2026-10-28. A review ticket can be blocked, and keeps its block when sent back.
 Response: the updated Ticket with `events`.
 
 #### `POST /tracker/items/{id}/move`

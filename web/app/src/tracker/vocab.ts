@@ -138,7 +138,7 @@ const TRANSITIONS: Record<ItemStatus, readonly ItemStatus[]> = {
   in_progress: ['pending', 'done', 'failed', 'review', 'deferred', 'cancelled'],
   failed: ['pending', 'review', 'deferred', 'cancelled'],
   deferred: ['pending', 'in_progress', 'done', 'cancelled'],
-  review: ['done', 'in_progress', 'pending', 'cancelled'],
+  review: ['done', 'in_progress', 'pending', 'deferred', 'cancelled'],
   done: ['pending'],
   cancelled: ['pending'],
 };
