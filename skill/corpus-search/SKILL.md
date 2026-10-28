@@ -16,7 +16,7 @@ description: >-
 
 Retrieval over the whole local corpus, served by `rag-serve`: every indexed repo
 (`code`), the document library (`wiki`), the decision/incident ledger (`ledger`)
-and the project tracker's documents and work items (`tracker`). The full quality pipeline (embed → vector search → Voyage
+and the project tracker's documents and tickets (`tracker`). The full quality pipeline (embed → vector search → Voyage
 rerank) runs server-side; this skill just drives it and formats results.
 
 ## When to use it
@@ -41,12 +41,12 @@ python3 scripts/rag_search.py "<natural-language query>" [flags]
 Flags:
 - `--top-k N` — number of results (server default 8).
 - `--corpus code|wiki|ledger|tracker` — restrict to source, the document
-  library, the ledger's topics, or the tracker's documents and items.
+  library, the ledger's topics, or the tracker's documents and tickets.
 - `--repo <name>` — restrict to one repository, or the ledger's or tracker's
   project (exact name, e.g. `rag`).
 - `--language <lang>` — e.g. `rust`, `python`, `markdown`.
 - `--path-prefix <prefix>` — restrict to repo-relative paths under a prefix (a
-  tracker document's path; it leaves tracker items and ledger topics out).
+  tracker document's path; it leaves tracker tickets and ledger topics out).
 - `--no-rerank` — skip reranking (debugging / cost only; default is reranked).
 - `--json` — raw JSON if you need to post-process.
 - `--url <base>` — override the service URL (default `$RAG_SERVE_URL` →
@@ -87,10 +87,11 @@ Cite each the way it is printed:
 - **code / wiki**: **`repo`/`rel_path`:`start_line`-`end_line`** — the portable,
   openable provenance. Read the actual file at that range before relying on it;
   the chunk is a pointer, not the whole truth.
-- **ledger**: the **topic id** (`rag-0033`); fetch the whole topic with
+- **ledger**: the **topic id** (`rag-l0052`, or `rag-0033` for a topic minted
+  before the `l`); fetch the whole topic with
   `GET /ledger/<id>` (or the `ledger_get` MCP tool) before relying on it.
 - **tracker**: the hit's **citation** — `<project>:<path>@r<revision>` for a
-  document chunk, the item id (`rag-t0006`) for an item. Fetch an item with
+  document chunk, the ticket id (`rag-t0006`) for a ticket. Fetch a ticket with
   `GET /tracker/items/<id>` and a document with
   `GET /tracker/<project>/doc?path=<path>&revision=<n>` before relying on it.
 

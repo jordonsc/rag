@@ -373,11 +373,43 @@ impl LedgerStore {
                 }
             }
         }
+        self.backfill_move_seqs().await
+    }
+
+    /// Fill `old_repo`/`old_seq` on tombstones written before those columns
+    /// existed, by reading them back out of `old_topic_id`.
+    ///
+    /// Without them [`next_seq`] cannot see the retired number, and a repo whose
+    /// highest topic was moved away before the columns existed hands that number
+    /// out again: the live ledger did exactly this once (`js_web-0005` is both a
+    /// tombstone and a different, later topic). Idempotent: only NULL rows are
+    /// touched, and a row whose id does not parse (a blank-repo `-0001`) is left
+    /// as it is rather than guessed at.
+    async fn backfill_move_seqs(&self) -> Result<()> {
+        let rows: Vec<String> =
+            sqlx::query_scalar("SELECT old_topic_id FROM moves WHERE old_seq IS NULL")
+                .fetch_all(&self.pool)
+                .await?;
+        for old_id in rows {
+            let Some(parts) = parse_topic_id(&old_id) else {
+                continue;
+            };
+            sqlx::query(
+                "UPDATE moves SET old_repo = ?, old_seq = ? \
+                 WHERE old_topic_id = ? AND old_seq IS NULL",
+            )
+            .bind(parts.repo)
+            .bind(parts.seq)
+            .bind(&old_id)
+            .execute(&self.pool)
+            .await?;
+        }
         Ok(())
     }
 
-    /// Create a new topic. Allocates `{repo}-{seq}` atomically and records the
-    /// initial state as the first monologue event.
+    /// Create a new topic. Allocates `{repo}-l{seq:04}` atomically (see
+    /// [`format_topic_id`]) and records the initial state as the first monologue
+    /// event.
     pub async fn create_topic(&self, new: NewTopic) -> Result<Topic> {
         let now = now_iso();
         let status = new
@@ -387,7 +419,7 @@ impl LedgerStore {
 
         let mut tx = self.pool.begin().await?;
         let seq = next_seq(&mut tx, &new.repo).await?;
-        let topic_id = format!("{}-{:04}", new.repo, seq);
+        let topic_id = format_topic_id(&new.repo, seq);
 
         sqlx::query(
             "INSERT INTO topics (topic_id, seq, type, repo, title, summary, current_state, \
@@ -636,7 +668,7 @@ impl LedgerStore {
     }
 
     /// Move a topic to another project, minting a **brand-new id** (a fresh
-    /// `{target_repo}-{seq}`) and rewriting the topic, its whole monologue, and
+    /// `{target_repo}-l{seq:04}`) and rewriting the topic, its whole monologue, and
     /// every link (in both directions) onto it. The old id is deleted, so the
     /// reconciler purges its old RAG points and indexes the new id. A provenance
     /// note recording the move is appended to the relocated topic.
@@ -675,7 +707,7 @@ impl LedgerStore {
 
         // Allocate the next id in the destination repo (same rule as create).
         let seq = next_seq(&mut tx, target_repo).await?;
-        let new_id = format!("{target_repo}-{seq:04}");
+        let new_id = format_topic_id(target_repo, seq);
 
         // Insert the relocated topic first so the events/links FK to it is valid.
         // created_at is preserved (origin time); updated_at bumps to the move.
@@ -896,6 +928,62 @@ impl LedgerStore {
         let rows = q_builder.fetch_all(&self.pool).await?;
         rows.into_iter().map(TopicRowRaw::into_topic).collect()
     }
+}
+
+// ---- Topic ids --------------------------------------------------------------
+
+/// The letter between the hyphen and the sequence in a topic id minted since
+/// rag-t0051: `ubu-l1652`, *l* for ledger.
+///
+/// It sets a ledger id apart from the tracker's ids at a glance (`ubu-t0042` a
+/// ticket, `ubu-d0007` a document), which share the `<project>-` prefix. Ids
+/// minted before it, `ubu-1651`, keep their form for ever: nothing is migrated,
+/// and every reader accepts both. The sequence is one per repo across both
+/// forms, so `ubu-1651` is followed by `ubu-l1652`, never by `ubu-l0001`, and
+/// one number never names two topics.
+pub const TOPIC_ID_MARK: char = 'l';
+
+/// The id a topic is minted with: `{repo}-l{seq:04}`.
+///
+/// Four digits is a padding **minimum**, not a width: a repo past 9,999
+/// topics mints `{repo}-l10000`.
+pub fn format_topic_id(repo: &str, seq: i64) -> String {
+    format!("{repo}-{TOPIC_ID_MARK}{seq:04}")
+}
+
+/// The halves of a topic id, as [`parse_topic_id`] reads them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TopicIdParts<'a> {
+    pub repo: &'a str,
+    pub seq: i64,
+    /// Whether the id carries [`TOPIC_ID_MARK`] (minted since rag-t0051) or is
+    /// a legacy `{repo}-{seq:04}`.
+    pub marked: bool,
+}
+
+/// Read a topic id of either form, `{repo}-l{seq:04}` or the legacy
+/// `{repo}-{seq:04}`, or `None` when it is neither.
+///
+/// **The split is at the final hyphen**, because a repo name may hold hyphens
+/// and digits of its own (`shq-suite-0001` is the repo `shq-suite`;
+/// `demo-v2-l0003` the repo `demo-v2`). After it comes an optional `l` and at
+/// least four digits; nothing else is a topic id, so `ubu-t0042` (a ticket) and
+/// `ubu-d0007` (a document) are not. The repo half must be non-blank; the
+/// store does not otherwise police it, and neither does this.
+pub fn parse_topic_id(id: &str) -> Option<TopicIdParts<'_>> {
+    let (repo, tail) = id.rsplit_once('-')?;
+    if repo.is_empty() {
+        return None;
+    }
+    let (digits, marked) = match tail.strip_prefix(TOPIC_ID_MARK) {
+        Some(rest) => (rest, true),
+        None => (tail, false),
+    };
+    if digits.len() < 4 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let seq = digits.parse().ok()?;
+    Some(TopicIdParts { repo, seq, marked })
 }
 
 /// Next sequence number for `repo`, never reusing a retired id. Takes the max
@@ -1150,8 +1238,8 @@ mod tests {
         let s = store().await;
         let a = s.create_topic(sample_topic()).await.unwrap();
         let b = s.create_topic(sample_topic()).await.unwrap();
-        assert_eq!(a.topic_id, "rag-0001");
-        assert_eq!(b.topic_id, "rag-0002");
+        assert_eq!(a.topic_id, "rag-l0001");
+        assert_eq!(b.topic_id, "rag-l0002");
         // Decisions start "proposed".
         assert_eq!(a.status, Status::Proposed);
         // Creation seeds one monologue event.
@@ -1394,8 +1482,8 @@ mod tests {
     async fn move_reassigns_id_and_repo_preserving_history() {
         let s = store().await;
         let t = s.create_topic(sample_topic()).await.unwrap();
-        assert_eq!(t.topic_id, "rag-0001");
-        // Pre-existing topic in the destination repo so the new id is -0002, proving
+        assert_eq!(t.topic_id, "rag-l0001");
+        // Pre-existing topic in the destination repo so the new id is -l0002, proving
         // the number component is freshly allocated (not carried across).
         s.create_topic(NewTopic {
             repo: "webapp".into(),
@@ -1408,18 +1496,18 @@ mod tests {
             .move_topic(&t.topic_id, "webapp", "dev@example.com", Some("Tester"))
             .await
             .unwrap();
-        assert_eq!(moved.topic_id, "webapp-0002");
+        assert_eq!(moved.topic_id, "webapp-l0002");
         assert_eq!(moved.repo, "webapp");
 
         // Old id is gone; new id carries the seeded event + the move note.
-        assert!(s.get_topic("rag-0001").await.unwrap().is_none());
-        let rec = s.get_topic("webapp-0002").await.unwrap().unwrap();
+        assert!(s.get_topic("rag-l0001").await.unwrap().is_none());
+        let rec = s.get_topic("webapp-l0002").await.unwrap().unwrap();
         assert_eq!(rec.events.len(), 2);
-        assert!(rec.events[1].body.contains("Moved from rag-0001"));
+        assert!(rec.events[1].body.contains("Moved from rag-l0001"));
 
         // Moving within the same repo is rejected.
         assert!(s
-            .move_topic("webapp-0002", "webapp", "dev@example.com", None)
+            .move_topic("webapp-l0002", "webapp", "dev@example.com", None)
             .await
             .is_err());
     }
@@ -1428,54 +1516,54 @@ mod tests {
     async fn move_leaves_redirect_tombstone_and_collapses_chains() {
         let s = store().await;
         let t = s.create_topic(sample_topic()).await.unwrap();
-        assert_eq!(t.topic_id, "rag-0001");
+        assert_eq!(t.topic_id, "rag-l0001");
 
-        // rag-0001 → alpha-0001
-        s.move_topic("rag-0001", "alpha", "dev@example.com", None)
+        // rag-l0001 → alpha-l0001
+        s.move_topic("rag-l0001", "alpha", "dev@example.com", None)
             .await
             .unwrap();
-        let p = s.lookup_move("rag-0001").await.unwrap().unwrap();
-        assert_eq!(p.new_topic_id, "alpha-0001");
+        let p = s.lookup_move("rag-l0001").await.unwrap().unwrap();
+        assert_eq!(p.new_topic_id, "alpha-l0001");
         // A non-moved id resolves to nothing.
         assert!(s.lookup_move("rag-9999").await.unwrap().is_none());
 
-        // alpha-0001 → beta-0001: the original rag-0001 pointer must collapse to beta.
-        s.move_topic("alpha-0001", "beta", "dev@example.com", None)
+        // alpha-l0001 → beta-l0001: the original rag-l0001 pointer must collapse to beta.
+        s.move_topic("alpha-l0001", "beta", "dev@example.com", None)
             .await
             .unwrap();
         assert_eq!(
-            s.lookup_move("rag-0001")
+            s.lookup_move("rag-l0001")
                 .await
                 .unwrap()
                 .unwrap()
                 .new_topic_id,
-            "beta-0001",
+            "beta-l0001",
             "chain must collapse so the original id points straight at the final id"
         );
         assert_eq!(
-            s.lookup_move("alpha-0001")
+            s.lookup_move("alpha-l0001")
                 .await
                 .unwrap()
                 .unwrap()
                 .new_topic_id,
-            "beta-0001"
+            "beta-l0001"
         );
     }
 
     #[tokio::test]
     async fn move_does_not_free_the_seq_for_reuse() {
         let s = store().await;
-        let _a = s.create_topic(sample_topic()).await.unwrap(); // rag-0001
-        let b = s.create_topic(sample_topic()).await.unwrap(); // rag-0002 (highest)
+        let _a = s.create_topic(sample_topic()).await.unwrap(); // rag-l0001
+        let b = s.create_topic(sample_topic()).await.unwrap(); // rag-l0002 (highest)
                                                                // Move the highest-seq topic out of `rag`, freeing seq 2 in the live table.
         s.move_topic(&b.topic_id, "elsewhere", "dev@example.com", None)
             .await
             .unwrap();
         // The next `rag` topic must NOT reuse 0002 (which would collide with the
-        // tombstone and shadow rag-0002's redirect).
+        // tombstone and shadow rag-l0002's redirect).
         let c = s.create_topic(sample_topic()).await.unwrap();
         assert_eq!(
-            c.topic_id, "rag-0003",
+            c.topic_id, "rag-l0003",
             "a moved-away seq must never be reused"
         );
     }
@@ -1548,5 +1636,249 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    // ---- Topic ids: `{repo}-l{seq:04}` since rag-t0051, legacy still read ----
+
+    /// A topic as the store minted it before rag-t0051: `{repo}-{seq:04}`, with
+    /// its seeding event, written straight into the tables.
+    async fn seed_legacy(s: &LedgerStore, repo: &str, seq: i64) -> String {
+        let id = format!("{repo}-{seq:04}");
+        sqlx::query(
+            "INSERT INTO topics (topic_id, seq, type, repo, title, summary, current_state, \
+             status, created_at, updated_at, creator_email, creator_agent, tags) \
+             VALUES (?,?,'decision',?,'Legacy chunk sizing','A legacy topic.', \
+             'Legacy state.','proposed','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z', \
+             'dev@example.com',NULL,'[]')",
+        )
+        .bind(&id)
+        .bind(seq)
+        .bind(repo)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO events (topic_id, ts, author_email, kind, body) \
+             VALUES (?,'2026-01-01T00:00:00Z','dev@example.com','note','Legacy state.')",
+        )
+        .bind(&id)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    fn note(topic_id: &str, supersedes: Option<&str>) -> NewEvent {
+        NewEvent {
+            topic_id: topic_id.into(),
+            body: "A note.".into(),
+            kind: EventKind::Note,
+            set_state: Some("Moved on.".into()),
+            set_status: None,
+            set_title: None,
+            set_tags: None,
+            supersedes: supersedes.map(str::to_string),
+            author_email: "dev@example.com".into(),
+            author_agent: None,
+        }
+    }
+
+    #[test]
+    fn format_topic_id_marks_the_sequence_with_an_l() {
+        assert_eq!(format_topic_id("ubu", 1652), "ubu-l1652");
+        assert_eq!(format_topic_id("rag", 7), "rag-l0007");
+        // Four digits is a minimum, not a width.
+        assert_eq!(format_topic_id("rag", 10_000), "rag-l10000");
+        assert_eq!(format_topic_id("shq-suite", 12), "shq-suite-l0012");
+    }
+
+    #[test]
+    fn parse_topic_id_reads_both_forms_at_the_final_hyphen() {
+        fn p(id: &str) -> Option<(&str, i64, bool)> {
+            parse_topic_id(id).map(|t| (t.repo, t.seq, t.marked))
+        }
+        assert_eq!(p("ubu-1651"), Some(("ubu", 1651, false)));
+        assert_eq!(p("ubu-l1652"), Some(("ubu", 1652, true)));
+        // A repo name with hyphens and digits of its own.
+        assert_eq!(p("shq-suite-0001"), Some(("shq-suite", 1, false)));
+        assert_eq!(p("shq-suite-l0012"), Some(("shq-suite", 12, true)));
+        assert_eq!(p("demo-v2-l0003"), Some(("demo-v2", 3, true)));
+        assert_eq!(p("argus-v2-1147"), Some(("argus-v2", 1147, false)));
+        // A repo that happens to end in "-l" is still split at the final hyphen.
+        assert_eq!(p("foo-l-0001"), Some(("foo-l", 1, false)));
+        assert_eq!(p("rag-l10000"), Some(("rag", 10_000, true)));
+        // Round trip.
+        for (repo, seq) in [("ubu", 1652), ("shq-suite", 1), ("a.b_c", 99_999)] {
+            let id = format_topic_id(repo, seq);
+            assert_eq!(p(&id), Some((repo, seq, true)), "{id}");
+        }
+    }
+
+    #[test]
+    fn parse_topic_id_refuses_tracker_ids_and_malformed_ones() {
+        for id in [
+            "ubu-t0042",  // a tracker ticket
+            "ubu-d0007",  // a tracker document
+            "ubu-L1652",  // the mark is lower case
+            "ubu-l",      // no digits
+            "ubu-l001",   // fewer than four
+            "ubu-001",    // fewer than four
+            "ubu-0001x",  // trailing junk
+            "ubu-ll0001", // one mark only
+            "-0001",      // a blank repo
+            "-l0001",
+            "ubu",
+            "",
+        ] {
+            assert_eq!(parse_topic_id(id), None, "{id:?} must not parse");
+        }
+    }
+
+    /// The owner's rule: new ids continue each repo's sequence, so the next
+    /// topic after `ubu-1651` is `ubu-l1652`, not `ubu-l0001`.
+    #[tokio::test]
+    async fn new_ids_continue_the_legacy_sequence() {
+        let s = store().await;
+        seed_legacy(&s, "ubu", 1651).await;
+        let t = s
+            .create_topic(NewTopic {
+                repo: "ubu".into(),
+                ..sample_topic()
+            })
+            .await
+            .unwrap();
+        assert_eq!(t.topic_id, "ubu-l1652");
+        // A repo with no history starts at 1, in the new form.
+        let fresh = s
+            .create_topic(NewTopic {
+                repo: "shq-suite".into(),
+                ..sample_topic()
+            })
+            .await
+            .unwrap();
+        assert_eq!(fresh.topic_id, "shq-suite-l0001");
+    }
+
+    /// Old ids are not migrated, and every store operation still takes them:
+    /// get, append, supersede links between the two forms, move, the move's
+    /// redirect, archive and the archived search.
+    #[tokio::test]
+    async fn legacy_and_new_ids_both_work_everywhere() {
+        let s = store().await;
+        let old = seed_legacy(&s, "rag", 33).await;
+        let new = s.create_topic(sample_topic()).await.unwrap().topic_id;
+        assert_eq!(new, "rag-l0034");
+
+        // Get.
+        for id in [&old, &new] {
+            let rec = s.get_topic(id).await.unwrap().unwrap();
+            assert_eq!(&rec.topic.topic_id, id);
+            assert_eq!(rec.topic.repo, "rag");
+        }
+
+        // Append, each superseding the other form.
+        s.append_event(note(&new, Some(&old))).await.unwrap();
+        let old_rec = s.get_topic(&old).await.unwrap().unwrap();
+        assert_eq!(old_rec.topic.status, Status::Superseded);
+        assert_eq!(old_rec.links[0].other_topic_id, new);
+        s.append_event(note(&old, None)).await.unwrap();
+        assert_eq!(
+            s.get_topic(&old)
+                .await
+                .unwrap()
+                .unwrap()
+                .topic
+                .current_state,
+            "Moved on."
+        );
+
+        // Archive and the archived search, both forms.
+        for id in [&old, &new] {
+            s.set_archived(id, true, "dev@example.com", None)
+                .await
+                .unwrap();
+        }
+        let mut hits: Vec<String> = s
+            .search_archived("", None, None, None, 50)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|t| t.topic_id)
+            .collect();
+        hits.sort();
+        assert_eq!(hits, vec![old.clone(), new.clone()]);
+        for id in [&old, &new] {
+            s.set_archived(id, false, "dev@example.com", None)
+                .await
+                .unwrap();
+        }
+
+        // Move a legacy id: it gets a new-form id in the destination, which
+        // continues that repo's legacy sequence, and the old id redirects.
+        seed_legacy(&s, "shq-suite", 10).await;
+        let moved = s
+            .move_topic(&old, "shq-suite", "dev@example.com", None)
+            .await
+            .unwrap();
+        assert_eq!(moved.topic_id, "shq-suite-l0011");
+        assert_eq!(
+            s.lookup_move(&old).await.unwrap().unwrap().new_topic_id,
+            "shq-suite-l0011"
+        );
+        // The link from the new-form topic followed it.
+        let new_rec = s.get_topic(&new).await.unwrap().unwrap();
+        assert_eq!(new_rec.links[0].other_topic_id, "shq-suite-l0011");
+
+        // And the moved-away legacy number is not handed out again in `rag`.
+        let next = s.create_topic(sample_topic()).await.unwrap();
+        assert_eq!(next.topic_id, "rag-l0035");
+    }
+
+    /// A tombstone written before `old_repo`/`old_seq` existed is invisible to
+    /// `next_seq`, so the live ledger once re-issued a moved-away number
+    /// (`js_web-0005`). Opening the store reads them back out of the old id.
+    #[tokio::test]
+    async fn legacy_tombstones_are_backfilled_so_their_number_is_not_reused() {
+        let s = store().await;
+        seed_legacy(&s, "rag", 6).await;
+        // rag-0007 was moved away before the columns existed: no old_repo/old_seq.
+        sqlx::query(
+            "INSERT INTO moves (old_topic_id, new_topic_id, moved_at) \
+             VALUES ('rag-0007', 'rag-0006', '2026-01-01T00:00:00Z'), \
+                    ('-0001', 'rag-0006', '2026-01-01T00:00:00Z'), \
+                    ('shq-suite-0009', 'rag-0006', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+        // Reopening runs the schema step, which backfills (idempotently).
+        s.init_schema().await.unwrap();
+        s.init_schema().await.unwrap();
+
+        let filled: Vec<(String, Option<String>, Option<i64>)> =
+            sqlx::query_as("SELECT old_topic_id, old_repo, old_seq FROM moves ORDER BY 1")
+                .fetch_all(&s.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            filled,
+            vec![
+                ("-0001".into(), None, None), // unparseable: left alone, not guessed
+                ("rag-0007".into(), Some("rag".into()), Some(7)),
+                ("shq-suite-0009".into(), Some("shq-suite".into()), Some(9)),
+            ]
+        );
+        assert_eq!(
+            s.create_topic(sample_topic()).await.unwrap().topic_id,
+            "rag-l0008"
+        );
+        let shq = s
+            .create_topic(NewTopic {
+                repo: "shq-suite".into(),
+                ..sample_topic()
+            })
+            .await
+            .unwrap();
+        assert_eq!(shq.topic_id, "shq-suite-l0010");
     }
 }

@@ -68,6 +68,32 @@ describe('the id box in the shell', () => {
     expect(await screen.findByRole('heading', { name: TOPIC.title })).toBeInTheDocument();
   });
 
+  /**
+   * Both id forms open (rag-t0051): the `l`-marked one minted now, in a
+   * project whose name has a hyphen of its own, and the legacy one above.
+   */
+  it('opens an l-marked id, in a hyphenated project, on Enter', async () => {
+    const user = userEvent.setup();
+    const marked = { ...RECORD, topic_id: 'shq-suite-l0012', repo: 'shq-suite' };
+    server.on(/\/ledger\/shq-suite-l0012$/, marked);
+    mount(<App />);
+
+    await user.type(bar(), 'shq-suite-l0012{Enter}');
+
+    expect(screen.getByTestId('address')).toHaveTextContent('/topic/shq-suite-l0012');
+    expect(await screen.findByRole('heading', { name: marked.title })).toBeInTheDocument();
+  });
+
+  it('refuses a tracker ticket id, which is not a topic', async () => {
+    const user = userEvent.setup();
+    mount(<App />);
+
+    await user.type(bar(), 'ubu-t0042{Enter}');
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/not a topic id/i);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
   it('trims what was pasted, since a copied id usually brings whitespace', async () => {
     const user = userEvent.setup();
     server.on(/\/ledger\/demo-0001$/, TOPIC);
@@ -206,6 +232,19 @@ describe('the search box recognises a pasted id', () => {
     expect(screen.getByTestId('address')).toHaveTextContent('/topic/demo-0001');
     expect(await screen.findByRole('heading', { name: TOPIC.title })).toBeInTheDocument();
     expect(server.count(/\/ledger\/search/)).toBe(0);
+  });
+
+  it('offers the direct route for an l-marked id too', async () => {
+    const user = userEvent.setup();
+    const marked = { ...RECORD, topic_id: 'ubu-l1652', repo: 'ubu' };
+    server.on(/\/ledger\/ubu-l1652$/, marked);
+    mount(<App />);
+
+    await paste(user, 'ubu-l1652');
+    await user.click(screen.getByRole('button', { name: 'Open ubu-l1652' }));
+
+    expect(screen.getByTestId('address')).toHaveTextContent('/topic/ubu-l1652');
+    expect(await screen.findByRole('heading', { name: marked.title })).toBeInTheDocument();
   });
 
   it('stays out of the way of an ordinary question', async () => {

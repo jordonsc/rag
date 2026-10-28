@@ -56,6 +56,16 @@ class Citations(unittest.TestCase):
         self.assertEqual(lines[1].strip(), "Tracker: an agent-first queue")
         self.assertTrue(lines[2].strip().startswith("Owner, 2026-10-27."))
 
+    def test_ledger_hit_cites_either_id_form(self):
+        # Topics minted since rag-t0051 carry an l (shq-suite-l0012); older ones
+        # keep theirs (shq-suite-0001). Both are cited exactly as stored.
+        for topic_id in ("shq-suite-l0012", "shq-suite-0001"):
+            h = {"corpus": "ledger", "repo": "shq-suite", "rel_path": "", "start_line": 0,
+                 "end_line": 0, "topic_id": topic_id, "type": "defect", "status": "open",
+                 "title": "Blinds", "text": "Blinds\n\nBody.", "rerank_score": 0.5}
+            first = rag_search.format_hit(1, h).splitlines()[0]
+            self.assertIn(f"{topic_id} (ledger/shq-suite defect, open)", first)
+
     def test_tracker_item_cites_its_id(self):
         h = {"corpus": "tracker", "repo": "rag", "rel_path": "rag-t0006", "kind": "item",
              "tracker_id": "rag-t0006", "citation": "rag-t0006", "type": "dev",

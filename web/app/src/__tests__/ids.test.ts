@@ -45,7 +45,17 @@ describe('isRepoName', () => {
 });
 
 describe('parseTopicId', () => {
-  it.each(['demo-0001', 'example-0042', 'a.b-1234', '_x-9999'])('accepts %j', (value) => {
+  it.each([
+    'demo-0001',
+    'example-0042',
+    'a.b-1234',
+    '_x-9999',
+    // The form minted since rag-t0051: an l (for ledger) before the digits.
+    'demo-l0001',
+    'ubu-l1652',
+    'shq-suite-l0012',
+    'a.b-l1234',
+  ])('accepts %j', (value) => {
     expect(isTopicId(value)).toBe(true);
   });
 
@@ -57,8 +67,30 @@ describe('parseTopicId', () => {
    * is why the mistake survives a casual test.
    */
   it('splits at the final hyphen, so a project name may contain one', () => {
-    expect(parseTopicId('demo-v2-0001')).toEqual({ repo: 'demo-v2', seq: '0001' });
-    expect(parseTopicId('demo-0001')).toEqual({ repo: 'demo', seq: '0001' });
+    expect(parseTopicId('demo-v2-0001')).toEqual({ repo: 'demo-v2', seq: '0001', marked: false });
+    expect(parseTopicId('demo-0001')).toEqual({ repo: 'demo', seq: '0001', marked: false });
+    expect(parseTopicId('shq-suite-0001')).toEqual({
+      repo: 'shq-suite',
+      seq: '0001',
+      marked: false,
+    });
+    expect(parseTopicId('shq-suite-l0012')).toEqual({
+      repo: 'shq-suite',
+      seq: '0012',
+      marked: true,
+    });
+    // A project whose own name ends in "-l" is still split at the final hyphen.
+    expect(parseTopicId('foo-l-0001')).toEqual({ repo: 'foo-l', seq: '0001', marked: false });
+  });
+
+  /**
+   * **Both forms, for ever.** Topics minted since rag-t0051 carry an `l`
+   * (`ubu-l1652`); the ones before keep their unmarked ids (`ubu-1651`). The
+   * sequence runs on across the change, so the digits never name two topics.
+   */
+  it('reads the l-marked form and the legacy one alike', () => {
+    expect(parseTopicId('ubu-l1652')).toEqual({ repo: 'ubu', seq: '1652', marked: true });
+    expect(parseTopicId('ubu-1651')).toEqual({ repo: 'ubu', seq: '1651', marked: false });
   });
 
   /**
@@ -66,7 +98,8 @@ describe('parseTopicId', () => {
    * project past 9,999 topics keeps minting ids, and they are still ids.
    */
   it('accepts a sequence that has outgrown four digits', () => {
-    expect(parseTopicId('demo-10000')).toEqual({ repo: 'demo', seq: '10000' });
+    expect(parseTopicId('demo-10000')).toEqual({ repo: 'demo', seq: '10000', marked: false });
+    expect(parseTopicId('demo-l10000')).toEqual({ repo: 'demo', seq: '10000', marked: true });
   });
 
   it('keeps the sequence as written, leading zeros and all', () => {
@@ -82,6 +115,13 @@ describe('parseTopicId', () => {
     'demo-0001x',
     'demo-0001-', // a trailing hyphen leaves no digits after the split
     '-0001', // the id a blank repo mints: reachable by URL, not typeable here
+    '-l0001',
+    'ubu-t0042', // a tracker ticket, not a topic
+    'ubu-d0007', // a tracker document
+    'demo-L0001', // the mark is lower case
+    'demo-l001', // fewer than four digits
+    'demo-ll0001', // one mark only
+    'demo-l', // a mark and no digits
     'wiki/docs-0001', // the repo half is checked, not assumed
     ' demo-0001', // the caller trims; this function does not guess
     'why did we choose podman',
@@ -92,6 +132,7 @@ describe('parseTopicId', () => {
 
   it('states the shape in the message it hands a reader', () => {
     // Someone who typed the wrong thing needs the rule, not "invalid".
+    expect(TOPIC_ID_ERROR).toMatch(/demo-l0001/);
     expect(TOPIC_ID_ERROR).toMatch(/demo-0001/);
     expect(TOPIC_ID_ERROR).toMatch(/four digits/);
   });

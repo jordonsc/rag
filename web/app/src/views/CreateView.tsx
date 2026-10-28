@@ -119,7 +119,7 @@ export function CreateView() {
     createTopic(payload)
       .then((topic) => {
         setBusy(false);
-        // The id is the server's to mint — `{repo}-{seq:04}`, and the sequence
+        // The id is the server's to mint — `{repo}-l{seq:04}`, and the sequence
         // is per project — so the only way to land on the new topic is to be
         // told what it is called. Straight to it by id, never to a search: the
         // vector index has not seen it yet and will not for a few minutes.
@@ -188,7 +188,7 @@ export function CreateView() {
                 The repository this belongs to. It is interpolated straight into the id the server
                 mints —{' '}
                 <code className={styles.preview}>
-                  {trimmedRepo === '' ? 'project' : trimmedRepo}-0001
+                  {trimmedRepo === '' ? 'project' : trimmedRepo}-l0001
                 </code>{' '}
                 — so it is part of how the topic will be quoted for the rest of its life.
               </>

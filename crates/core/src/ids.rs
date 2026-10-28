@@ -55,6 +55,13 @@ mod tests {
             tracker_point_id("ubu-t0001", 0),
             ledger_topic_id("ubu-t0001")
         );
+        // A ledger id of either form (rag-t0051) keys its own points: the
+        // `l`-marked id and the legacy one with the same number are two topics.
+        assert_ne!(ledger_topic_id("ubu-l0001"), ledger_topic_id("ubu-0001"));
+        assert_ne!(
+            ledger_topic_id("ubu-l0001"),
+            tracker_point_id("ubu-l0001", 0)
+        );
     }
 
     #[test]

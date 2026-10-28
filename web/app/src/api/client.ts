@@ -372,7 +372,7 @@ export async function appendEvent(
  * Create a topic — the **only** place a summary is ever set.
  *
  * `repo` is interpolated straight into the id the server mints
- * (`{repo}-{seq:04}`), which is why it is checked here as well as in the form
+ * (`{repo}-l{seq:04}`), which is why it is checked here as well as in the form
  * and as well as on the server. Returns the new topic, whose `topic_id` is the
  * one thing a caller cannot have predicted and the one thing it needs.
  */
@@ -421,7 +421,7 @@ export async function setArchived(
  * Move a topic to another project.
  *
  * **This mints a new id and retires the old one.** The topic, its whole
- * monologue and its links are re-filed under `{repo}-{seq:04}` in the
+ * monologue and its links are re-filed under `{repo}-l{seq:04}` in the
  * destination, and the id that was quoted in a commit message, a comment or a
  * chat log becomes a pointer. The server refuses a move to the repo the topic
  * is already in.
@@ -435,7 +435,7 @@ export async function moveTopic(id: string, body: MoveBody, signal?: AbortSignal
     refuse('A destination project is required.');
   }
   // The same rule the create path applies, and for the same reason: a move
-  // mints `{repo}-{seq:04}` too. It is worse here, because a move also retires
+  // mints `{repo}-l{seq:04}` too. It is worse here, because a move also retires
   // the id it came from — an unreachable destination leaves nothing to go back
   // to, and the sequence number is spent either way.
   if (!isRepoName(body.repo.trim())) {

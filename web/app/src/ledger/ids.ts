@@ -4,10 +4,11 @@
  *
  * The first and last of those exist because the same reasoning was previously
  * written down at one call site and silently not applied at the others. A topic
- * id is `{repo}-{seq:04}` and it is the string an agent quotes, a person pastes
+ * id is `{repo}-l{seq:04}` (or, minted before rag-t0051, `{repo}-{seq:04}`)
+ * and it is the string an agent quotes, a person pastes
  * into an address bar and this application routes on — so the rule about what
  * may go into one, and the rule about how one comes back out again, each belong
- * in exactly one place. Recognising one — telling `demo-0001` apart from a
+ * in exactly one place. Recognising one — telling `demo-l0001` apart from a
  * search phrase — is the same rule read backwards, so it lives here too rather
  * than in whichever box happened to need it first.
  */
@@ -38,25 +39,30 @@ export function isRepoName(value: string): boolean {
 }
 
 /**
- * The sequence half of an id.
+ * The sequence half of an id: an optional `l`, then the digits.
  *
- * The server writes it with `format!("{}-{:04}", repo, seq)`
- * (`crates/core/src/ledger.rs`), so four digits is a **minimum** and not a
- * width: a project that passes 9,999 topics mints `demo-10000`. Anything that
- * insisted on exactly four would stop recognising a project's ids at the moment
- * it became the busiest one in the ledger.
+ * The server writes it with `format_topic_id` (`crates/core/src/ledger.rs`),
+ * `{repo}-l{seq:04}` — *l* for ledger, which sets a topic apart from the
+ * tracker's `-t` tickets and `-d` documents. Topics minted before rag-t0051
+ * keep their unmarked `{repo}-{seq:04}` for ever, so both are ids. Four digits
+ * is a **minimum** and not a width: a project that passes 9,999 topics mints
+ * `demo-l10000`. Anything that insisted on exactly four would stop recognising
+ * a project's ids at the moment it became the busiest one in the ledger.
  */
-const TOPIC_SEQ = /^[0-9]{4,}$/;
+const TOPIC_SEQ = /^(l?)([0-9]{4,})$/;
 
 /** The two halves of a topic id, once split. */
 export interface TopicIdParts {
   repo: string;
-  /** As written, leading zeros kept — it is part of the id, not a number. */
+  /** The digits as written, leading zeros kept — part of the id, not a number. */
   seq: string;
+  /** Whether it carries the `l` (minted since rag-t0051) or is a legacy id. */
+  marked: boolean;
 }
 
 /**
- * Split `{repo}-{seq:04}` into its halves, or `null` if it is not an id.
+ * Split `{repo}-l{seq:04}`, or a legacy `{repo}-{seq:04}`, into its halves, or
+ * `null` if it is not an id.
  *
  * **The split is at the _final_ hyphen, and that is the thing to get right.** A
  * repo name may itself contain hyphens and digits — `foo-v2` is a perfectly
@@ -82,11 +88,11 @@ export function parseTopicId(value: string): TopicIdParts | null {
     return null;
   }
   const repo = value.slice(0, cut);
-  const seq = value.slice(cut + 1);
-  if (!TOPIC_SEQ.test(seq) || !isRepoName(repo)) {
+  const tail = TOPIC_SEQ.exec(value.slice(cut + 1));
+  if (tail === null || !isRepoName(repo)) {
     return null;
   }
-  return { repo, seq };
+  return { repo, seq: tail[2]!, marked: tail[1] === 'l' };
 }
 
 /** Whether a (trimmed) string has the shape of a topic id. */
@@ -96,7 +102,7 @@ export function isTopicId(value: string): boolean {
 
 /** The message shown to someone who typed something that is not an id. */
 export const TOPIC_ID_ERROR =
-  'That is not a topic id. One looks like demo-0001 — a project name, a dash, then at least four digits.';
+  'That is not a topic id. One looks like demo-l0001 — a project name, a dash, an l, then at least four digits (older ones have no l: demo-0001).';
 
 /**
  * The client route for a topic.

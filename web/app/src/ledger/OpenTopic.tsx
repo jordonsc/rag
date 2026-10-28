@@ -82,7 +82,7 @@ export function OpenTopic({
               setError(null);
             }
           }}
-          placeholder="demo-0001"
+          placeholder="demo-l0001"
           aria-label={label}
           aria-describedby={error === null ? undefined : errorId}
           invalid={error !== null}

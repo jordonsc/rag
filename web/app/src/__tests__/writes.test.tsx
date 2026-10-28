@@ -796,7 +796,7 @@ describe('CreateView', () => {
     const user = userEvent.setup();
     mount(<CreateView />);
     await user.type(screen.getByLabelText('Project'), 'rag');
-    expect(screen.getByText('rag-0001')).toBeInTheDocument();
+    expect(screen.getByText('rag-l0001')).toBeInTheDocument();
   });
 
   it("offers the store's own default status for the chosen type", async () => {
