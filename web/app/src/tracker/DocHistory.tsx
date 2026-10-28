@@ -254,6 +254,7 @@ export function DocHistory({ doc, recordEvents = [], onRestored }: DocHistoryPro
       )}
 
       <NoteDialog
+        project={doc.project}
         open={restoring !== null}
         title={`Restore revision ${restoring ?? ''}?`}
         subject={{ id: doc.path, title: doc.title }}

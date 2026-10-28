@@ -1,0 +1,38 @@
+/*
+ * Attaching files to text being written (rag-t0053): the note fields and
+ * bodies that take a paste, a drop or the Attach button. Shape only; every
+ * colour is a token.
+ */
+
+/* The text box and its bar under it, as one control in a `Field`. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-1);
+  min-width: 0;
+}
+
+/* A file is being dragged over the box: the same dashed edge as the
+   documents editor's. */
+.dropping textarea {
+  outline: 2px dashed var(--rag-acc);
+  outline-offset: -4px;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2);
+  min-width: 0;
+}
+
+.pending {
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+}
+
+/* The file picker behind the Attach button: never drawn, never focused. */
+.picker {
+  display: none;
+}

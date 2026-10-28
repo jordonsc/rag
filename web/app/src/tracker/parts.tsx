@@ -21,6 +21,8 @@ import {
   itemTypeLabel,
   linkKindIcon,
   linkKindLabel,
+  ITEM_TYPE_SIZER,
+  STATUS_SIZER,
   type DotState,
 } from './vocab';
 
@@ -30,21 +32,56 @@ import {
  * (rag-t0024), whose dot is a diamond so it is not failed's red disc. The
  * word is what a colour-blind reader, a screen reader and a test all read.
  */
-export function StatusDot({ state, compact = false }: { state: DotState; compact?: boolean }) {
+export function StatusDot({
+  state,
+  compact = false,
+  slotted = false,
+}: {
+  state: DotState;
+  compact?: boolean;
+  /**
+   * On a row (rag-t0033): the word is stacked over a hidden copy of every
+   * status word, so the status column is the widest word's width on every
+   * row and in every section, in any font, and nothing after it moves.
+   */
+  slotted?: boolean;
+}) {
   const label = itemStatusLabel(state);
   return (
-    <span className={cx(styles.status, styles[`status_${state}`])} data-state={state}>
+    <span
+      className={cx(styles.status, styles[`status_${state}`], slotted && styles.statusSlotted)}
+      data-state={state}
+    >
       <span className={styles.statusDot} aria-hidden />
-      <span className={cx(styles.statusLabel, compact && styles.statusLabelCompact)}>{label}</span>
+      <span
+        className={cx(styles.statusLabel, compact && styles.statusLabelCompact)}
+        data-sizer={slotted ? STATUS_SIZER : undefined}
+      >
+        {label}
+      </span>
     </span>
   );
 }
 
-export function TypeBadge({ type }: { type: string }) {
+/**
+ * An item's type: its glyph and its word. `slotted` draws it in a slot as wide
+ * as the widest type (rag-t0033), so what follows it on a row's second line,
+ * the assignee, starts at the same x on every row whatever the type. The slot
+ * is a hidden stack of every type's word under the badge's (`data-sizer`,
+ * drawn by the stylesheet's `::after`), so it is the widest word's own
+ * rendered width in whatever font the page has, not a guess in `ch`.
+ */
+export function TypeBadge({ type, slotted = false }: { type: string; slotted?: boolean }) {
   return (
-    <span className={styles.type} title={itemTypeHint(type)} data-type={type}>
+    <span
+      className={cx(styles.type, slotted && styles.typeSlotted)}
+      title={itemTypeHint(type)}
+      data-type={type}
+    >
       <Icon name={itemTypeIcon(type)} size={13} />
-      <span>{itemTypeLabel(type)}</span>
+      <span className={styles.typeLabel} data-sizer={slotted ? ITEM_TYPE_SIZER : undefined}>
+        {itemTypeLabel(type)}
+      </span>
     </span>
   );
 }
@@ -209,7 +246,7 @@ export function LabelChips({ project, labels, to }: LabelChipsProps) {
           key={label}
           to={to === undefined ? labelFilterPath(project, label) : to(label)}
           className={styles.label}
-          title={`Show the items labelled ${label}`}
+          title={`Show the tickets labelled ${label}`}
           onClick={(event) => event.stopPropagation()}
         >
           <Icon name="tag" size={11} />
@@ -275,13 +312,20 @@ export function SecondLine({ project, item, children }: SecondLineProps) {
   return (
     <span className={styles.cellLine2}>
       <span className={styles.line2Start}>
-        <TypeBadge type={item.type} />
-        {item.assignee !== null && item.assignee !== '' && (
-          <span className={styles.assignee} title="Assignee">
-            <Icon name="user" size={12} />
-            {item.assignee}
-          </span>
-        )}
+        {/* The type and the assignee stay on one line (rag-t0033): a long
+            name is cut short rather than wrapped under the type, so it keeps
+            the column on a phone too. Its full text is its tooltip. */}
+        <span className={styles.line2Who}>
+          <TypeBadge type={item.type} slotted />
+          {item.assignee !== null && item.assignee !== '' && (
+            <span className={styles.assignee} title="Assignee">
+              <Icon name="user" size={12} />
+              <span className={styles.assigneeName} title={item.assignee}>
+                {item.assignee}
+              </span>
+            </span>
+          )}
+        </span>
         {children}
       </span>
       {labels.length > 0 && (

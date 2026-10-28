@@ -263,7 +263,7 @@ export function SearchView() {
   const trackerColumns: Array<Column<TrackerHit>> = [
     {
       key: 'title',
-      header: 'Document or item',
+      header: 'Document or ticket',
       identity: true,
       prose: true,
       sortable: true,
@@ -284,7 +284,7 @@ export function SearchView() {
       value: (hit) => hit.kind ?? '',
       render: (hit) =>
         hit.kind === undefined ? null : (
-          <Badge tone="neutral">{hit.kind === 'item' ? 'Item' : docKindLabel(hit.kind)}</Badge>
+          <Badge tone="neutral">{hit.kind === 'item' ? 'Ticket' : docKindLabel(hit.kind)}</Badge>
         ),
     },
     {
@@ -387,7 +387,7 @@ export function SearchView() {
             title={corpus === 'tracker' ? 'Search the tracker' : 'Search the ledger'}
             message={
               corpus === 'tracker' ? (
-                'The tracker’s specs, concepts and queue items are retrieved by meaning, as the ledger’s topics are. Name a project to search only its documents.'
+                'The tracker’s specs, concepts and tickets are retrieved by meaning, as the ledger’s topics are. Name a project to search only its documents.'
               ) : (
                 <>
                   Live topics are retrieved by meaning, so a search needs something to match — there

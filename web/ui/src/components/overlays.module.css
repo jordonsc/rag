@@ -8,6 +8,13 @@
   z-index: 100;
 }
 
+/* A dialog's scrim (rag-t0045): light enough that the page under a dialog
+   dragged aside stays legible, dark enough that the dialog still reads as the
+   layer in front. The drawer keeps the full `--rag-shadow`. */
+.scrimLight {
+  background: var(--rag-scrim-light);
+}
+
 .scrimEnd {
   justify-content: flex-end;
   align-items: stretch;
@@ -22,6 +29,12 @@
   border: 1px solid var(--rag-border);
   border-radius: var(--rag-radius-l);
   box-shadow: 0 8px 32px var(--rag-shadow);
+}
+
+/* A dialog being dragged: a deeper shadow lifts it off the page it is
+   moved over. */
+.dragging {
+  box-shadow: 0 12px 40px var(--rag-shadow);
 }
 
 .drawer {
@@ -40,6 +53,20 @@
   gap: var(--rag-space-3);
   padding: var(--rag-space-3) var(--rag-space-4);
   border-bottom: 1px solid var(--rag-border);
+}
+
+/* A dialog's title bar is its drag handle (rag-t0045). `touch-action: none`
+   gives a finger on it to the drag rather than to page scrolling; the title's
+   text is not selectable, so a drag never paints a selection. The close
+   button inside keeps its own pointer. */
+.dragHandle {
+  cursor: move;
+  touch-action: none;
+  user-select: none;
+}
+
+.dragHandle button {
+  cursor: pointer;
 }
 
 .title {

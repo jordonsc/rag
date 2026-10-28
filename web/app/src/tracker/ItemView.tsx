@@ -6,10 +6,13 @@ import { asApiError, isAbort, type LedgerApiError } from '../api';
 import { useIdentity } from '../identity';
 import { Markdown } from '../markdown/Markdown';
 import timeline from '../views/topic.module.css';
-import { getItem, getMilestone } from './api';
+import { getItem } from './api';
+import { CopyButton } from './CopyButton';
 import { ItemActions } from './ItemActions';
+import { LinkTitleText, linkKey, useLinkTitles } from './linkTitles';
 import { ApprovalBadge, LabelChips, ParallelBadge, StatusDot, TypeBadge, WaitsOn } from './parts';
 import { itemPath, linkHref, projectPath } from './paths';
+import { RETURN_STATE } from './scrollMemory';
 import styles from './item.module.css';
 import type { Item, Link as ItemLink, TrackerEvent } from './types';
 import {
@@ -164,9 +167,56 @@ function EventAuthor({ event, self }: { event: TrackerEvent; self: string | null
   );
 }
 
+type Became = { id: string; item: Item | null };
+
+/**
+ * What a request became (rag-t0044): each ticket its manager created from it,
+ * by id, with its title and status once read. A ticket that cannot be read
+ * (gone, or the read failed) stays as its id, still a link.
+ */
+function BecameList({ project, ids }: { project: string; ids: readonly string[] }) {
+  const [rows, setRows] = useState<Became[]>(ids.map((id) => ({ id, item: null })));
+  const key = ids.join(' ');
+  useEffect(() => {
+    const controller = new AbortController();
+    const wanted = key === '' ? [] : key.split(' ');
+    setRows(wanted.map((id) => ({ id, item: null })));
+    for (const id of wanted) {
+      getItem(id, { history: false }, controller.signal)
+        .then((item) =>
+          setRows((known) => known.map((row) => (row.id === id ? { id, item } : row))),
+        )
+        .catch(() => {
+          // Unread: the row stays its id, which is still a link.
+        });
+    }
+    return () => controller.abort();
+  }, [key]);
+  return (
+    <ul className={styles.became}>
+      {rows.map(({ id, item }) => (
+        <li key={id} className={styles.becameRow}>
+          {item !== null && <StatusDot state={dotState(item)} compact />}
+          <Link to={itemPath(project, id)}>
+            <code>{id}</code>
+          </Link>
+          {item !== null && (
+            <>
+              <TypeBadge type={item.type} />
+              <span className={styles.becameTitle}>{item.title}</span>
+            </>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /**
  * One item, whole (D15): its record, its body rendered, its links, its history
- * and the writes that act on it.
+ * and the writes that act on it. A ticket broken out of a request names it
+ * (*From request*), and a request lists what it became (rag-t0044); those
+ * two kinds are not repeated under Links.
  */
 export function ItemView() {
   const { id = '' } = useParams();
@@ -174,7 +224,6 @@ export function ItemView() {
   const { email } = useIdentity();
   const [attempt, setAttempt] = useState(0);
   const [loaded, setLoaded] = useState<Loaded>({ kind: 'loading' });
-  const [milestones, setMilestones] = useState<Record<string, string>>({});
 
   /** The response to every write here: read the item again, by id. */
   const refetch = useCallback(() => setAttempt((n) => n + 1), []);
@@ -195,29 +244,18 @@ export function ItemView() {
     return () => controller.abort();
   }, [id, attempt]);
 
-  // A milestone link names `spec/code`; its document's path also holds the
-  // milestone's name, which only its record knows.
+  // Every link's target is read for its title (rag-t0046); a milestone's
+  // read also gives its document's path, which holds the milestone's name and
+  // which only its record knows. *Became* reads its own rows (`BecameList`).
   const item = loaded.kind === 'ready' ? loaded.item : null;
-  useEffect(() => {
-    if (item === null) {
-      return undefined;
-    }
-    const controller = new AbortController();
-    for (const link of item.links) {
-      const [spec, code] = link.target.split('/');
-      if (link.kind !== 'milestone' || spec === undefined || code === undefined) {
-        continue;
-      }
-      getMilestone(item.project, spec, code, controller.signal)
-        .then((milestone) =>
-          setMilestones((known) => ({ ...known, [link.target]: milestone.path })),
-        )
-        .catch(() => {
-          // Unresolved: the chip stays text. Nothing else depends on it.
-        });
-    }
-    return () => controller.abort();
-  }, [item]);
+  const titles = useLinkTitles(
+    item?.project ?? '',
+    (item?.links ?? []).filter((link) => link.kind !== 'became'),
+  );
+  const milestonePath = (link: ItemLink): string | undefined => {
+    const title = titles[linkKey(link)];
+    return title?.state === 'ready' ? title.path : undefined;
+  };
 
   if (loaded.kind === 'loading') {
     return (
@@ -233,7 +271,7 @@ export function ItemView() {
       <Card>
         <ErrorState
           message={
-            loaded.error.status === 404 ? `There is no item ${id}.` : `Could not load ${id}.`
+            loaded.error.status === 404 ? `There is no ticket ${id}.` : `Could not load ${id}.`
           }
           detail={loaded.error.message}
           onRetry={refetch}
@@ -245,11 +283,14 @@ export function ItemView() {
   const record = loaded.item;
   const events = record.events ?? [];
   const project = record.project;
+  const fromRequests = record.links.filter((link) => link.kind === 'from');
+  const became = record.links.filter((link) => link.kind === 'became').map((link) => link.target);
+  const otherLinks = record.links.filter((link) => link.kind !== 'from' && link.kind !== 'became');
 
   return (
     <article className={styles.view}>
       <p className={styles.crumbs}>
-        <Link to={projectPath(project)}>
+        <Link to={projectPath(project)} state={RETURN_STATE}>
           <Icon name="arrow-left" size={13} />
           {project}
         </Link>
@@ -263,6 +304,7 @@ export function ItemView() {
             <span className={styles.underlying}>({itemStatusLabel(record.status)})</span>
           )}
           <code className={styles.id}>{record.id}</code>
+          <CopyButton text={record.id} />
           <ApprovalBadge approval={record.approval} always />
           {record.type === 'gate' && record.intensity !== null && (
             <Badge tone="neutral">{intensityLabel(record.intensity)} gate</Badge>
@@ -278,9 +320,26 @@ export function ItemView() {
           <div>
             <dt>Project</dt>
             <dd>
-              <Link to={projectPath(project)}>{project}</Link>
+              <Link to={projectPath(project)} state={RETURN_STATE}>
+                {project}
+              </Link>
             </dd>
           </div>
+          {fromRequests.length > 0 && (
+            <div>
+              <dt>From request</dt>
+              <dd className={styles.neighbours}>
+                {fromRequests.map((link) => (
+                  <span key={link.target} className={styles.fromRequest}>
+                    <Link to={itemPath(project, link.target)}>
+                      <code>{link.target}</code>
+                    </Link>
+                    <LinkTitleText title={titles[linkKey(link)]} />
+                  </span>
+                ))}
+              </dd>
+            </div>
+          )}
           <div>
             <dt>Assignee</dt>
             <dd>{record.assignee === null || record.assignee === '' ? '—' : record.assignee}</dd>
@@ -366,11 +425,21 @@ export function ItemView() {
         )}
       </Panel>
 
-      {record.links.length > 0 && (
+      {record.type === 'request' && (
+        <Panel header={`Became · ${became.length} ${became.length === 1 ? 'ticket' : 'tickets'}`}>
+          {became.length === 0 ? (
+            <p className={styles.empty}>Not broken down yet.</p>
+          ) : (
+            <BecameList project={project} ids={became} />
+          )}
+        </Panel>
+      )}
+
+      {otherLinks.length > 0 && (
         <Panel header="Links">
           <ul className={styles.links}>
-            {record.links.map((link) => {
-              const href = linkHref(project, link, milestones[link.target]);
+            {otherLinks.map((link) => {
+              const href = linkHref(project, link, milestonePath(link));
               return (
                 <li key={`${link.kind}:${link.target}`} className={styles.link}>
                   <Icon name={linkKindIcon(link.kind)} size={14} />
@@ -382,6 +451,7 @@ export function ItemView() {
                       {link.target}
                     </Link>
                   )}
+                  <LinkTitleText title={titles[linkKey(link)]} />
                 </li>
               );
             })}
@@ -406,7 +476,11 @@ export function ItemView() {
                     {format.stamp(event.ts)}
                   </time>
                 </div>
-                {event.body.trim() !== '' && <Markdown source={event.body} attachments />}
+                {/* A note is Markdown, `att:` resolved and sanitised as the body is;
+                    an attached image shows small and opens whole (rag-t0053). */}
+                {event.body.trim() !== '' && (
+                  <Markdown source={event.body} attachments className={styles.note} />
+                )}
                 <EventFields event={event} />
               </div>
             </li>

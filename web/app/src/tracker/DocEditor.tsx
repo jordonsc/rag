@@ -16,9 +16,11 @@
  *   difference from it, with **Overwrite** (save the reader's text against the
  *   newer revision) and **Discard mine** (take the newer text, after a
  *   confirm). Nothing is merged silently, here or on the server (D9).
- * * **Images.** A pasted or dropped file is uploaded as an attachment and its
- *   `att:` reference written in at the cursor; a placeholder holds the place
- *   while it uploads, and Save waits for it.
+ * * **Images.** A pasted or dropped file, or one chosen with **Attach**, is
+ *   uploaded as an attachment and its `att:` reference written in at the
+ *   cursor; a placeholder holds the place while it uploads, and Save waits for
+ *   it. The machinery is `attach.tsx`'s, shared with the ticket page's bodies
+ *   and note fields (rag-t0053).
  */
 
 import {
@@ -27,8 +29,6 @@ import {
   useEffect,
   useRef,
   useState,
-  type ClipboardEvent,
-  type DragEvent,
   type KeyboardEvent,
 } from 'react';
 import { Button, ConfirmDialog, Field, Icon, Input, useFormat } from '@rag/ui';
@@ -36,14 +36,15 @@ import { Button, ConfirmDialog, Field, Icon, Input, useFormat } from '@rag/ui';
 import { asApiError, type LedgerApiError } from '../api';
 import writeStyles from '../writes/writes.module.css';
 import { cx } from '../util';
-import { listRevisions, TrackerApiError, uploadAttachment, type DocConflict } from './api';
+import { listRevisions, TrackerApiError, type DocConflict } from './api';
+import { AttachButton, AttachFailure, uploadingText, useAttachments } from './attach';
 import { changed, diffLines, withContext } from './diff';
 import { DocMarkdown, LineDiff } from './docParts';
 import styles from './docs.module.css';
 import frame from './tracker.module.css';
 import { clearDraft, readDraft, writeDraft, type Draft } from './drafts';
 import { TRACKER_IDENTITY_NEEDED, useTrackerGate } from './gate';
-import type { Attachment, Revision, TrackerAuthor } from './types';
+import type { Revision, TrackerAuthor } from './types';
 import { surfaceLabel } from './vocab';
 
 export interface DocEditorProps {
@@ -79,25 +80,8 @@ export interface DocEditorProps {
   onDiscard?: () => void;
 }
 
-interface Upload {
-  file: File;
-  placeholder: string;
-}
-
-/** Characters that would end a markdown link's text early. */
-function linkText(text: string): string {
-  return text.replace(/[[\]\n\r]/g, ' ').trim();
-}
-
-/** What an uploaded file is written into the document as. */
-export function attachmentMarkdown(attachment: Attachment): string {
-  const name = linkText(attachment.name) || 'attachment';
-  if (attachment.media_type.startsWith('image/')) {
-    const alt = name.replace(/\.[A-Za-z0-9]+$/, '') || 'image';
-    return `![${alt}](${attachment.ref})`;
-  }
-  return `[${name}](${attachment.ref})`;
-}
+/** Moved to `attach.tsx` (rag-t0053); kept here for the callers that import it from the editor. */
+export { attachmentMarkdown } from './attach';
 
 function draftNotice(draft: Draft, revision: number): string {
   const stale = draft.base_revision < revision;
@@ -140,13 +124,16 @@ export function DocEditor({
   const [since, setSince] = useState<Revision[] | null>(null);
   const [confirm, setConfirm] = useState<'discard-mine' | 'discard-draft' | null>(null);
   const [busy, setBusy] = useState(false);
-  const [uploads, setUploads] = useState(0);
-  const [dropping, setDropping] = useState(false);
   const [error, setError] = useState<LedgerApiError | null>(null);
   const preview = useDeferredValue(body);
 
-  const counter = useRef(0);
   const saved = useRef(false);
+  const source = useRef<HTMLTextAreaElement>(null);
+  const attacher = useAttachments(project, (change) => {
+    saved.current = false;
+    setBody(change);
+  });
+  const uploads = attacher.uploads;
   const latest = useRef({ body, base, message, pristine });
   latest.current = { body, base, message, pristine };
 
@@ -259,82 +246,6 @@ export function DocEditor({
 
   // ---- attachments --------------------------------------------------------
 
-  const attach = (files: File[], area: HTMLTextAreaElement) => {
-    if (gate.fields === null) {
-      gate.prompt();
-      setError(
-        new TrackerApiError(
-          0,
-          'Set your email to attach files: the tracker records who uploaded each one.',
-        ),
-      );
-      return;
-    }
-    const fields = gate.fields;
-    const start = area.selectionStart;
-    const end = area.selectionEnd;
-    const pending: Upload[] = files.map((file) => {
-      counter.current += 1;
-      return {
-        file,
-        placeholder: `![Uploading ${linkText(file.name) || 'file'}…](#uploading-${counter.current})`,
-      };
-    });
-    const text = pending.map((upload) => upload.placeholder).join('\n');
-    saved.current = false;
-    setBody((current) => current.slice(0, start) + text + current.slice(end));
-    // After React has written the new value: the caret goes after the insert.
-    window.setTimeout(() => {
-      area.selectionStart = start + text.length;
-      area.selectionEnd = start + text.length;
-    }, 0);
-    setError(null);
-    setUploads((n) => n + pending.length);
-    for (const upload of pending) {
-      uploadAttachment(project, upload.file, fields)
-        .then((attachment) => {
-          setBody((current) => current.replace(upload.placeholder, attachmentMarkdown(attachment)));
-        })
-        .catch((cause: unknown) => {
-          setBody((current) => current.replace(upload.placeholder, ''));
-          const failure = asApiError(cause);
-          setError(
-            new TrackerApiError(
-              failure.status,
-              `${upload.file.name || 'The file'} was not attached: ${failure.message}`,
-            ),
-          );
-        })
-        .finally(() => setUploads((n) => n - 1));
-    }
-  };
-
-  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = Array.from(event.clipboardData?.files ?? []);
-    if (files.length === 0) {
-      return;
-    }
-    event.preventDefault();
-    attach(files, event.currentTarget);
-  };
-
-  const onDragOver = (event: DragEvent<HTMLTextAreaElement>) => {
-    if (Array.from(event.dataTransfer?.types ?? []).includes('Files')) {
-      event.preventDefault();
-      setDropping(true);
-    }
-  };
-
-  const onDrop = (event: DragEvent<HTMLTextAreaElement>) => {
-    setDropping(false);
-    const files = Array.from(event.dataTransfer?.files ?? []);
-    if (files.length === 0) {
-      return;
-    }
-    event.preventDefault();
-    attach(files, event.currentTarget);
-  };
-
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
       event.preventDefault();
@@ -416,16 +327,17 @@ export function DocEditor({
         <div className={styles.pane}>
           <div className={styles.paneHead}>
             <span>Markdown</span>
-            <span>Paste or drop an image to attach it</span>
+            <span className={styles.paneTools}>
+              <span>Paste or drop a file to attach it</span>
+              <AttachButton attacher={attacher} target={() => source.current} />
+            </span>
           </div>
           <textarea
-            className={cx(styles.source, dropping && styles.sourceDropping)}
+            ref={source}
+            className={cx(styles.source, attacher.dropping && styles.sourceDropping)}
             value={body}
             onChange={(event) => edit(event.target.value)}
-            onPaste={onPaste}
-            onDragOver={onDragOver}
-            onDragLeave={() => setDropping(false)}
-            onDrop={onDrop}
+            {...attacher.handlers}
             onKeyDown={onKeyDown}
             aria-label="Markdown"
             spellCheck
@@ -468,10 +380,10 @@ export function DocEditor({
       </div>
       {uploads > 0 && (
         <p className={styles.status} role="status">
-          Uploading {uploads} {uploads === 1 ? 'file' : 'files'}… Save waits for{' '}
-          {uploads === 1 ? 'it' : 'them'}.
+          {uploadingText(uploads)} Save waits for {uploads === 1 ? 'it' : 'them'}.
         </p>
       )}
+      <AttachFailure attacher={attacher} />
       {blocked !== undefined && <p className={styles.status}>{blocked}</p>}
       {storageFailed && (
         <p className={writeStyles.failed} role="alert">

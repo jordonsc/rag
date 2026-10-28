@@ -183,6 +183,39 @@
   text-decoration: underline;
 }
 
+/* A link target's title, beside its id (rag-t0046). The slot is laid out
+   before the title arrives and its size never depends on the title: a fixed
+   flex basis decides whether it shares the id's line or takes the next one,
+   and the title is one line cut with an ellipsis (the whole title is its
+   tooltip). So a title landing moves nothing under it. */
+.linkTitle {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--rag-text);
+}
+
+.linkTitleNote,
+.linkTitleMissing {
+  color: var(--rag-dim);
+  font-style: italic;
+}
+
+/* The From request line: each request its id and its title, the title in a
+   fixed-width slot, so the meta row around it never reflows when it lands. */
+.fromRequest {
+  display: flex;
+  align-items: baseline;
+  gap: var(--rag-space-2);
+}
+
+.fromRequest .linkTitle {
+  flex: none;
+  width: min(18rem, 55vw);
+}
+
 .link code,
 .linkEdit code {
   font-family: var(--rag-font-mono);
@@ -242,4 +275,86 @@
 .linkAdd > :nth-child(2) {
   flex: 1 1 10rem;
   min-width: 0;
+}
+
+/* The item's writes: the main row, and under it a review item's Confirm and
+   Send back on a row of their own (rag-t0041). */
+.actionRows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-2);
+}
+
+/* The id's copy button and its "Copied" (rag-t0042): a row-sized button would
+   stand taller than the identity row's badges. */
+.copy {
+  display: inline-flex;
+  align-items: center;
+  margin-left: calc(-1 * var(--rag-space-2));
+}
+
+.copy button {
+  width: var(--rag-row-h-sm);
+  height: var(--rag-row-h-sm);
+}
+
+.copied {
+  font-size: var(--rag-text-xs);
+  color: var(--rag-good);
+}
+
+.copied:not(:empty) {
+  margin-left: var(--rag-space-1);
+}
+
+/* What a request became (rag-t0044): one ticket a line, its status, id, type and title. */
+.became {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.becameRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2);
+  min-width: 0;
+}
+
+.becameTitle {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * A note in the history (rag-t0053): Markdown, so an attached screenshot shows
+ * inline, but small, to keep the history a list of entries rather than a
+ * gallery. A click opens it in the image viewer (rag-t0055); its link
+ * (render.ts) is the way to the file itself. `div.note` outranks the prose
+ * sheet's own `img` rule whatever order the two sheets load in.
+ */
+div.note img {
+  display: block;
+  max-width: min(100%, 24rem);
+  max-height: 12rem;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-s);
+  background: var(--rag-surface2);
+}
+
+/* On a line of its own, as wide as the picture, so the text beside it does
+   not sit on the picture's baseline. */
+div.note a:has(> img) {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin: var(--rag-space-2) 0;
+  cursor: zoom-in;
 }

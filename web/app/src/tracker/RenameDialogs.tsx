@@ -19,11 +19,12 @@
  */
 
 import { useState } from 'react';
-import { Button, Checkbox, Dialog, Field, Form, Icon, Input, Textarea } from '@rag/ui';
+import { Button, Checkbox, Dialog, Field, Form, Icon, Input } from '@rag/ui';
 
 import { asApiError, type LedgerApiError } from '../api';
 import writeStyles from '../writes/writes.module.css';
 import { getDoc, renameDoc, updateConcept, updateMilestone, updateSpec } from './api';
+import { AttachTextarea, useAttachments } from './attach';
 import { TRACKER_IDENTITY_NEEDED, useTrackerGate } from './gate';
 import { DOC_PATH_RULE, isDocPath } from './paths';
 import type { DocRecord } from './RecordPanel';
@@ -104,6 +105,7 @@ export function DocRenameDialog({ doc, record, onCancel, onDone }: DocRenameDial
     record !== null && record.record.title === doc.title,
   );
   const [note, setNote] = useState('');
+  const noteFiles = useAttachments(doc.project, setNote);
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<LedgerApiError | null>(null);
@@ -124,7 +126,7 @@ export function DocRenameDialog({ doc, record, onCancel, onDone }: DocRenameDial
       return;
     }
     setTouched(true);
-    if (busy || unchanged || !pathOk || !titleOk) {
+    if (busy || noteFiles.uploads > 0 || unchanged || !pathOk || !titleOk) {
       return;
     }
     const fields = gate.fields;
@@ -184,7 +186,12 @@ export function DocRenameDialog({ doc, record, onCancel, onDone }: DocRenameDial
           <Button onClick={onCancel} disabled={busy}>
             Cancel
           </Button>
-          <Button variant="primary" loading={busy} disabled={unchanged} onClick={submit}>
+          <Button
+            variant="primary"
+            loading={busy}
+            disabled={unchanged || noteFiles.uploads > 0}
+            onClick={submit}
+          >
             {gate.ready ? 'Rename' : 'Set your email'}
           </Button>
         </>
@@ -223,7 +230,13 @@ export function DocRenameDialog({ doc, record, onCancel, onDone }: DocRenameDial
             label="Note (optional)"
             help="Why, when it is not obvious from the change. It is kept in the document’s history."
           >
-            <Textarea value={note} onChange={setNote} rows={2} placeholder="Why" />
+            <AttachTextarea
+              value={note}
+              onChange={setNote}
+              attacher={noteFiles}
+              rows={2}
+              placeholder="Why"
+            />
           </Field>
           {!gate.ready && <p className={writeStyles.gate}>{TRACKER_IDENTITY_NEEDED}</p>}
           <Failure error={error} />
@@ -252,6 +265,7 @@ export function TitleDialog({ target, onCancel, onDone }: TitleDialogProps) {
   const [title, setTitle] = useState(record.title);
   const [alsoDoc, setAlsoDoc] = useState(true);
   const [note, setNote] = useState('');
+  const noteFiles = useAttachments(target.record.project, setNote);
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<LedgerApiError | null>(null);
@@ -266,7 +280,7 @@ export function TitleDialog({ target, onCancel, onDone }: TitleDialogProps) {
       return;
     }
     setTouched(true);
-    if (busy || unchanged || !titleOk) {
+    if (busy || noteFiles.uploads > 0 || unchanged || !titleOk) {
       return;
     }
     const fields = gate.fields;
@@ -320,7 +334,12 @@ export function TitleDialog({ target, onCancel, onDone }: TitleDialogProps) {
           <Button onClick={onCancel} disabled={busy}>
             Cancel
           </Button>
-          <Button variant="primary" loading={busy} disabled={unchanged} onClick={submit}>
+          <Button
+            variant="primary"
+            loading={busy}
+            disabled={unchanged || noteFiles.uploads > 0}
+            onClick={submit}
+          >
             {gate.ready ? 'Save title' : 'Set your email'}
           </Button>
         </>
@@ -343,7 +362,13 @@ export function TitleDialog({ target, onCancel, onDone }: TitleDialogProps) {
             label="Note (optional)"
             help={`Why, when it is not obvious from the change. It is kept in the ${noun}’s history.`}
           >
-            <Textarea value={note} onChange={setNote} rows={2} placeholder="Why" />
+            <AttachTextarea
+              value={note}
+              onChange={setNote}
+              attacher={noteFiles}
+              rows={2}
+              placeholder="Why"
+            />
           </Field>
           {!gate.ready && <p className={writeStyles.gate}>{TRACKER_IDENTITY_NEEDED}</p>}
           <Failure error={error} />

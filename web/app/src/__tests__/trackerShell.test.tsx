@@ -9,7 +9,7 @@ import userEvent from '@testing-library/user-event';
 
 import { App } from '../App';
 import { mount } from './harness';
-import { TrackerServer, queueRoute, queueView } from './trackerFixtures';
+import { TrackerServer, item, queueRoute, queueView } from './trackerFixtures';
 
 const PROJECTS = {
   projects: [
@@ -89,6 +89,15 @@ describe('the tracker in the shell', () => {
 
     await user.selectOptions(picker, 'other');
     expect(screen.getByTestId('address')).toHaveTextContent('/projects/other');
+  });
+
+  // rag-t0050: a record is a ticket; its page moved to `/ticket/`, and the
+  // address it had before still opens it, so no bookmark or pasted link breaks.
+  it.each(['ticket', 'item'])('opens a ticket at /projects/demo/%s/<id>', async (segment) => {
+    server.on('/tracker/items/demo-t0007', { body: item('demo-t0007', { title: 'Lit caves' }) });
+    mount(<App />, { route: `/projects/demo/${segment}/demo-t0007` });
+    expect(await screen.findByRole('heading', { name: 'Lit caves' })).toBeInTheDocument();
+    expect(screen.queryByText(/not found/i)).toBeNull();
   });
 
   it('opens a project by name from the list, refusing one the server would refuse', async () => {

@@ -435,6 +435,19 @@ describe('the editor', () => {
     expect(server.matching(UPLOAD, 'POST')).toHaveLength(1);
   });
 
+  it('uploads a file chosen with Attach and writes its reference at the cursor', async () => {
+    server.on(UPLOAD, { body: ATTACHMENT }, 'POST');
+    openDoc('concepts/power.md', '?tab=edit');
+    const area = await editor();
+    area.setSelectionRange(8, 8);
+    const file = new File(['png bytes'], 'image.png', { type: 'image/png' });
+    fireEvent.change(screen.getByTestId('attach-picker'), { target: { files: [file] } });
+
+    await waitFor(() =>
+      expect(area.value).toBe(`${BODY.slice(0, 8)}![image](att:3fa9c2e1b07d)${BODY.slice(8)}`),
+    );
+  });
+
   it('does not upload a paste of text, or without an identity', async () => {
     server.on(UPLOAD, { body: ATTACHMENT }, 'POST');
     openDoc('concepts/power.md', '?tab=edit', null);
@@ -771,7 +784,7 @@ describe('searching the tracker', () => {
     expect(screen.getByText('demo:concepts/power.md@r2')).toBeInTheDocument();
 
     await user.click(screen.getAllByText('Build the plant')[0]!);
-    expect(screen.getByTestId('address')).toHaveTextContent('/projects/demo/item/demo-t0004');
+    expect(screen.getByTestId('address')).toHaveTextContent('/projects/demo/ticket/demo-t0004');
   });
 
   it('offers the corpus as a filter and keeps the ledger as the default', async () => {

@@ -145,6 +145,9 @@ export function App() {
               API's and never falls back to this bundle (rag-0035). */}
           <Route path="/projects" element={<ProjectsView />} />
           <Route path="/projects/:project" element={<QueueView />} />
+          <Route path="/projects/:project/ticket/:id" element={<ItemView />} />
+          {/* The old address, from before the record was called a ticket
+              (rag-t0050): bookmarks and pasted links keep working. */}
           <Route path="/projects/:project/item/:id" element={<ItemView />} />
           <Route path="/projects/:project/docs" element={<DocsView />} />
           <Route path="/projects/:project/docs/new" element={<NewConceptView />} />

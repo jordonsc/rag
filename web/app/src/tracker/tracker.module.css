@@ -148,6 +148,11 @@
   border-left: 3px solid var(--rag-crit);
 }
 
+/* The owner's requests (rag-t0044), in the accent: the owner's own voice. */
+.section_requests {
+  border-left: 3px solid var(--rag-acc);
+}
+
 .sectionHead {
   display: flex;
   align-items: center;
@@ -248,59 +253,21 @@
 }
 
 /*
- * An in-progress row is filled with the owner's blue across both its lines
- * (rag-t0023; the colour rag-t0029's, `--rag-inprogress`, which replaced a
- * light tint of `--rag-acc`). Its hover is the same blue a step deeper, never
- * the grey a plain row takes, so the fill does not flicker off under the
- * pointer. A lifted row keeps the lifted look.
- *
- * The palette's foregrounds fail on that blue, so the row re-points them at
- * the `--rag-on-inprogress-*` family: every word, badge, chip and button in
- * it (and the focus ring, which is `--rag-acc`) keeps its hue and reads at
- * 4.5:1 or better. Only foregrounds move; the row's fill is the owner's.
+ * An in-progress row is tinted with the owner's blue across both its lines
+ * (rag-t0023, rag-t0029): `--rag-inprogress-row`, a 20 % share of
+ * `--rag-inprogress` over the panel, a dark navy close to its neighbours
+ * (rag-t0033; a solid #0b61ac was too bright). Its hover is the same tint a
+ * step deeper, never the grey a plain row takes, so the tint does not flicker
+ * off under the pointer. A lifted row keeps the lifted look. Every word,
+ * badge, chip and button keeps the palette's own colours: they read at 4.5:1
+ * or better on both (the tokens say by how much).
  */
-.rowInProgress {
-  --rag-bright: var(--rag-on-inprogress-bright);
-  --rag-text: var(--rag-on-inprogress-text);
-  --rag-dim: var(--rag-on-inprogress-dim);
-  --rag-acc: var(--rag-on-inprogress-acc);
-  --rag-good: var(--rag-on-inprogress-good);
-  --rag-warn: var(--rag-on-inprogress-warn);
-  --rag-crit: var(--rag-on-inprogress-crit);
-}
-
 .rowInProgress:not(.lifted) {
-  background: var(--rag-inprogress);
+  background: var(--rag-inprogress-row);
 }
 
 .rowInProgress:not(.lifted):hover {
-  background: var(--rag-inprogress-hover);
-}
-
-/*
- * A tinted control is a share of its colour over what lies under it. Over the
- * blue, that share is a lighter blue its own text fails on (the pale accent
- * at 14 % reads 4.0:1), so on an in-progress row the row's buttons (Approve,
- * Unblock) and the ratify pill mix their colour into the panel's dark instead:
- * 8.7:1 at rest and 5.6:1 at the deeper hover share, the pill set off from
- * the blue and outlined in its pale colour.
- */
-.rowInProgress .cellMeta button:not(.approvalButton) {
-  background: color-mix(in srgb, var(--rag-acc) 16%, var(--rag-surface));
-  border-color: var(--rag-acc);
-}
-
-.rowInProgress .cellMeta button:not(.approvalButton):hover:not(:disabled) {
-  background: color-mix(in srgb, var(--rag-acc) 30%, var(--rag-surface));
-}
-
-.rowInProgress .approvalButton > span {
-  background: color-mix(in srgb, var(--rag-warn) 16%, var(--rag-surface));
-}
-
-.rowInProgress .approvalButton:hover > span,
-.rowInProgress .approvalButton:focus-visible > span {
-  background: color-mix(in srgb, var(--rag-warn) 30%, var(--rag-surface));
+  background: var(--rag-inprogress-row-hover);
 }
 
 .row:focus-visible,
@@ -442,13 +409,42 @@
   color: var(--rag-bright);
 }
 
+/*
+ * The type's slot and the assignee, kept together on the line's first run
+ * (rag-t0033): the pair never wraps apart, and never past the line's width,
+ * so on a narrow row the name is cut with an ellipsis instead of dropping
+ * under the type and leaving the column.
+ */
+.line2Who {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-3);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.line2Who > .type {
+  flex: none;
+}
+
 .assignee {
   display: inline-flex;
   align-items: center;
   gap: var(--rag-space-1);
+  min-width: 0;
   color: var(--rag-acc);
   font-size: var(--rag-text-s);
   white-space: nowrap;
+}
+
+.assignee > :first-child {
+  flex: none;
+}
+
+.assigneeName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ---- the gate marker ---- */
@@ -557,14 +553,27 @@
   list-style: none;
 }
 
+/*
+ * A flat row (Done, Review, Blocked, Deferred) leads with the room the
+ * queue's grip column takes, empty, so its status word, and its second line
+ * with the type's slot and the assignee, start at the queue's x: one column
+ * of assignees down the page (rag-t0033). The queue's status starts 35px into
+ * its section (a 1px border, the 28px grip column, half the row's 12px gap,
+ * the subgrid's inset); a flat section's border is 3px, so its row's lead is
+ * 32px, 20px more than the 12px it had. The status column is the status
+ * slot's width (`max-content` of the sizer), as the queue's is, so the id
+ * column lines up with the queue's too.
+ */
 .flatRow {
   display: grid;
-  grid-template-columns: [status] 7.5rem [id] max-content [title] minmax(0, 1fr) [meta] auto;
+  grid-template-columns:
+    [status] max-content [id] max-content [title] minmax(0, 1fr)
+    [meta] auto;
   align-items: center;
   column-gap: var(--rag-space-3);
   row-gap: 2px;
   min-height: 38px;
-  padding: var(--rag-space-1) var(--rag-space-3);
+  padding: var(--rag-space-1) var(--rag-space-3) var(--rag-space-1) 32px;
 }
 
 .flatRow > * {
@@ -693,6 +702,40 @@
   white-space: nowrap;
 }
 
+/* A request's type is drawn in the accent, so it never reads as work. */
+.type[data-type='request'] {
+  color: var(--rag-acc);
+}
+
+/*
+ * The slots on a row (rag-t0033): the status word and the type's word are
+ * each stacked over a hidden, zero-height stack of every word of their kind
+ * (`data-sizer`, one a line), so each is as wide as the widest word in the
+ * page's own font. Every row's status column, in every section, is that one
+ * width, and so is every type's slot: the ids and the assignees each start at
+ * one x down the page, and no word can overflow its slot in any font.
+ */
+.statusSlotted > .statusLabel,
+.typeSlotted > .typeLabel {
+  display: inline-flex;
+  flex-direction: column;
+}
+
+.statusSlotted > .statusLabel::after,
+.typeSlotted > .typeLabel::after {
+  content: attr(data-sizer);
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  white-space: pre;
+}
+
+/* At the status word's heaviest weight (pending's is lighter), so every row's
+   slot is the same width whatever its own word's weight. */
+.statusSlotted > .statusLabel::after {
+  font-weight: 600;
+}
+
 .approval {
   display: inline-flex;
 }
@@ -702,7 +745,9 @@
    system's tinted `caution` button is: amber over the ground, deeper on hover.
    Its hover was the grey a row turns under the pointer, so it vanished; amber
    is neither that grey nor the in-progress row's blue. The ring is for the
-   keyboard. */
+   keyboard. Its shares and its hover's lifted text are the `caution` button's
+   tokens (rag-t0034: the old 30 % hover read 4.1:1 on a plain row's hover and
+   3.95:1 on an in-progress row's), so the pill and the button lift alike. */
 .approvalButton {
   display: inline-flex;
   padding: 0;
@@ -714,13 +759,16 @@
 }
 
 .approvalButton > span {
-  background: color-mix(in srgb, var(--rag-warn) 16%, transparent);
-  transition: background-color 120ms ease;
+  background: color-mix(in srgb, var(--rag-warn) var(--rag-tint-warn), transparent);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
 }
 
 .approvalButton:hover > span,
 .approvalButton:focus-visible > span {
-  background: color-mix(in srgb, var(--rag-warn) 30%, transparent);
+  background: color-mix(in srgb, var(--rag-warn) var(--rag-tint-warn-hover), transparent);
+  color: color-mix(in srgb, var(--rag-bright) var(--rag-tint-lift), var(--rag-warn));
 }
 
 .approvalButton:focus-visible {
@@ -1032,6 +1080,8 @@
     grid-area: menu;
   }
 
+  /* On a phone the queue's status starts 45px in (a 1px border, 4px of
+     padding, the 28px grip, a 12px gap): a flat row's lead is 42px. */
   .flatRow {
     grid-template-columns: auto minmax(0, 1fr);
     grid-template-areas:
@@ -1041,6 +1091,7 @@
       'line2 line2'
       'note note';
     row-gap: 2px;
+    padding-left: 42px;
   }
 
   .flatRow .cellStatus {

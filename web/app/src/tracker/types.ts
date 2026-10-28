@@ -17,8 +17,12 @@
 
 // ---- Enumerations -----------------------------------------------------------
 
-/** An item's type (R6). `gate` is drawn as a marker, not a row. */
-export const ITEM_TYPES = ['dev', 'design', 'recon', 'analysis', 'gate'] as const;
+/**
+ * An item's type (R6). `gate` is drawn as a marker, not a row. `request` is
+ * the owner's idea, broken into tickets by the manager (rag-t0044): listed in
+ * its own section, never in the queue.
+ */
+export const ITEM_TYPES = ['dev', 'design', 'recon', 'analysis', 'gate', 'request'] as const;
 export type ItemType = (typeof ITEM_TYPES)[number];
 
 /** The four types that are work rather than a gate. */
@@ -80,7 +84,19 @@ export type ConceptState = (typeof CONCEPT_STATES)[number];
 export const DOCUMENT_KINDS = ['spec', 'milestone', 'concept', 'doc'] as const;
 export type DocumentKind = (typeof DOCUMENT_KINDS)[number];
 
-export const LINK_KINDS = ['spec', 'milestone', 'concept', 'ledger', 'item'] as const;
+/**
+ * `from` names the request an item was broken out of; `became` is its reverse
+ * on the request, written by the server only (rag-t0044).
+ */
+export const LINK_KINDS = [
+  'spec',
+  'milestone',
+  'concept',
+  'ledger',
+  'item',
+  'from',
+  'became',
+] as const;
 export type LinkKind = (typeof LINK_KINDS)[number];
 
 // ---- Shared pieces ----------------------------------------------------------
@@ -164,8 +180,10 @@ export interface Item {
 export interface ProjectSummary {
   name: string;
   created_at: string;
-  /** Counts review, blocked and deferred items too. */
+  /** Counts requests, review, blocked and deferred items too. */
   queued: number;
+  /** Queued requests (rag-t0044). Absent from a server before them. */
+  requests?: number;
   /** Blocked and neither deferred nor in review. */
   blocked: number;
   /** Deferred, blocked or not (rag-t0017). Absent from a server before it. */
@@ -183,6 +201,12 @@ export interface ProjectsResponse {
 export interface QueueView {
   project: string;
   exists: boolean;
+  /**
+   * The owner's requests waiting to be broken down (rag-t0044), whatever
+   * their status, in list order. Never in `queue`. Absent from a server
+   * before them; read as empty.
+   */
+  requests?: Item[];
   /** Done, unacknowledged, oldest first and newest last (rag-t0029). */
   done: Item[];
   /**

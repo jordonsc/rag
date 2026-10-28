@@ -21,9 +21,11 @@ import { asApiError, isAbort, type LedgerApiError } from '../api';
 import { useIdentity } from '../identity';
 import writeStyles from '../writes/writes.module.css';
 import { attachmentUrl, listAttachments, uploadAttachment } from './api';
+import { copyText } from './CopyButton';
 import { Who } from './DocHistory';
 import styles from './docs.module.css';
 import { TRACKER_IDENTITY_NEEDED, useTrackerGate } from './gate';
+import { useImageViewer } from './ImageViewer';
 import type { Attachment } from './types';
 import { byteSize } from './vocab';
 
@@ -32,22 +34,13 @@ type Loaded =
   | { kind: 'ready'; attachments: Attachment[] }
   | { kind: 'error'; error: LedgerApiError };
 
-/** Copy text to the clipboard; `false` when the browser refused. */
-async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function AttachmentCard({ attachment }: { attachment: Attachment }) {
   const format = useFormat();
   const { email } = useIdentity();
   const [copied, setCopied] = useState<'yes' | 'no' | null>(null);
   const url = attachmentUrl(attachment.sha256);
   const image = attachment.media_type.startsWith('image/');
+  const viewer = useImageViewer();
 
   const copy = () => {
     void copyText(attachment.ref).then((ok) => setCopied(ok ? 'yes' : 'no'));
@@ -55,9 +48,18 @@ function AttachmentCard({ attachment }: { attachment: Attachment }) {
 
   return (
     <li className={styles.attachment} data-ref={attachment.ref}>
+      {viewer.element}
       <div className={styles.thumb}>
         {image && url !== null ? (
-          <img src={url} alt={attachment.name} loading="lazy" />
+          // The preview opens in the image viewer (rag-t0055).
+          <button
+            type="button"
+            className={styles.thumbButton}
+            aria-label={`View ${attachment.name}`}
+            onClick={() => viewer.open({ src: url, alt: attachment.name })}
+          >
+            <img src={url} alt={attachment.name} loading="lazy" />
+          </button>
         ) : (
           <Icon name="paperclip" size={28} />
         )}

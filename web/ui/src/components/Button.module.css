@@ -16,7 +16,8 @@
   user-select: none;
   transition:
     background-color 120ms ease,
-    border-color 120ms ease;
+    border-color 120ms ease,
+    color 120ms ease;
 }
 
 .button {
@@ -61,27 +62,44 @@
 
 /* The tinted pair. Both are built from a palette role mixed into the ground
    rather than from a colour of their own, so they follow the tokens like
-   everything else. */
+   everything else. Their shares are the `--rag-tint-*` tokens; on hover the
+   text is lifted towards `--rag-bright` as the fill deepens, which is what
+   keeps it at 4.5:1 on a row's hover ground (rag-t0034, `tokens.css`). */
 .accent {
-  background: color-mix(in srgb, var(--rag-acc) 14%, transparent);
+  background: color-mix(in srgb, var(--rag-acc) var(--rag-tint-acc), transparent);
   border-color: color-mix(in srgb, var(--rag-acc) 55%, transparent);
   color: var(--rag-acc);
 }
 
 .accent:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--rag-acc) 24%, transparent);
+  background: color-mix(in srgb, var(--rag-acc) var(--rag-tint-acc-hover), transparent);
   border-color: var(--rag-acc);
+  color: color-mix(in srgb, var(--rag-bright) var(--rag-tint-lift), var(--rag-acc));
 }
 
 .caution {
-  background: color-mix(in srgb, var(--rag-warn) 16%, transparent);
+  background: color-mix(in srgb, var(--rag-warn) var(--rag-tint-warn), transparent);
   border-color: color-mix(in srgb, var(--rag-warn) 60%, transparent);
   color: var(--rag-warn);
 }
 
 .caution:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--rag-warn) 26%, transparent);
+  background: color-mix(in srgb, var(--rag-warn) var(--rag-tint-warn-hover), transparent);
   border-color: var(--rag-warn);
+  color: color-mix(in srgb, var(--rag-bright) var(--rag-tint-lift), var(--rag-warn));
+}
+
+/* The done green, tinted as the pair is (rag-t0041). */
+.good {
+  background: color-mix(in srgb, var(--rag-good) var(--rag-tint-good), transparent);
+  border-color: color-mix(in srgb, var(--rag-good) 55%, transparent);
+  color: var(--rag-good);
+}
+
+.good:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--rag-good) var(--rag-tint-good-hover), transparent);
+  border-color: var(--rag-good);
+  color: color-mix(in srgb, var(--rag-bright) var(--rag-tint-lift), var(--rag-good));
 }
 
 /* Shorter than `--rag-row-h`, which is what gives a button inside a table row

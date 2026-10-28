@@ -95,7 +95,7 @@ export function ProjectsView() {
             <EmptyState
               icon="list-todo"
               title="No projects yet"
-              message="A project is created by its first write. Open one by name above and add an item."
+              message="A project is created by its first write. Open one by name above and add a ticket."
             />
           </Card>
         ) : (

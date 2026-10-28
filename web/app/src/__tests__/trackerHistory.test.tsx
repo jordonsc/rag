@@ -138,7 +138,7 @@ describe('the history page', () => {
       'demo-t0006',
       'demo-t0001',
     ]);
-    expect(screen.getByText('Finished items · 5')).toBeInTheDocument();
+    expect(screen.getByText('Finished tickets · 5')).toBeInTheDocument();
 
     const unacked = screen.getByRole('link', { name: 'Drew the icons' }).closest('tr')!;
     expect(within(unacked).getByText('Not yet')).toBeInTheDocument();
@@ -203,7 +203,7 @@ describe('the history page', () => {
 
     await user.clear(box);
     await user.type(box, 'nothing like this');
-    expect(screen.getByText('No finished item matches these filters.')).toBeInTheDocument();
+    expect(screen.getByText('No finished ticket matches these filters.')).toBeInTheDocument();
   });
 
   it('starts from the filters in the URL', async () => {
@@ -225,10 +225,10 @@ describe('the history page', () => {
     open();
     await loaded();
     const link = screen.getByRole('link', { name: 'Survey the old store' });
-    expect(link).toHaveAttribute('href', '/projects/demo/item/demo-t0005');
+    expect(link).toHaveAttribute('href', '/projects/demo/ticket/demo-t0005');
 
     await user.click(screen.getByText('Port the importer').closest('tr')!.querySelector('code')!);
-    expect(screen.getByTestId('address')).toHaveTextContent('/projects/demo/item/demo-t0006');
+    expect(screen.getByTestId('address')).toHaveTextContent('/projects/demo/ticket/demo-t0006');
   });
 
   it('says so when nothing has finished', async () => {

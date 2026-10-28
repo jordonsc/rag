@@ -75,23 +75,50 @@
      statuses (the tracker's deferred, rag-t0017). Always drawn beside a word. */
   --rag-teal: #2fbfae;
   --rag-onacc: #101214;
-  /* The in-progress row (the tracker's dashboard, rag-t0029): the owner's
-     blue as a solid fill, and its hover a step deeper (1.3:1 against it, more
-     than a plain row's surface-to-surface2 step). A mid blue, so the palette's
-     foregrounds fail on it (WCAG, against #0b61ac: --rag-text 4.0:1, --rag-acc
-     3.0, --rag-warn 3.4, --rag-dim 2.1); a row filled with it re-points them
-     at the `--rag-on-inprogress-*` family below, which keeps each hue but
-     lightens it to at least 4.5:1 on the fill (more on the deeper hover). */
+  /* The tinted controls (the `accent` and `caution` buttons, the tracker's
+     ratify pill): a share of their colour over whatever lies under them,
+     deeper on hover, with the text in that colour. The shares are tokens so
+     every tinted control lifts the same way.
+
+     **Hover lifts the text as well as the fill** (rag-t0034). A deeper fill
+     alone pulled the text under 4.5:1 on a row's hover ground (the accent at
+     24 % read 4.45:1 on a plain row's `--rag-surface2`, 4.0:1 on an
+     in-progress row's hover), so on hover the text takes `--rag-tint-lift`
+     of `--rag-bright`: the same hue, paler. Worst case, on the in-progress
+     row's hover (#152e44): accent 5.1:1, caution and the pill 5.2:1; on a
+     plain row's hover 5.6 and 5.5. Measure on those two grounds before
+     changing a share: a deeper hover or a smaller lift is what fails first. */
+  --rag-tint-acc: 14%;
+  --rag-tint-acc-hover: 24%;
+  --rag-tint-warn: 16%;
+  --rag-tint-warn-hover: 26%;
+  /* The `good` button (rag-t0041): the done green, as light as the accent, so
+     the accent's shares. */
+  --rag-tint-good: 14%;
+  --rag-tint-good-hover: 24%;
+  --rag-tint-lift: 35%;
+  /* The in-progress row (the tracker's dashboard): the owner's blue,
+     `--rag-inprogress`, as a low tint over the row's own ground, so the row
+     reads as a dark navy beside its neighbours rather than a bright fill
+     (rag-t0033; rag-t0029's solid #0b61ac was too light). The row ground is
+     the panel's `--rag-surface`, so the tint is that mix, opaque. At 20 % it
+     is #162839 (1.16:1 against the panel, a larger step than a plain row's
+     hover) and the palette's own foregrounds all read on it (WCAG: --rag-dim
+     4.9:1, --rag-crit 5.3, --rag-text 9.4). The hover deepens the tint to
+     28 % (#152e44: --rag-dim 4.55:1, --rag-crit 4.9); the tint over a plain
+     row's `--rag-surface2` hover would put --rag-dim under 4.5. */
   --rag-inprogress: #0b61ac;
-  --rag-inprogress-hover: #094e8a;
-  --rag-on-inprogress-bright: #ffffff; /* 6.3:1 */
-  --rag-on-inprogress-text: #f2f5f6; /* 5.8:1 */
-  --rag-on-inprogress-dim: #d3e3f2; /* 4.8:1 */
-  --rag-on-inprogress-acc: #d4ebff; /* 5.2:1 */
-  --rag-on-inprogress-good: #b8f5c2; /* 5.1:1 */
-  --rag-on-inprogress-warn: #ffdb9c; /* 4.8:1 */
-  --rag-on-inprogress-crit: #ffd4d5; /* 4.7:1 */
+  --rag-inprogress-row: color-mix(in srgb, var(--rag-inprogress) 20%, var(--rag-surface));
+  --rag-inprogress-row-hover: color-mix(in srgb, var(--rag-inprogress) 28%, var(--rag-surface));
   --rag-shadow: rgba(0, 0, 0, 0.55);
+  /* A dialog's scrim (rag-t0045): a dialog can be dragged aside to read the
+     page under it, so its wash is light enough to leave that page legible
+     (--rag-text over --rag-bg stays well above 4.5:1 under it). The drawer
+     keeps --rag-shadow. */
+  --rag-scrim-light: rgba(0, 0, 0, 0.28);
+  /* The image viewer's backdrop (rag-t0055): near black, so the picture is
+     what is seen and the page under it is not. */
+  --rag-scrim-viewer: rgba(0, 0, 0, 0.9);
 }
 
 /* ---- minimal base ---- */

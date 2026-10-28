@@ -372,7 +372,7 @@ export interface AppendBody extends AuthorFields {
 /**
  * `POST /ledger`.
  *
- * `repo` is interpolated straight into the new topic id (`{repo}-{seq:04}`), so
+ * `repo` is interpolated straight into the new topic id (`{repo}-l{seq:04}`), so
  * it must be validated client-side as well — a blank one used to mint `-0001`.
  * There is no `summary` amendment anywhere else: this is the only place a
  * summary is ever set.

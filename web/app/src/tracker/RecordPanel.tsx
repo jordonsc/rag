@@ -20,7 +20,6 @@ import {
   Input,
   Panel,
   Select,
-  Textarea,
   useFormat,
 } from '@rag/ui';
 import { Link } from 'react-router';
@@ -28,6 +27,7 @@ import { Link } from 'react-router';
 import { asApiError, type LedgerApiError } from '../api';
 import writeStyles from '../writes/writes.module.css';
 import { updateConcept, updateMilestone, updateSpec } from './api';
+import { AttachTextarea, useAttachments } from './attach';
 import { NoteDialog } from './dialogs';
 import { StateBadge } from './docParts';
 import styles from './docs.module.css';
@@ -276,6 +276,7 @@ export function RecordPanel({ target, onWritten }: RecordPanelProps) {
       </div>
 
       <NoteDialog
+        project={target.record.project}
         open={open === 'state'}
         title={`Change the ${noun}’s state`}
         subject={subject}
@@ -294,6 +295,7 @@ export function RecordPanel({ target, onWritten }: RecordPanelProps) {
         </Field>
       </NoteDialog>
       <NoteDialog
+        project={target.record.project}
         open={open === 'approve'}
         title="Approve as the owner?"
         subject={subject}
@@ -310,6 +312,7 @@ export function RecordPanel({ target, onWritten }: RecordPanelProps) {
         onDone={done}
       />
       <NoteDialog
+        project={target.record.project}
         open={open === 'ratify'}
         title="Ratify the agent’s approval?"
         subject={subject}
@@ -326,6 +329,7 @@ export function RecordPanel({ target, onWritten }: RecordPanelProps) {
         onDone={done}
       />
       <NoteDialog
+        project={target.record.project}
         open={open === 'withdraw'}
         title="Withdraw the approval?"
         subject={subject}
@@ -346,7 +350,10 @@ export function RecordPanel({ target, onWritten }: RecordPanelProps) {
 
 // ---- A concept's links ------------------------------------------------------
 
-const KIND_OPTIONS = LINK_KINDS.map((value) => ({ value, label: linkKindLabel(value) }));
+/** A concept links to records; `from` and `became` are between items (rag-t0044). */
+const KIND_OPTIONS = LINK_KINDS.filter((value) => value !== 'from' && value !== 'became').map(
+  (value) => ({ value, label: linkKindLabel(value) }),
+);
 
 function sameLink(a: RecordLink, b: RecordLink): boolean {
   return a.kind === b.kind && a.target === b.target;
@@ -367,6 +374,7 @@ function LinksDialog({
   const [kind, setKind] = useState<LinkKind>('spec');
   const [target, setTarget] = useState('');
   const [note, setNote] = useState('');
+  const noteFiles = useAttachments(concept.project, setNote);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<LedgerApiError | null>(null);
 
@@ -391,7 +399,7 @@ function LinksDialog({
       gate.prompt();
       return;
     }
-    if (busy || unchanged) {
+    if (busy || noteFiles.uploads > 0 || unchanged) {
       return;
     }
     setBusy(true);
@@ -426,7 +434,12 @@ function LinksDialog({
           <Button onClick={onCancel} disabled={busy}>
             Cancel
           </Button>
-          <Button variant="primary" loading={busy} disabled={unchanged} onClick={submit}>
+          <Button
+            variant="primary"
+            loading={busy}
+            disabled={unchanged || noteFiles.uploads > 0}
+            onClick={submit}
+          >
             {gate.ready ? 'Save links' : 'Set your email'}
           </Button>
         </>
@@ -463,7 +476,7 @@ function LinksDialog({
                 value={target}
                 onChange={setTarget}
                 placeholder={
-                  kind === 'milestone' ? 'spec/m01' : kind === 'ledger' ? 'rag-0042' : ''
+                  kind === 'milestone' ? 'spec/m01' : kind === 'ledger' ? 'rag-l0042' : ''
                 }
                 aria-label="Link target"
               />
@@ -473,7 +486,7 @@ function LinksDialog({
             </div>
           </div>
           <Field label="Note" help="Optional: why, kept in the concept’s history.">
-            <Textarea value={note} onChange={setNote} rows={2} />
+            <AttachTextarea value={note} onChange={setNote} attacher={noteFiles} rows={2} />
           </Field>
           {!gate.ready && <p className={writeStyles.gate}>{TRACKER_IDENTITY_NEEDED}</p>}
           {error !== null && (

@@ -27,7 +27,7 @@ export function NotFoundView() {
       />
       <div className={styles.rescue}>
         <p className={styles.line}>
-          Open a topic by id — the handle an agent quotes, like <code>demo-0001</code>.
+          Open a topic by id — the handle an agent quotes, like <code>demo-l0001</code>.
         </p>
         <OpenTopic autoFocus />
       </div>

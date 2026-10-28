@@ -1,0 +1,85 @@
+/*
+ * The image viewer (rag-t0055): the whole viewport, the picture on a near-black
+ * backdrop, the close button top right. Every colour is a token.
+ */
+
+.viewer {
+  position: fixed;
+  inset: 0;
+  /* Above every dialog (100), the drawer and the tooltips (110, 120). */
+  z-index: 200;
+  overflow: hidden;
+  background: var(--rag-scrim-viewer);
+  /* The viewer's own pointer handling pans and pinches: no browser scroll or
+     zoom of the page under it. */
+  touch-action: none;
+  overscroll-behavior: contain;
+  cursor: default;
+  outline: none;
+}
+
+.image {
+  position: absolute;
+  top: 0;
+  left: 0;
+  max-width: none;
+  max-height: none;
+  transform-origin: 0 0;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.panning .image {
+  cursor: grabbing;
+}
+
+/* Hidden until its size is known and the opening view is set. */
+.loading {
+  visibility: hidden;
+}
+
+.bar {
+  position: absolute;
+  top: var(--rag-space-3);
+  right: var(--rag-space-3);
+  left: var(--rag-space-3);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--rag-space-3);
+  pointer-events: none;
+}
+
+.bar > * {
+  pointer-events: auto;
+}
+
+.caption {
+  min-width: 0;
+  padding: var(--rag-space-1) var(--rag-space-2);
+  border-radius: var(--rag-radius-s);
+  background: var(--rag-surface);
+  color: var(--rag-text);
+  font-size: var(--rag-text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.close {
+  flex: none;
+  border-radius: var(--rag-radius-m);
+  background: var(--rag-surface);
+}
+
+.status {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+  pointer-events: none;
+}

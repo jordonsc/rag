@@ -215,7 +215,7 @@ describe('names and paths', () => {
 
   it('builds the pages under /projects, never under the API’s /tracker', () => {
     expect(projectPath('demo')).toBe('/projects/demo');
-    expect(itemPath('demo', 'demo-t0001')).toBe('/projects/demo/item/demo-t0001');
+    expect(itemPath('demo', 'demo-t0001')).toBe('/projects/demo/ticket/demo-t0001');
     expect(docPath('demo', 'specs/a b/master.md')).toBe('/projects/demo/doc/specs/a%20b/master.md');
   });
 
@@ -227,7 +227,7 @@ describe('names and paths', () => {
   it('links each kind to its page', () => {
     expect(linkHref('demo', { kind: 'ledger', target: 'rag-0035' })).toBe('/topic/rag-0035');
     expect(linkHref('demo', { kind: 'item', target: 'rag-t0003' })).toBe(
-      '/projects/rag/item/rag-t0003',
+      '/projects/rag/ticket/rag-t0003',
     );
     expect(linkHref('demo', { kind: 'concept', target: 'power' })).toBe(
       '/projects/demo/doc/concepts/power.md',
@@ -258,9 +258,9 @@ describe('att: references in rendered Markdown', () => {
     expect(root.querySelector('img')?.getAttribute('src')).toBe(
       '/tracker/attachments/3fa9c2e1b07d',
     );
-    expect(root.querySelector('a')?.getAttribute('href')).toBe(
-      '/tracker/attachments/3fa9c2e1b07d00',
-    );
+    // The image is wrapped in a link to itself (rag-t0053); the written link is the one named.
+    const notes = Array.from(root.querySelectorAll('a')).find((a) => a.textContent === 'notes');
+    expect(notes?.getAttribute('href')).toBe('/tracker/attachments/3fa9c2e1b07d00');
   });
 
   it('leaves ledger prose alone: no option, no rewrite', () => {

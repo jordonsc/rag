@@ -40,6 +40,7 @@ import { useTrackerGate } from './gate';
 import { docPath, docsPath } from './paths';
 import { RecordPanel, type DocRecord } from './RecordPanel';
 import { DocRenameDialog, type Renamed } from './RenameDialogs';
+import { RETURN_STATE } from './scrollMemory';
 import frame from './tracker.module.css';
 import type { DocumentView } from './types';
 import { docKindIcon, docKindLabel } from './vocab';
@@ -177,7 +178,7 @@ function DocumentPage({ project, path }: { project: string; path: string }) {
     return (
       <div className={frame.view}>
         <p className={styles.toolbarNote}>
-          <Link to={docsPath(project)}>
+          <Link to={docsPath(project)} state={RETURN_STATE}>
             <Icon name="arrow-left" size={13} /> {project} documents
           </Link>
         </p>
@@ -225,7 +226,7 @@ function DocumentPage({ project, path }: { project: string; path: string }) {
   return (
     <article className={frame.view}>
       <p className={styles.toolbarNote}>
-        <Link to={docsPath(project)} className={styles.docMeta}>
+        <Link to={docsPath(project)} state={RETURN_STATE} className={styles.docMeta}>
           <Icon name="arrow-left" size={13} />
           {project} documents
         </Link>

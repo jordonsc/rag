@@ -141,7 +141,46 @@ function resolvingAttachment(attribute: 'src' | 'href', fallback: Rule | undefin
   };
 }
 
-md.renderer.rules.image = resolvingAttachment('src', md.renderer.rules.image);
+/** Whether the token at `index` sits between a `link_open` and its `link_close`. */
+function insideLink(tokens: ReadonlyArray<{ type: string }>, index: number): boolean {
+  let depth = 0;
+  for (let i = 0; i < index; i += 1) {
+    const type = tokens[i]!.type;
+    if (type === 'link_open') {
+      depth += 1;
+    } else if (type === 'link_close') {
+      depth -= 1;
+    }
+  }
+  return depth > 0;
+}
+
+/**
+ * An attached image opens whole (rag-t0053): where it is not already inside a
+ * link, it is wrapped in one to its own attachment route, so a page that shows
+ * it small (the ticket history) still lets the reader reach the file. A plain
+ * click is taken by the image viewer (`Markdown.tsx`, rag-t0055); the link is
+ * what a modifier-click, a middle click or a page without script follows. The
+ * link's address is the same hex-only path the image was given, and the
+ * sanitiser runs over it like everything else (and gives it the new tab).
+ */
+function linkingAttachedImage(inner: Rule): Rule {
+  return (tokens, index, options, env: RenderEnv, self) => {
+    const html = inner(tokens, index, options, env, self);
+    const src = tokens[index]!.attrGet('src');
+    if (
+      env.attachments !== true ||
+      src === null ||
+      !/^\/tracker\/attachments\/[0-9a-f]{12,64}$/.test(src) ||
+      insideLink(tokens, index)
+    ) {
+      return html;
+    }
+    return `<a href="${src}">${html}</a>`;
+  };
+}
+
+md.renderer.rules.image = linkingAttachedImage(resolvingAttachment('src', md.renderer.rules.image));
 md.renderer.rules.link_open = resolvingAttachment('href', md.renderer.rules.link_open);
 
 /** What a caller may ask of the renderer. */

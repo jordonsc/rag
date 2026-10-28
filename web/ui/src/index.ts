@@ -122,6 +122,8 @@ export {
   Drawer,
   Tooltip,
   placeTooltip,
+  clampDialogOffset,
+  type DialogOffset,
   type DialogProps,
   type ConfirmDialogProps,
   type DrawerProps,

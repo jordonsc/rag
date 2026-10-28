@@ -1,6 +1,6 @@
 /**
  * The tracker's write dialogs: one with a note, the owner's approval of an
- * item, and the two that add to the queue.
+ * item, the two that add to the queue, and Add request (rag-t0044).
  *
  * The ledger's write rules hold here unchanged: the identity gate prompts
  * rather than hides (`useTrackerGate`), nothing is optimistic (the caller
@@ -18,13 +18,13 @@ import {
   Icon,
   Input,
   Segmented,
-  Textarea,
   Toggle,
 } from '@rag/ui';
 
 import { asApiError, type LedgerApiError } from '../api';
 import writeStyles from '../writes/writes.module.css';
 import { createItem, updateItem } from './api';
+import { AttachTextarea, useAttachments } from './attach';
 import { TRACKER_IDENTITY_NEEDED, useTrackerGate } from './gate';
 import { LabelEditor, submittedLabels, useProjectLabels } from './LabelEditor';
 import type { Intensity, TrackerAuthor, WorkType } from './types';
@@ -51,8 +51,19 @@ function Failure({ error }: { error: LedgerApiError | null }) {
 
 // ---- A write with a note ----------------------------------------------------
 
+/** A note box's default height, in rows. */
+export const NOTE_ROWS = 3;
+/** The **Send back** note box: twice the default (owner, rag-t0045). */
+export const SEND_BACK_NOTE_ROWS = NOTE_ROWS * 2;
+
 export interface NoteDialogProps {
   open: boolean;
+  /**
+   * The project a file attached to the note is uploaded to (rag-t0053): the
+   * note box takes a paste, a drop or **Attach**, and the write waits for the
+   * uploads.
+   */
+  project: string;
   title: string;
   subject?: Subject;
   /** What the write will do, said before it is pressed. */
@@ -68,6 +79,12 @@ export interface NoteDialogProps {
   noteLabel?: string;
   /** What the note is for, under its box. Defaults to the item's history. */
   noteHelp?: string;
+  /**
+   * The note box's height in rows. Defaults to `NOTE_ROWS`; **Send back**
+   * takes twice that (`SEND_BACK_NOTE_ROWS`), as the reason an item goes back
+   * is usually longer than other notes (owner, rag-t0045).
+   */
+  noteRows?: number;
   confirmLabel: string;
   danger?: boolean;
   onCancel: () => void;
@@ -87,6 +104,7 @@ export interface NoteDialogProps {
  */
 export function NoteDialog({
   open,
+  project,
   title,
   subject,
   message,
@@ -94,6 +112,7 @@ export function NoteDialog({
   noteRequired = false,
   noteLabel = 'Note',
   noteHelp,
+  noteRows = NOTE_ROWS,
   confirmLabel,
   danger = false,
   onCancel,
@@ -105,6 +124,7 @@ export function NoteDialog({
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<LedgerApiError | null>(null);
+  const attacher = useAttachments(project, setNote);
 
   const missing = noteRequired && note.trim() === '';
 
@@ -112,6 +132,7 @@ export function NoteDialog({
     setNote('');
     setTouched(false);
     setError(null);
+    attacher.clearError();
     onCancel();
   };
 
@@ -121,7 +142,7 @@ export function NoteDialog({
       return;
     }
     setTouched(true);
-    if (missing || busy) {
+    if (missing || busy || attacher.uploads > 0) {
       return;
     }
     setBusy(true);
@@ -131,6 +152,7 @@ export function NoteDialog({
         setBusy(false);
         setNote('');
         setTouched(false);
+        attacher.clearError();
         onDone();
       })
       .catch((cause: unknown) => {
@@ -150,7 +172,12 @@ export function NoteDialog({
           <Button onClick={close} disabled={busy}>
             Cancel
           </Button>
-          <Button variant={danger ? 'danger' : 'primary'} loading={busy} onClick={submit}>
+          <Button
+            variant={danger ? 'danger' : 'primary'}
+            loading={busy}
+            disabled={attacher.uploads > 0}
+            onClick={submit}
+          >
             {gate.ready ? confirmLabel : 'Set your email'}
           </Button>
         </>
@@ -170,15 +197,16 @@ export function NoteDialog({
             help={
               noteHelp ??
               (noteRequired
-                ? 'It is kept in the item’s history.'
-                : 'Why, when it is not obvious from the change. It is kept in the item’s history.')
+                ? 'It is kept in the ticket’s history.'
+                : 'Why, when it is not obvious from the change. It is kept in the ticket’s history.')
             }
             error={touched && missing ? 'A note needs some text.' : undefined}
           >
-            <Textarea
+            <AttachTextarea
               value={note}
               onChange={setNote}
-              rows={3}
+              attacher={attacher}
+              rows={noteRows}
               invalid={touched && missing}
               placeholder={noteRequired ? 'What to record' : 'Why'}
             />
@@ -203,6 +231,8 @@ export type ApprovalAction = 'ratify' | 'approve';
 export interface ApprovalDialogProps {
   /** Which approval; `null` is closed. */
   action: ApprovalAction | null;
+  /** Where a file attached to the note goes. */
+  project: string;
   /** The item it approves; its id is what the write names. */
   subject: Subject | null;
   onCancel: () => void;
@@ -215,11 +245,18 @@ export interface ApprovalDialogProps {
  * **Ratify** and **Approve** buttons and the dashboard's row controls (the
  * *Agent-approved* badge and *Approve*) all open this one.
  */
-export function ApprovalDialog({ action, subject, onCancel, onDone }: ApprovalDialogProps) {
+export function ApprovalDialog({
+  action,
+  project,
+  subject,
+  onCancel,
+  onDone,
+}: ApprovalDialogProps) {
   const ratify = action === 'ratify';
   return (
     <NoteDialog
       open={action !== null && subject !== null}
+      project={project}
       title={ratify ? 'Ratify the agent’s approval?' : 'Approve as the owner?'}
       {...(subject === null ? {} : { subject })}
       message={
@@ -293,6 +330,7 @@ export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProp
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<LedgerApiError | null>(null);
+  const attacher = useAttachments(project, setBody);
 
   const reset = () => {
     setType('dev');
@@ -304,6 +342,7 @@ export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProp
     setLabelProblem(undefined);
     setTouched(false);
     setError(null);
+    attacher.clearError();
   };
 
   const close = () => {
@@ -317,7 +356,7 @@ export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProp
       return;
     }
     setTouched(true);
-    if (title.trim() === '' || busy) {
+    if (title.trim() === '' || busy || attacher.uploads > 0) {
       return;
     }
     const chosen = submittedLabels(labelEntry.current, labels, vocabulary);
@@ -355,14 +394,14 @@ export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProp
     <Dialog
       open={open}
       onClose={close}
-      title="Add an item"
+      title="Add a ticket"
       width={600}
       footer={
         <>
           <Button onClick={close} disabled={busy}>
             Cancel
           </Button>
-          <Button variant="primary" loading={busy} onClick={submit}>
+          <Button variant="primary" loading={busy} disabled={attacher.uploads > 0} onClick={submit}>
             {gate.ready ? 'Add to the bottom' : 'Set your email'}
           </Button>
         </>
@@ -380,12 +419,12 @@ export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProp
           </Field>
           <Field
             label="Title"
-            error={touched && title.trim() === '' ? 'An item needs a title.' : undefined}
+            error={touched && title.trim() === '' ? 'A ticket needs a title.' : undefined}
           >
             <Input value={title} onChange={setTitle} invalid={touched && title.trim() === ''} />
           </Field>
           <Field label="Body" help="Markdown: the brief, the scope, the acceptance. Optional.">
-            <Textarea value={body} onChange={setBody} rows={8} />
+            <AttachTextarea value={body} onChange={setBody} attacher={attacher} rows={8} />
           </Field>
           <Field label="Labels" help={LABELS_HELP} error={labelProblem}>
             <LabelEditor
@@ -409,6 +448,106 @@ export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProp
 /** The labels field's help, on Add item and the item page's Edit (rag-t0027). */
 export const LABELS_HELP =
   'Optional: what it is about, such as Physics or Biomes. The project’s labels are offered.';
+
+// ---- Add a request -----------------------------------------------------------
+
+/**
+ * **Add request** (rag-t0044): the owner's idea, a title and the request
+ * itself (what is wanted, and how to prioritise it), in a bigger box than an
+ * item's body. Owner-approved by default, as every owner creation is. It is
+ * filed in Requests, never in the queue: the manager, woken by the event
+ * feed, breaks it into tickets that link back to it and marks it done.
+ */
+export function AddRequestDialog({ open, project, onCancel, onDone }: AddDialogProps) {
+  const gate = useTrackerGate();
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+  const [approved, setApproved] = useState(true);
+  const [touched, setTouched] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<LedgerApiError | null>(null);
+  const attacher = useAttachments(project, setBody);
+
+  const reset = () => {
+    setTitle('');
+    setBody('');
+    setApproved(true);
+    setTouched(false);
+    setError(null);
+    attacher.clearError();
+  };
+
+  const close = () => {
+    reset();
+    onCancel();
+  };
+
+  const submit = () => {
+    if (gate.fields === null) {
+      gate.prompt();
+      return;
+    }
+    setTouched(true);
+    if (title.trim() === '' || busy || attacher.uploads > 0) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    createItem(
+      project,
+      { type: 'request', title: title.trim(), body, ...startApproval(approved) },
+      gate.fields,
+    )
+      .then(() => {
+        setBusy(false);
+        reset();
+        onDone();
+      })
+      .catch((cause: unknown) => {
+        setBusy(false);
+        setError(asApiError(cause));
+      });
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onClose={close}
+      title="Add a request"
+      width={720}
+      footer={
+        <>
+          <Button onClick={close} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" loading={busy} disabled={attacher.uploads > 0} onClick={submit}>
+            {gate.ready ? 'File the request' : 'Set your email'}
+          </Button>
+        </>
+      }
+    >
+      <Form onSubmit={submit}>
+        <div className={writeStyles.dialogBody}>
+          <Field
+            label="Title"
+            error={touched && title.trim() === '' ? 'A request needs a title.' : undefined}
+          >
+            <Input value={title} onChange={setTitle} invalid={touched && title.trim() === ''} />
+          </Field>
+          <Field
+            label="Request"
+            help="Markdown: the idea, and how to prioritise it (at the top, before a ticket, after a gate). The manager breaks it into tickets."
+          >
+            <AttachTextarea value={body} onChange={setBody} attacher={attacher} rows={16} />
+          </Field>
+          <Checkbox checked={approved} onChange={setApproved} label={START_APPROVED_LABEL} />
+          {!gate.ready && <p className={writeStyles.gate}>{TRACKER_IDENTITY_NEEDED}</p>}
+          <Failure error={error} />
+        </div>
+      </Form>
+    </Dialog>
+  );
+}
 
 // ---- Add a gate -------------------------------------------------------------
 

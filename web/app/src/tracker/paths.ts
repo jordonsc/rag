@@ -10,10 +10,10 @@
  * |---|---|
  * | the project list | `/projects` |
  * | the dashboard (D14) | `/projects/{project}` |
- * | an item (D15) | `/projects/{project}/item/{id}` |
+ * | a ticket (D15) | `/projects/{project}/ticket/{id}`; the older `…/item/{id}` still opens it (rag-t0050) |
  * | the documents page (D16, m04) | `/projects/{project}/docs` |
  * | a document (m04) | `/projects/{project}/doc/{path…}` |
- * | the history: done, cancelled and failed items (rag-t0008) | `/projects/{project}/history` |
+ * | the history: done, cancelled and failed tickets (rag-t0008) | `/projects/{project}/history` |
  *
  * Every segment is encoded, as `topicPath` encodes a topic id: a project or an
  * id this application did not mint may carry a character that changes what
@@ -32,7 +32,7 @@ export function projectPath(project: string): string {
 }
 
 export function itemPath(project: string, id: string): string {
-  return `${projectPath(project)}/item/${enc(id)}`;
+  return `${projectPath(project)}/ticket/${enc(id)}`;
 }
 
 /** The documents page (m04). */
@@ -201,7 +201,9 @@ export function linkHref(project: string, link: Link, resolved?: string): string
   switch (link.kind) {
     case 'ledger':
       return topicPath(link.target);
-    case 'item': {
+    case 'item':
+    case 'from':
+    case 'became': {
       const owner = itemProject(link.target);
       return owner === null ? null : itemPath(owner, link.target);
     }

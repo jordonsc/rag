@@ -14,8 +14,12 @@ import { cx } from '../util';
  * over a mix of that colour with the ground, so they read as controls wherever
  * they land, without the weight of the solid `primary`/`danger` fills that
  * belong to a form's commit.
+ *
+ * `good` is a third tint, in the done green, for a control that finishes
+ * something (the tracker's Confirm on an item in review, rag-t0041).
  */
-export type ButtonVariant = 'primary' | 'default' | 'ghost' | 'danger' | 'accent' | 'caution';
+export type ButtonVariant =
+  'primary' | 'default' | 'ghost' | 'danger' | 'accent' | 'caution' | 'good';
 
 /** `sm` is shorter than a table row, so a row action has air above and below. */
 export type ButtonSize = 'sm' | 'md';

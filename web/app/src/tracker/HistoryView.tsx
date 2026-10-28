@@ -22,6 +22,7 @@ import { hasLabel, labelsIn, normaliseLabel } from './labels';
 import { LabelChips, labelQuery, StatusDot, TypeBadge } from './parts';
 import { itemPath, storeLastProject } from './paths';
 import { ProjectPicker } from './ProjectPicker';
+import { useScrollMemory } from './scrollMemory';
 import frame from './tracker.module.css';
 import { ITEM_TYPES, type Item, type ItemType } from './types';
 import { itemStatusLabel, itemTypeLabel } from './vocab';
@@ -47,7 +48,7 @@ function isItemType(value: string | null): value is ItemType {
 /**
  * When an item finished, and which field says so.
  *
- * **Only `done` has a time of its own** (`done_at`, api.md § Item). The
+ * **Only `done` has a time of its own** (`done_at`, api.md § Ticket). The
  * tracker records no cancel or fail time on the item, so a cancelled or failed
  * item is placed by `updated_at`, its last change: that is the cancel itself
  * unless something was written to the item afterwards (a note, an edit). The
@@ -127,6 +128,8 @@ function History({ project }: { project: string }) {
   const [text, setText] = useState(params.get('q') ?? '');
   const [loaded, setLoaded] = useState<Loaded>({ kind: 'loading' });
   const [attempt, setAttempt] = useState(0);
+  // Back from an item lands where the reader left the list (rag-t0040).
+  useScrollMemory(`history:${project}`, loaded.kind === 'ready');
 
   useEffect(() => storeLastProject(project), [project]);
 
@@ -204,7 +207,7 @@ function History({ project }: { project: string }) {
     },
     {
       key: 'title',
-      header: 'Item',
+      header: 'Ticket',
       identity: true,
       prose: true,
       sortable: true,
@@ -304,7 +307,7 @@ function History({ project }: { project: string }) {
       </header>
 
       <Panel
-        header={loaded.kind === 'ready' ? `Finished items · ${rows.length}` : 'Finished items'}
+        header={loaded.kind === 'ready' ? `Finished tickets · ${rows.length}` : 'Finished tickets'}
         actions={
           <div className={styles.filterField}>
             <Input
@@ -322,11 +325,11 @@ function History({ project }: { project: string }) {
         padded={false}
       >
         <p className={styles.note}>
-          Done, cancelled and failed items, newest first. Nothing in the tracker is deleted: Remove
-          cancels an item, and it is kept here. Open an item to read its history or reopen it. Done
-          items are placed by when they were done; cancelled and failed items by their last change,
-          because the tracker records no cancel or fail time, so a note written afterwards moves one
-          up.
+          Done, cancelled and failed tickets, newest first. Nothing in the tracker is deleted:
+          Remove cancels a ticket, and it is kept here. Open a ticket to read its history or reopen
+          it. Done tickets are placed by when they were done; cancelled and failed tickets by their
+          last change, because the tracker records no cancel or fail time, so a note written
+          afterwards moves one up.
         </p>
 
         <div className={styles.filters}>
@@ -381,7 +384,7 @@ function History({ project }: { project: string }) {
             rowKey={(item) => item.id}
             empty={
               filtered
-                ? 'No finished item matches these filters.'
+                ? 'No finished ticket matches these filters.'
                 : 'Nothing has been done, cancelled or failed yet.'
             }
             defaultSort={{ key: 'finished', dir: 'desc' }}

@@ -185,3 +185,35 @@ describe('renderMarkdown with document links', () => {
     expect(html).toContain('src="/tracker/attachments/3fa9c2e1b07d"');
   });
 });
+
+describe('an attached image opens whole (rag-t0053)', () => {
+  const route = '/tracker/attachments/3fa9c2e1b07d';
+
+  it('is wrapped in a link to its own file, in a new tab', () => {
+    const host = document.createElement('div');
+    host.innerHTML = renderMarkdown('See ![shot](att:3fa9c2e1b07d)', { attachments: true });
+    const link = host.querySelector('a');
+    expect(link).not.toBeNull();
+    expect(link!.getAttribute('href')).toBe(route);
+    expect(link!.getAttribute('target')).toBe('_blank');
+    expect(link!.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(link!.querySelector('img')!.getAttribute('src')).toBe(route);
+  });
+
+  it('keeps a link the writer gave it, and is not wrapped twice', () => {
+    const host = document.createElement('div');
+    host.innerHTML = renderMarkdown('[![shot](att:3fa9c2e1b07d)](https://example.com/)', {
+      attachments: true,
+    });
+    const links = host.querySelectorAll('a');
+    expect(links).toHaveLength(1);
+    expect(links[0]!.getAttribute('href')).toBe('https://example.com/');
+  });
+
+  it('wraps nothing without attachments, or for an image that is not one', () => {
+    expect(renderMarkdown('![shot](att:3fa9c2e1b07d)')).not.toContain('<a');
+    expect(renderMarkdown('![x](https://example.com/x.png)', { attachments: true })).not.toContain(
+      '<a',
+    );
+  });
+});

@@ -76,6 +76,27 @@ class DocStore {
     };
   }
 
+  /** What the server does with `POST /tracker/docs/{id}/rename`. */
+  rename(body: Record<string, unknown>) {
+    if (typeof body.path === 'string') {
+      this.redirects.push(this.path);
+      this.path = body.path;
+    }
+    if (typeof body.title === 'string') {
+      this.title = body.title;
+    }
+    this.docEvents = [
+      ...this.docEvents,
+      event(this.docEvents.length + 10, 'rename', String(body.note ?? 'Renamed.')),
+    ];
+  }
+
+  /** What the server does with a concept's `title`. */
+  retitleConcept(title: string) {
+    this.conceptTitle = title;
+    this.conceptEvents = [...this.conceptEvents, event(50, 'edit', 'Set title.')];
+  }
+
   install(server: TrackerServer, refuseConcept = false) {
     server.on(
       /^\/tracker\/demo\/doc\?path=/,
@@ -97,17 +118,7 @@ class DocStore {
         if (body.path === 'concepts/taken.md') {
           return { status: 400, body: { error: 'path concepts/taken.md is taken' } };
         }
-        if (typeof body.path === 'string') {
-          this.redirects.push(this.path);
-          this.path = body.path;
-        }
-        if (typeof body.title === 'string') {
-          this.title = body.title;
-        }
-        this.docEvents = [
-          ...this.docEvents,
-          event(this.docEvents.length + 10, 'rename', String(body.note ?? 'Renamed.')),
-        ];
+        this.rename(body);
         return { body: this.view(this.path) };
       },
       'POST',
@@ -118,8 +129,7 @@ class DocStore {
         if (refuseConcept) {
           return { status: 400, body: { error: 'the concept store said no' } };
         }
-        this.conceptTitle = String(sent.body?.title);
-        this.conceptEvents = [...this.conceptEvents, event(50, 'edit', 'Set title.')];
+        this.retitleConcept(String(sent.body?.title));
         return { body: this.concept() };
       },
       'POST',
@@ -132,9 +142,11 @@ class DocStore {
  * to time out under a loaded machine, and the keystrokes are not what is tested.
  */
 async function fill(user: ReturnType<typeof userEvent.setup>, field: HTMLElement, value: string) {
+  // `clear` focuses the field and empties it; the paste lands there. A click
+  // between them is one more pointer action (a computed-style walk up the
+  // tree) for nothing.
   await user.clear(field);
   if (value !== '') {
-    await user.click(field);
     await user.paste(value);
   }
 }
@@ -150,30 +162,52 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/**
+ * Mount, then let the page finish loading before anything is asserted.
+ *
+ * The fake server answers in microtasks, so one async `act` entered straight
+ * after the mount takes the whole chain (the document, its redirect, its
+ * record) through React's act queue: the page is loaded when it returns, with
+ * no clock involved. Waiting with `findBy*` instead put the file's cold first
+ * render under Testing Library's 1 s deadline and the test's 5 s one, and a
+ * loaded box overran them (rag-t0043).
+ */
+async function loaded<T>(mounted: T): Promise<T> {
+  await act(async () => {});
+  return mounted;
+}
+
 function openDoc(path: string, identity?: string | null) {
-  return mountAt('/projects/:project/doc/*', <DocView />, {
-    route: `/projects/demo/doc/${path}`,
-    ...(identity === undefined ? {} : { identity }),
-  });
+  return loaded(
+    mountAt('/projects/:project/doc/*', <DocView />, {
+      route: `/projects/demo/doc/${path}`,
+      ...(identity === undefined ? {} : { identity }),
+    }),
+  );
 }
 
 async function renameDialog(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(await screen.findByRole('button', { name: 'Rename…' }));
+  await user.click(screen.getByRole('button', { name: 'Rename…' }));
   return screen.getByRole('dialog', { name: 'Rename the document' });
 }
 
 // ---- A document's page: Rename… --------------------------------------------
 
 describe('renaming a document', () => {
-  it('renames path and title with a note, retitles its concept, and the old path still opens it', async () => {
+  // Two tests, not one: the rename and the reload are each a full page mount,
+  // and together they were the file's heaviest test by far, the one that
+  // crossed vitest's 5 s budget on a loaded box (rag-t0043). The reload starts
+  // from the store the rename leaves, written by the same methods the fake's
+  // routes call.
+  it('renames path and title with a note, retitles its concept, and moves to the new path', async () => {
     const user = userEvent.setup();
     const store = new DocStore();
     store.install(server);
     server.install();
-    const { unmount } = openDoc('concepts/power.md');
-    await screen.findByRole('heading', { name: 'Power', level: 1 });
+    await openDoc('concepts/power.md');
     // The record has arrived, so the dialog can offer to retitle it.
-    await screen.findByRole('button', { name: 'State…' });
+    expect(screen.getByRole('button', { name: 'State…' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Power', level: 1 })).toBeInTheDocument();
 
     const dialog = await renameDialog(user);
     const box = within(dialog).getByRole('checkbox', { name: 'Retitle the concept power too' });
@@ -188,7 +222,10 @@ describe('renaming a document', () => {
     await fill(user, within(dialog).getByLabelText('Note (optional)'), 'Clearer name');
     await user.click(within(dialog).getByRole('button', { name: 'Rename' }));
 
-    await waitFor(() => expect(server.matching(CONCEPT_URL, 'POST')).toHaveLength(1));
+    // The page moves to the new path and says where it came from.
+    expect(
+      await screen.findByRole('heading', { name: 'Power generation', level: 1 }),
+    ).toBeInTheDocument();
     expect(server.last(RENAME, 'POST').body).toEqual({
       path: 'concepts/power-generation.md',
       title: 'Power generation',
@@ -196,35 +233,41 @@ describe('renaming a document', () => {
       author_email: AUTHOR,
       surface: 'web',
     });
+    expect(server.matching(CONCEPT_URL, 'POST')).toHaveLength(1);
     expect(server.last(CONCEPT_URL, 'POST').body).toEqual({
       title: 'Power generation',
       note: 'Clearer name',
       author_email: AUTHOR,
       surface: 'web',
     });
-
-    // The page moves to the new path and says where it came from.
-    expect(
-      await screen.findByRole('heading', { name: 'Power generation', level: 1 }),
-    ).toBeInTheDocument();
     expect(screen.getByTestId('address')).toHaveTextContent(
       /^\/projects\/demo\/doc\/concepts\/power-generation\.md$/,
     );
     expect(screen.getByText(/was renamed: this is its current path/)).toBeInTheDocument();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    unmount();
+    expect(store.redirects).toEqual(['concepts/power.md']);
+  });
 
-    // A reload at the old path: the server redirects, and the History tab
-    // carries both writes (the document's rename, the concept's title).
-    openDoc('concepts/power.md?tab=history');
-    expect(
-      await screen.findByRole('heading', { name: 'Power generation', level: 1 }),
-    ).toBeInTheDocument();
+  it('opens a renamed document from its old path, with both writes in its History', async () => {
+    const store = new DocStore();
+    store.rename({
+      path: 'concepts/power-generation.md',
+      title: 'Power generation',
+      note: 'Clearer name',
+    });
+    store.retitleConcept('Power generation');
+    store.install(server);
+    server.install();
+
+    // The server redirects, and the History tab carries both writes (the
+    // document's rename, the concept's title).
+    await openDoc('concepts/power.md?tab=history');
+    expect(screen.getByText('Clearer name')).toBeInTheDocument();
+    expect(screen.getByText('Set title.')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Power generation', level: 1 })).toBeInTheDocument();
     expect(screen.getByTestId('address')).toHaveTextContent(
       '/projects/demo/doc/concepts/power-generation.md?tab=history',
     );
-    expect(await screen.findByText('Clearer name')).toBeInTheDocument();
-    expect(await screen.findByText('Set title.')).toBeInTheDocument();
   });
 
   it('retitles only the document when the record box is unticked, and stays on its path', async () => {
@@ -232,8 +275,8 @@ describe('renaming a document', () => {
     const store = new DocStore();
     store.install(server);
     server.install();
-    openDoc('concepts/power.md');
-    await screen.findByRole('button', { name: 'State…' });
+    await openDoc('concepts/power.md');
+    expect(screen.getByRole('button', { name: 'State…' })).toBeInTheDocument();
 
     const dialog = await renameDialog(user);
     await user.click(within(dialog).getByRole('checkbox', { name: /Retitle the concept/ }));
@@ -259,8 +302,8 @@ describe('renaming a document', () => {
     const user = userEvent.setup();
     new DocStore().install(server);
     server.install();
-    openDoc('concepts/power.md');
-    await screen.findByRole('button', { name: 'State…' });
+    await openDoc('concepts/power.md');
+    expect(screen.getByRole('button', { name: 'State…' })).toBeInTheDocument();
 
     const dialog = await renameDialog(user);
     const button = within(dialog).getByRole('button', { name: 'Rename' });
@@ -283,8 +326,8 @@ describe('renaming a document', () => {
     const user = userEvent.setup();
     new DocStore().install(server);
     server.install();
-    openDoc('concepts/power.md');
-    await screen.findByRole('button', { name: 'State…' });
+    await openDoc('concepts/power.md');
+    expect(screen.getByRole('button', { name: 'State…' })).toBeInTheDocument();
 
     const dialog = await renameDialog(user);
     const path = within(dialog).getByRole('textbox', { name: 'Path' });
@@ -303,8 +346,8 @@ describe('renaming a document', () => {
     const user = userEvent.setup();
     new DocStore().install(server, true);
     server.install();
-    openDoc('concepts/power.md');
-    await screen.findByRole('button', { name: 'State…' });
+    await openDoc('concepts/power.md');
+    expect(screen.getByRole('button', { name: 'State…' })).toBeInTheDocument();
 
     const dialog = await renameDialog(user);
     const title = within(dialog).getByRole('textbox', { name: 'Title' });
@@ -323,8 +366,8 @@ describe('renaming a document', () => {
     const user = userEvent.setup();
     new DocStore().install(server);
     server.install();
-    openDoc('concepts/power.md', null);
-    await user.click(await screen.findByRole('button', { name: 'Rename…' }));
+    await openDoc('concepts/power.md', null);
+    await user.click(screen.getByRole('button', { name: 'Rename…' }));
     expect(screen.getByRole('dialog', { name: 'Who is writing?' })).toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: 'Rename the document' })).not.toBeInTheDocument();
     expect(server.matching(RENAME, 'POST')).toHaveLength(0);
@@ -421,10 +464,12 @@ class SpecStore {
 }
 
 function openSpecs(identity?: string | null) {
-  return mountAt('/projects/:project/docs', <DocsView />, {
-    route: '/projects/demo/docs?tab=specs',
-    ...(identity === undefined ? {} : { identity }),
-  });
+  return loaded(
+    mountAt('/projects/:project/docs', <DocsView />, {
+      route: '/projects/demo/docs?tab=specs',
+      ...(identity === undefined ? {} : { identity }),
+    }),
+  );
 }
 
 function milestoneCodes(): string[] {
@@ -432,6 +477,16 @@ function milestoneCodes(): string[] {
   return within(list)
     .getAllByRole('listitem')
     .map((row) => row.getAttribute('data-code') ?? '');
+}
+
+/**
+ * The focused element, for a poll: asking `getByRole('button', { name })` on
+ * every DOM change computes the accessible name of every button on the tab,
+ * each a jsdom computed-style pass, while the focus it waits for is one
+ * element (rag-t0043).
+ */
+function focused(): Element | null {
+  return document.activeElement;
 }
 
 const MILESTONE = (code: string) => `/tracker/demo/specs/audio/milestones/${code}`;
@@ -442,8 +497,8 @@ describe('the Specs tab', () => {
     const store = new SpecStore();
     store.install(server);
     server.install();
-    openSpecs();
-    await user.click(await screen.findByRole('button', { name: 'Edit the title of audio' }));
+    await openSpecs();
+    await user.click(screen.getByRole('button', { name: 'Edit the title of audio' }));
     const dialog = screen.getByRole('dialog', { name: 'Edit the spec’s title' });
     expect(within(dialog).getByRole('button', { name: 'Save title' })).toBeDisabled();
     const title = within(dialog).getByRole('textbox', { name: 'Title' });
@@ -471,8 +526,8 @@ describe('the Specs tab', () => {
     const user = userEvent.setup();
     new SpecStore().install(server);
     server.install();
-    openSpecs();
-    await user.click(await screen.findByRole('button', { name: 'Edit the title of audio/m02' }));
+    await openSpecs();
+    await user.click(screen.getByRole('button', { name: 'Edit the title of audio/m02' }));
     const dialog = screen.getByRole('dialog', { name: 'Edit the milestone’s title' });
     await user.click(within(dialog).getByRole('checkbox', { name: /Retitle its document/ }));
     const title = within(dialog).getByRole('textbox', { name: 'Title' });
@@ -494,8 +549,8 @@ describe('the Specs tab', () => {
     store.docTitle = 'Sound';
     store.install(server);
     server.install();
-    openSpecs();
-    await user.click(await screen.findByRole('button', { name: 'Edit the title of audio' }));
+    await openSpecs();
+    await user.click(screen.getByRole('button', { name: 'Edit the title of audio' }));
     const dialog = screen.getByRole('dialog', { name: 'Edit the spec’s title' });
     const title = within(dialog).getByRole('textbox', { name: 'Title' });
     await fill(user, title, 'Sound');
@@ -509,8 +564,8 @@ describe('the Specs tab', () => {
     const user = userEvent.setup();
     new SpecStore().install(server);
     server.install();
-    openSpecs();
-    await screen.findByRole('list', { name: 'Audio milestones' });
+    await openSpecs();
+    expect(screen.getByRole('list', { name: 'Audio milestones' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Move audio/m01 up' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Move audio/m03 down' })).toBeDisabled();
 
@@ -521,15 +576,11 @@ describe('the Specs tab', () => {
       { order: 2, note: 'Moved down, after m02.', author_email: AUTHOR, surface: 'web' },
     ]);
     // At the top, its Up is disabled: the focus goes to its Down.
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Move audio/m02 down' })).toHaveFocus(),
-    );
+    await waitFor(() => expect(focused()).toHaveAccessibleName('Move audio/m02 down'));
 
     await user.click(screen.getByRole('button', { name: 'Move audio/m02 down' }));
     await waitFor(() => expect(milestoneCodes()).toEqual(['m01', 'm02', 'm03']));
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Move audio/m02 down' })).toHaveFocus(),
-    );
+    await waitFor(() => expect(focused()).toHaveAccessibleName('Move audio/m02 down'));
   });
 
   it('says so when a move is refused, and shows the server’s order', async () => {
@@ -538,8 +589,8 @@ describe('the Specs tab', () => {
     store.refuseMilestone = 'm02';
     store.install(server);
     server.install();
-    openSpecs();
-    await screen.findByRole('list', { name: 'Audio milestones' });
+    await openSpecs();
+    expect(screen.getByRole('list', { name: 'Audio milestones' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Move audio/m03 up' }));
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Could not move audio/m03 up (part of it landed: the list shows the server’s order): milestone m02 is locked',
@@ -555,8 +606,8 @@ describe('the Specs tab', () => {
     const user = userEvent.setup();
     new SpecStore().install(server);
     server.install();
-    openSpecs(null);
-    await user.click(await screen.findByRole('button', { name: 'Move audio/m02 up' }));
+    await openSpecs(null);
+    await user.click(screen.getByRole('button', { name: 'Move audio/m02 up' }));
     expect(screen.getByRole('dialog', { name: 'Who is writing?' })).toBeInTheDocument();
     await act(async () => {
       await Promise.resolve();

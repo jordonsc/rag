@@ -19,8 +19,10 @@ import { ackDone, isProjectName, moveItem, PROJECT_NAME_ERROR, updateItem } from
 import {
   AddGateDialog,
   AddItemDialog,
+  AddRequestDialog,
   ApprovalDialog,
   NoteDialog,
+  SEND_BACK_NOTE_ROWS,
   type ApprovalAction,
 } from './dialogs';
 import { ProjectTabs } from './docParts';
@@ -32,6 +34,7 @@ import { ProjectPicker } from './ProjectPicker';
 import { GateMarker, QueueList } from './QueueList';
 import styles from './tracker.module.css';
 import type { Item, Place } from './types';
+import { useScrollMemory } from './scrollMemory';
 import { useQueue } from './useQueue';
 import { blockReasonLabel, dotState, type DotState } from './vocab';
 
@@ -98,7 +101,7 @@ function FlatRow({ project, item, state, actions, detail, note }: FlatRowProps) 
       data-id={item.id}
     >
       <span className={styles.cellStatus}>
-        <StatusDot state={state} />
+        <StatusDot state={state} slotted />
       </span>
       <code className={styles.cellId}>{item.id}</code>
       <Link to={itemPath(project, item.id)} className={styles.cellTitle}>
@@ -150,6 +153,9 @@ export function QueueView() {
  * Top to bottom: **Done** (green, oldest first, the latest finished last,
  * in the server's order: rag-t0029; until *Acknowledge all done*;
  * a done gate is the queue's marker line, in green: rag-t0021),
+ * **Requests** (the accent: the owner's ideas waiting for the manager to break
+ * them into tickets, whatever their status; filed with *Add request* in the
+ * header, never in the queue: rag-t0044),
  * **Review** (red, work waiting on the owner to confirm or review it, each
  * with *Confirm* and *Send back*; rag-t0024), **the queue** in list order (blue in progress, white pending, red failed;
  * gates as full-width markers), **Blocked** (amber, each with its reason,
@@ -184,13 +190,16 @@ export function QueueView() {
  */
 function Dashboard({ project }: { project: string }) {
   const { state, refresh } = useQueue(project);
+  // Back from an item lands where the reader left the queue (rag-t0040): put
+  // back once the rows are drawn, and only once, so a refresh never moves it.
+  useScrollMemory(`queue:${project}`, state.kind === 'ready');
   const gate = useTrackerGate();
   const format = useFormat();
 
   const [pendingOrder, setPendingOrder] = useState<string[] | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [unratified, setUnratified] = useState(false);
-  const [adding, setAdding] = useState<'item' | 'gate' | null>(null);
+  const [adding, setAdding] = useState<'item' | 'gate' | 'request' | null>(null);
   const [removing, setRemoving] = useState<Item | null>(null);
   const [unblocking, setUnblocking] = useState<Item | null>(null);
   const [deferring, setDeferring] = useState<Item | null>(null);
@@ -311,6 +320,10 @@ function Dashboard({ project }: { project: string }) {
     () => (view === null ? [] : (view.review ?? []).filter(keep)),
     [view, keep],
   );
+  const requests = useMemo(
+    () => (view === null ? [] : (view.requests ?? []).filter(keep)),
+    [view, keep],
+  );
 
   if (state.kind === 'loading') {
     return (
@@ -337,6 +350,7 @@ function Dashboard({ project }: { project: string }) {
   const gates = queue.filter((item) => item.type === 'gate').length;
   const unratifiedCount = [
     ...full.done,
+    ...(full.requests ?? []),
     ...(full.review ?? []),
     ...full.queue,
     ...full.blocked,
@@ -353,6 +367,7 @@ function Dashboard({ project }: { project: string }) {
     ...labelsIn(
       [
         ...full.done,
+        ...(full.requests ?? []),
         ...(full.review ?? []),
         ...full.queue,
         ...full.blocked,
@@ -363,7 +378,7 @@ function Dashboard({ project }: { project: string }) {
   ];
   const queueEmpty =
     label !== ''
-      ? `No item labelled ${label} in the queue`
+      ? `No ticket labelled ${label} in the queue`
       : unratified
         ? 'No unratified approvals in the queue'
         : 'The queue is empty';
@@ -398,6 +413,10 @@ function Dashboard({ project }: { project: string }) {
               />
             </span>
           )}
+          <Button size="sm" variant="accent" onClick={() => setAdding('request')}>
+            <Icon name="message-square" size={14} />
+            Add request
+          </Button>
         </div>
       </header>
 
@@ -425,7 +444,7 @@ function Dashboard({ project }: { project: string }) {
         <p className={styles.notice}>
           <Icon name="info" size={14} />
           <span>
-            Nothing has been written to <code>{project}</code> yet. Its first item creates it.
+            Nothing has been written to <code>{project}</code> yet. Its first ticket creates it.
           </span>
         </p>
       )}
@@ -475,6 +494,36 @@ function Dashboard({ project }: { project: string }) {
                 />
               ),
             )}
+          </ul>
+        </section>
+      )}
+
+      {requests.length > 0 && (
+        <section className={cx(styles.section, styles.section_requests)} aria-label="Requests">
+          <header className={styles.sectionHead}>
+            <h2 className={styles.sectionTitle}>
+              Requests <span className={styles.count}>{requests.length}</span>
+            </h2>
+          </header>
+          <ul className={styles.flat}>
+            {requests.map((item) => (
+              <FlatRow
+                key={item.id}
+                project={project}
+                item={item}
+                state={dotState(item)}
+                actions={
+                  <ApprovalControl
+                    id={item.id}
+                    approval={item.approval}
+                    onRatify={() => approve(item, 'ratify')}
+                    onApprove={() => approve(item, 'approve')}
+                  />
+                }
+                detail={<BlockDetail project={project} item={item} />}
+                note={item.blocked ? item.block_note : null}
+              />
+            ))}
           </ul>
         </section>
       )}
@@ -533,14 +582,14 @@ function Dashboard({ project }: { project: string }) {
           <h2 className={styles.sectionTitle}>
             Queue{' '}
             <span className={styles.count}>
-              {queue.length - gates} {queue.length - gates === 1 ? 'item' : 'items'}
+              {queue.length - gates} {queue.length - gates === 1 ? 'ticket' : 'tickets'}
               {gates > 0 && ` · ${gates} ${gates === 1 ? 'gate' : 'gates'}`}
             </span>
           </h2>
           <div className={styles.sectionActions}>
             <Button size="sm" onClick={() => setAdding('item')}>
               <Icon name="plus" size={14} />
-              Add item
+              Add ticket
             </Button>
             <Button size="sm" onClick={() => setAdding('gate')}>
               <Icon name="flag" size={14} />
@@ -555,7 +604,7 @@ function Dashboard({ project }: { project: string }) {
             message={
               unratified || label !== ''
                 ? undefined
-                : 'Add item and Add gate put work at the bottom.'
+                : 'Add ticket and Add gate put work at the bottom.'
             }
           />
         ) : (
@@ -656,6 +705,15 @@ function Dashboard({ project }: { project: string }) {
           void refresh();
         }}
       />
+      <AddRequestDialog
+        open={adding === 'request'}
+        project={project}
+        onCancel={() => setAdding(null)}
+        onDone={() => {
+          setAdding(null);
+          void refresh();
+        }}
+      />
       <AddGateDialog
         open={adding === 'gate'}
         project={project}
@@ -666,8 +724,9 @@ function Dashboard({ project }: { project: string }) {
         }}
       />
       <NoteDialog
+        project={project}
         open={removing !== null}
-        title={removing?.type === 'gate' ? 'Remove this gate?' : 'Remove this item?'}
+        title={removing?.type === 'gate' ? 'Remove this gate?' : 'Remove this ticket?'}
         {...(removing === null ? {} : { subject: removing })}
         message={
           <p>
@@ -685,6 +744,7 @@ function Dashboard({ project }: { project: string }) {
         }}
       />
       <ApprovalDialog
+        project={project}
         action={approving?.action ?? null}
         subject={approving?.item ?? null}
         onCancel={() => setApproving(null)}
@@ -695,8 +755,9 @@ function Dashboard({ project }: { project: string }) {
         }}
       />
       <NoteDialog
+        project={project}
         open={unblocking !== null}
-        title="Unblock this item?"
+        title="Unblock this ticket?"
         {...(unblocking === null ? {} : { subject: unblocking })}
         message={<p>It goes back into the queue at the place it kept while blocked.</p>}
         confirmLabel="Unblock"
@@ -708,8 +769,9 @@ function Dashboard({ project }: { project: string }) {
         }}
       />
       <NoteDialog
+        project={project}
         open={deferring !== null}
-        title={deferring?.type === 'gate' ? 'Defer this gate?' : 'Defer this item?'}
+        title={deferring?.type === 'gate' ? 'Defer this gate?' : 'Defer this ticket?'}
         {...(deferring === null ? {} : { subject: deferring })}
         message={
           <p>
@@ -726,8 +788,9 @@ function Dashboard({ project }: { project: string }) {
         }}
       />
       <NoteDialog
+        project={project}
         open={confirming !== null}
-        title={confirming?.type === 'gate' ? 'Confirm this gate?' : 'Confirm this item?'}
+        title={confirming?.type === 'gate' ? 'Confirm this gate?' : 'Confirm this ticket?'}
         {...(confirming === null ? {} : { subject: confirming })}
         message={
           <p>It is done: it leaves the queue and shows under Done until you acknowledge it.</p>
@@ -741,10 +804,12 @@ function Dashboard({ project }: { project: string }) {
         }}
       />
       <NoteDialog
+        project={project}
         open={sendingBack !== null}
-        title={sendingBack?.type === 'gate' ? 'Send this gate back?' : 'Send this item back?'}
+        title={sendingBack?.type === 'gate' ? 'Send this gate back?' : 'Send this ticket back?'}
         {...(sendingBack === null ? {} : { subject: sendingBack })}
         message={<p>It goes back to in progress at the place it kept while in review.</p>}
+        noteRows={SEND_BACK_NOTE_ROWS}
         confirmLabel="Send back"
         onCancel={() => setSendingBack(null)}
         onSubmit={(note, fields) =>
@@ -756,8 +821,9 @@ function Dashboard({ project }: { project: string }) {
         }}
       />
       <NoteDialog
+        project={project}
         open={resuming !== null}
-        title={resuming?.type === 'gate' ? 'Resume this gate?' : 'Resume this item?'}
+        title={resuming?.type === 'gate' ? 'Resume this gate?' : 'Resume this ticket?'}
         {...(resuming === null ? {} : { subject: resuming })}
         message={<p>It goes back to pending at the place it kept while deferred.</p>}
         confirmLabel="Resume"

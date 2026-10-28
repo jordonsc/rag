@@ -1,5 +1,6 @@
-import { useMemo } from 'react';
+import { useMemo, type MouseEvent } from 'react';
 
+import { attachedImageClicked, useImageViewer } from '../tracker/ImageViewer';
 import { cx } from '../util';
 import { renderMarkdown, type DocumentLinks } from './render';
 import styles from './markdown.module.css';
@@ -45,5 +46,27 @@ export function Markdown({ source, className, attachments = false, documentLinks
   // subtree each time the parent renders: a link under the reader's pointer
   // is replaced between press and release, and the click never lands.
   const inner = useMemo(() => ({ __html: html }), [html]);
-  return <div className={cx(styles.prose, className)} dangerouslySetInnerHTML={inner} />;
+  // An attached image opens in the viewer (rag-t0055); its link stays the
+  // way to the file itself, with a modifier key or without script.
+  const viewer = useImageViewer();
+  return (
+    <>
+      <div
+        className={cx(styles.prose, className)}
+        dangerouslySetInnerHTML={inner}
+        {...(attachments
+          ? {
+              onClick: (event: MouseEvent<HTMLDivElement>) => {
+                const image = attachedImageClicked(event);
+                if (image !== null) {
+                  event.preventDefault();
+                  viewer.open(image);
+                }
+              },
+            }
+          : {})}
+      />
+      {viewer.element}
+    </>
+  );
 }

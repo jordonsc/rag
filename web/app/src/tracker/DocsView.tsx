@@ -49,6 +49,7 @@ import { ApprovalBadge, LinkChips } from './parts';
 import { docPath, newConceptPath, storeLastProject } from './paths';
 import { ProjectPicker } from './ProjectPicker';
 import { TitleDialog, type TitleTarget } from './RenameDialogs';
+import { useScrollMemory } from './scrollMemory';
 import frame from './tracker.module.css';
 import {
   CONCEPT_STATES,
@@ -99,6 +100,9 @@ function Documents({ project }: { project: string }) {
   const tab = tabOf(params.get('tab'));
   const [loaded, setLoaded] = useState<Loaded>({ kind: 'loading' });
   const [attempt, setAttempt] = useState(0);
+  // Back from a document lands where the reader left this tab's list
+  // (rag-t0040). Attachments loads on its own, so it is not remembered.
+  useScrollMemory(tab === 'attachments' ? null : `docs:${project}:${tab}`, loaded.kind === 'ready');
 
   useEffect(() => storeLastProject(project), [project]);
 

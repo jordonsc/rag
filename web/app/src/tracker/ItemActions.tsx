@@ -12,14 +12,20 @@ import {
   Picker,
   Segmented,
   Select,
-  Textarea,
   Toggle,
 } from '@rag/ui';
 
 import { asApiError, isAbort, type LedgerApiError } from '../api';
 import writeStyles from '../writes/writes.module.css';
 import { listItems, updateItem } from './api';
-import { ApprovalDialog, LABELS_HELP, NoteDialog, PARALLEL_LABEL } from './dialogs';
+import { AttachTextarea, useAttachments } from './attach';
+import {
+  ApprovalDialog,
+  LABELS_HELP,
+  NoteDialog,
+  PARALLEL_LABEL,
+  SEND_BACK_NOTE_ROWS,
+} from './dialogs';
 import { TRACKER_IDENTITY_NEEDED, useTrackerGate } from './gate';
 import { LabelEditor, submittedLabels, useProjectLabels } from './LabelEditor';
 import { sameLabels } from './labels';
@@ -69,7 +75,8 @@ const REASON_OPTIONS = BLOCK_REASONS.map((value) => ({ value, label: blockReason
 
 /**
  * The item page's writes (D15): note, status, block or unblock, defer or
- * resume (rag-t0017), confirm or send back an item in review (rag-t0024),
+ * resume (rag-t0017), confirm or send back an item in review (rag-t0024; on
+ * a second row of their own, green and amber: rag-t0041),
  * approve or ratify, edit.
  *
  * Each is one `POST /tracker/items/{id}`. Only **Note** needs text; every
@@ -131,78 +138,84 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
     updateItem(item.id, { ...body, note }, fields);
 
   return (
-    <div className={writeStyles.actions}>
-      <Button size="sm" onClick={show('note')}>
-        <Icon name="message-square" size={14} />
-        Note
-      </Button>
-      {statuses.length > 0 && (
-        <Button size="sm" onClick={show('status')}>
-          <Icon name="circle-dot" size={14} />
-          Status…
+    <div className={styles.actionRows}>
+      <div className={writeStyles.actions}>
+        <Button size="sm" onClick={show('note')}>
+          <Icon name="message-square" size={14} />
+          Note
         </Button>
-      )}
-      {item.queued &&
-        (item.blocked ? (
-          <Button size="sm" variant="caution" onClick={show('unblock')}>
-            <Icon name="lock-open" size={14} />
-            Unblock
+        {statuses.length > 0 && (
+          <Button size="sm" onClick={show('status')}>
+            <Icon name="circle-dot" size={14} />
+            Status…
+          </Button>
+        )}
+        {item.queued &&
+          (item.blocked ? (
+            <Button size="sm" variant="caution" onClick={show('unblock')}>
+              <Icon name="lock-open" size={14} />
+              Unblock
+            </Button>
+          ) : (
+            <Button size="sm" onClick={show('block')}>
+              <Icon name="lock" size={14} />
+              Block…
+            </Button>
+          ))}
+        {item.status === 'deferred' ? (
+          <Button size="sm" onClick={show('resume')}>
+            <Icon name="circle-play" size={14} />
+            Resume
           </Button>
         ) : (
-          <Button size="sm" onClick={show('block')}>
-            <Icon name="lock" size={14} />
-            Block…
+          statuses.includes('deferred') && (
+            <Button size="sm" onClick={show('defer')}>
+              <Icon name="circle-pause" size={14} />
+              Defer
+            </Button>
+          )
+        )}
+        {item.approval === 'agent' && (
+          <Button size="sm" variant="accent" onClick={show('ratify')}>
+            <Icon name="shield-check" size={14} />
+            Ratify
           </Button>
-        ))}
-      {item.status === 'deferred' ? (
-        <Button size="sm" onClick={show('resume')}>
-          <Icon name="circle-play" size={14} />
-          Resume
+        )}
+        {item.approval === 'unapproved' && (
+          <Button size="sm" variant="accent" onClick={show('approve')}>
+            <Icon name="shield-check" size={14} />
+            Approve
+          </Button>
+        )}
+        {(item.approval === 'owner' || item.approval === 'ratified') && (
+          <Button size="sm" variant="ghost" onClick={show('withdraw')}>
+            Withdraw approval
+          </Button>
+        )}
+        <Button size="sm" onClick={show('edit')}>
+          <Icon name="pencil" size={14} />
+          Edit…
         </Button>
-      ) : (
-        statuses.includes('deferred') && (
-          <Button size="sm" onClick={show('defer')}>
-            <Icon name="circle-pause" size={14} />
-            Defer
-          </Button>
-        )
-      )}
+        {!gate.ready && <span className={writeStyles.gate}>{TRACKER_IDENTITY_NEEDED}</span>}
+      </div>
+      {/* The owner's verdict on work in review, on a row of its own under the
+          rest: Confirm in the done green, Send back in the blocked amber
+          (rag-t0041). */}
       {item.status === 'review' && (
-        <>
-          <Button size="sm" variant="accent" onClick={show('confirm')}>
+        <div className={writeStyles.actions} role="group" aria-label="Review">
+          <Button size="sm" variant="good" onClick={show('confirm')}>
             <Icon name="check" size={14} />
             Confirm
           </Button>
-          <Button size="sm" onClick={show('sendBack')}>
+          <Button size="sm" variant="caution" onClick={show('sendBack')}>
             <Icon name="rotate-ccw" size={14} />
             Send back
           </Button>
-        </>
+        </div>
       )}
-      {item.approval === 'agent' && (
-        <Button size="sm" variant="accent" onClick={show('ratify')}>
-          <Icon name="shield-check" size={14} />
-          Ratify
-        </Button>
-      )}
-      {item.approval === 'unapproved' && (
-        <Button size="sm" variant="accent" onClick={show('approve')}>
-          <Icon name="shield-check" size={14} />
-          Approve
-        </Button>
-      )}
-      {(item.approval === 'owner' || item.approval === 'ratified') && (
-        <Button size="sm" variant="ghost" onClick={show('withdraw')}>
-          Withdraw approval
-        </Button>
-      )}
-      <Button size="sm" onClick={show('edit')}>
-        <Icon name="pencil" size={14} />
-        Edit…
-      </Button>
-      {!gate.ready && <span className={writeStyles.gate}>{TRACKER_IDENTITY_NEEDED}</span>}
 
       <NoteDialog
+        project={item.project}
         open={open === 'note'}
         title="Add a note"
         subject={subject}
@@ -213,6 +226,7 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
         onDone={done}
       />
       <NoteDialog
+        project={item.project}
         open={open === 'status'}
         title="Change the status"
         subject={subject}
@@ -232,8 +246,9 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
         </Field>
       </NoteDialog>
       <NoteDialog
+        project={item.project}
         open={open === 'block'}
-        title="Block this item"
+        title="Block this ticket"
         subject={subject}
         message={
           <p>
@@ -268,7 +283,7 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
         {reason === 'dependency' && (
           <Field
             label="Waits on"
-            help="Items of this project. It unblocks itself when the last of them is done; a cancelled one never frees it."
+            help="Tickets of this project. It unblocks itself when the last of them is done; a cancelled one never frees it."
           >
             <Picker
               multiple
@@ -280,15 +295,16 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
                 code: candidate.id,
               }))}
               placeholder={
-                candidates === null ? 'Loading the items…' : 'Find an item by id or title'
+                candidates === null ? 'Loading the tickets…' : 'Find a ticket by id or title'
               }
             />
           </Field>
         )}
       </NoteDialog>
       <NoteDialog
+        project={item.project}
         open={open === 'unblock'}
-        title="Unblock this item?"
+        title="Unblock this ticket?"
         subject={subject}
         message={<p>It goes back into the queue at the place it kept while blocked.</p>}
         confirmLabel="Unblock"
@@ -297,8 +313,9 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
         onDone={done}
       />
       <NoteDialog
+        project={item.project}
         open={open === 'defer'}
-        title="Defer this item?"
+        title="Defer this ticket?"
         subject={subject}
         message={
           <p>
@@ -312,8 +329,9 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
         onDone={done}
       />
       <NoteDialog
+        project={item.project}
         open={open === 'resume'}
-        title="Resume this item?"
+        title="Resume this ticket?"
         subject={subject}
         message={<p>It goes back to pending at the place it kept while deferred.</p>}
         confirmLabel="Resume"
@@ -322,8 +340,9 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
         onDone={done}
       />
       <NoteDialog
+        project={item.project}
         open={open === 'confirm'}
-        title="Confirm this item?"
+        title="Confirm this ticket?"
         subject={subject}
         message={
           <p>It is done: it leaves the queue and shows under Done until you acknowledge it.</p>
@@ -334,22 +353,26 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
         onDone={done}
       />
       <NoteDialog
+        project={item.project}
         open={open === 'sendBack'}
-        title="Send this item back?"
+        title="Send this ticket back?"
         subject={subject}
         message={<p>It goes back to in progress at the place it kept while in review.</p>}
+        noteRows={SEND_BACK_NOTE_ROWS}
         confirmLabel="Send back"
         onCancel={close}
         onSubmit={send({ status: 'in_progress' })}
         onDone={done}
       />
       <ApprovalDialog
+        project={item.project}
         action={open === 'ratify' || open === 'approve' ? open : null}
         subject={subject}
         onCancel={close}
         onDone={done}
       />
       <NoteDialog
+        project={item.project}
         open={open === 'withdraw'}
         title="Withdraw the approval?"
         subject={subject}
@@ -367,7 +390,14 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
 
 // ---- Edit -------------------------------------------------------------------
 
-const KIND_OPTIONS = LINK_KINDS.map((value) => ({ value, label: linkKindLabel(value) }));
+/**
+ * The link kinds an edit may add (rag-t0044): never `became`, which the
+ * server writes on a request as the reverse of a ticket's `from`, and no
+ * `from` on a request, which comes from no other.
+ */
+export function addableLinkKinds(type: Item['type']): LinkKind[] {
+  return LINK_KINDS.filter((kind) => kind !== 'became' && !(kind === 'from' && type === 'request'));
+}
 const INTENSITY_OPTIONS = INTENSITIES.map((value) => ({ value, label: intensityLabel(value) }));
 
 function sameLink(a: Link, b: Link): boolean {
@@ -457,10 +487,18 @@ function EditItemDialog({ item, onCancel, onDone }: EditItemDialogProps) {
   const labelEntry = useRef<ChipListHandle>(null);
   const vocabulary = useProjectLabels(item.project);
   const [kind, setKind] = useState<LinkKind>('ledger');
+  const kindOptions = addableLinkKinds(item.type).map((value) => ({
+    value,
+    label: linkKindLabel(value),
+  }));
   const [target, setTarget] = useState('');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<LedgerApiError | null>(null);
+  // The body and the note each take files (rag-t0053); Save waits for both.
+  const bodyFiles = useAttachments(item.project, setBody);
+  const noteFiles = useAttachments(item.project, setNote);
+  const uploading = bodyFiles.uploads + noteFiles.uploads > 0;
 
   const changes = editBody(item, {
     title,
@@ -491,7 +529,7 @@ function EditItemDialog({ item, onCancel, onDone }: EditItemDialogProps) {
       gate.prompt();
       return;
     }
-    if (busy || title.trim() === '') {
+    if (busy || uploading || title.trim() === '') {
       return;
     }
     // A label still in the entry box is part of the edit.
@@ -542,7 +580,12 @@ function EditItemDialog({ item, onCancel, onDone }: EditItemDialogProps) {
           <Button onClick={onCancel} disabled={busy}>
             Cancel
           </Button>
-          <Button variant="primary" loading={busy} disabled={unchanged} onClick={submit}>
+          <Button
+            variant="primary"
+            loading={busy}
+            disabled={unchanged || uploading}
+            onClick={submit}
+          >
             {gate.ready ? 'Save' : 'Set your email'}
           </Button>
         </>
@@ -550,7 +593,7 @@ function EditItemDialog({ item, onCancel, onDone }: EditItemDialogProps) {
     >
       <Form onSubmit={submit}>
         <div className={writeStyles.dialogBody}>
-          <Field label="Title" error={title.trim() === '' ? 'An item needs a title.' : undefined}>
+          <Field label="Title" error={title.trim() === '' ? 'A ticket needs a title.' : undefined}>
             <Input value={title} onChange={setTitle} invalid={title.trim() === ''} />
           </Field>
           {item.type === 'gate' && (
@@ -566,7 +609,7 @@ function EditItemDialog({ item, onCancel, onDone }: EditItemDialogProps) {
               <Toggle checked={release} onChange={setRelease} label="Release after this gate" />
             </>
           )}
-          {item.type !== 'gate' && (
+          {item.type !== 'gate' && item.type !== 'request' && (
             <Checkbox checked={parallel} onChange={setParallel} label={PARALLEL_LABEL} />
           )}
           <Field label="Assignee" help="Free text: the sub-agent working it. Empty clears it.">
@@ -582,7 +625,7 @@ function EditItemDialog({ item, onCancel, onDone }: EditItemDialogProps) {
             />
           </Field>
           <Field label="Body" help="Markdown.">
-            <Textarea value={body} onChange={setBody} rows={10} />
+            <AttachTextarea value={body} onChange={setBody} attacher={bodyFiles} rows={10} />
           </Field>
           <Field label="Links">
             <div className={styles.linkEditor}>
@@ -592,13 +635,16 @@ function EditItemDialog({ item, onCancel, onDone }: EditItemDialogProps) {
                     <li key={`${link.kind}:${link.target}`} className={styles.linkEdit}>
                       <span className={styles.linkKind}>{linkKindLabel(link.kind)}</span>
                       <code>{link.target}</code>
-                      <IconButton
-                        icon="x"
-                        label={`Remove link ${link.target}`}
-                        variant="ghost"
-                        size={14}
-                        onClick={() => setLinks(links.filter((had) => !sameLink(had, link)))}
-                      />
+                      {/* A became link is the server's: it goes with its ticket's from link. */}
+                      {link.kind !== 'became' && (
+                        <IconButton
+                          icon="x"
+                          label={`Remove link ${link.target}`}
+                          variant="ghost"
+                          size={14}
+                          onClick={() => setLinks(links.filter((had) => !sameLink(had, link)))}
+                        />
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -607,14 +653,14 @@ function EditItemDialog({ item, onCancel, onDone }: EditItemDialogProps) {
                 <Select
                   value={kind}
                   onChange={(value) => setKind(value as LinkKind)}
-                  options={KIND_OPTIONS}
+                  options={kindOptions}
                   aria-label="Link kind"
                 />
                 <Input
                   value={target}
                   onChange={setTarget}
                   placeholder={
-                    kind === 'milestone' ? 'spec/m01' : kind === 'ledger' ? 'rag-0042' : ''
+                    kind === 'milestone' ? 'spec/m01' : kind === 'ledger' ? 'rag-l0042' : ''
                   }
                   aria-label="Link target"
                 />
@@ -624,8 +670,8 @@ function EditItemDialog({ item, onCancel, onDone }: EditItemDialogProps) {
               </div>
             </div>
           </Field>
-          <Field label="Note" help="Optional: why, kept in the item’s history.">
-            <Textarea value={note} onChange={setNote} rows={2} />
+          <Field label="Note" help="Optional: why, kept in the ticket’s history.">
+            <AttachTextarea value={note} onChange={setNote} attacher={noteFiles} rows={2} />
           </Field>
           {!gate.ready && <p className={writeStyles.gate}>{TRACKER_IDENTITY_NEEDED}</p>}
           {error !== null && (

@@ -389,8 +389,8 @@ describe('adding and removing', () => {
     open();
     await screen.findByRole('heading', { name: 'demo' });
 
-    await user.click(screen.getByRole('button', { name: 'Add item' }));
-    const dialog = screen.getByRole('dialog', { name: 'Add an item' });
+    await user.click(screen.getByRole('button', { name: 'Add ticket' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add a ticket' });
     await user.click(within(dialog).getByRole('radio', { name: 'Recon' }));
     await user.type(within(dialog).getByLabelText('Title'), 'Map the store');
     await user.type(within(dialog).getByLabelText('Body'), 'Read first.');
@@ -417,8 +417,8 @@ describe('adding and removing', () => {
     open();
     await screen.findByRole('heading', { name: 'demo' });
 
-    await user.click(screen.getByRole('button', { name: 'Add item' }));
-    const dialog = screen.getByRole('dialog', { name: 'Add an item' });
+    await user.click(screen.getByRole('button', { name: 'Add ticket' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add a ticket' });
     await user.type(within(dialog).getByLabelText('Title'), 'Map the store');
     // The label ticks and unticks it too.
     await user.click(within(dialog).getByText('Create it owner-approved'));
@@ -439,15 +439,15 @@ describe('adding and removing', () => {
     open();
     await screen.findByRole('heading', { name: 'demo' });
 
-    await user.click(screen.getByRole('button', { name: 'Add item' }));
-    let dialog = screen.getByRole('dialog', { name: 'Add an item' });
+    await user.click(screen.getByRole('button', { name: 'Add ticket' }));
+    let dialog = screen.getByRole('dialog', { name: 'Add a ticket' });
     await user.type(within(dialog).getByLabelText('Title'), 'One');
     await user.click(within(dialog).getByRole('checkbox', { name: 'Create it owner-approved' }));
     await user.click(within(dialog).getByRole('button', { name: 'Add to the bottom' }));
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add an item' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add a ticket' })).toBeNull());
 
-    await user.click(screen.getByRole('button', { name: 'Add item' }));
-    dialog = screen.getByRole('dialog', { name: 'Add an item' });
+    await user.click(screen.getByRole('button', { name: 'Add ticket' }));
+    dialog = screen.getByRole('dialog', { name: 'Add a ticket' });
     expect(
       within(dialog).getByRole('checkbox', { name: 'Create it owner-approved' }),
     ).toBeChecked();
@@ -504,7 +504,7 @@ describe('adding and removing', () => {
 
     await user.click(screen.getByRole('button', { name: 'Actions for demo-t0005' }));
     await user.click(screen.getByRole('menuitem', { name: 'Remove' }));
-    const dialog = screen.getByRole('dialog', { name: 'Remove this item?' });
+    const dialog = screen.getByRole('dialog', { name: 'Remove this ticket?' });
     await user.type(within(dialog).getByLabelText('Note (optional)'), 'Superseded by t0007');
     await user.click(within(dialog).getByRole('button', { name: 'Remove' }));
     await waitFor(() =>
@@ -525,7 +525,7 @@ describe('adding and removing', () => {
     await screen.findByRole('heading', { name: 'demo' });
 
     await user.click(within(section('Blocked')).getByRole('button', { name: 'Unblock' }));
-    const dialog = screen.getByRole('dialog', { name: 'Unblock this item?' });
+    const dialog = screen.getByRole('dialog', { name: 'Unblock this ticket?' });
     await user.click(within(dialog).getByRole('button', { name: 'Unblock' }));
     await waitFor(() =>
       expect(server.matching('/tracker/items/demo-t0006', 'POST')).toHaveLength(1),
@@ -913,7 +913,7 @@ describe('the row tweaks', () => {
     expect(within(waiting!).getByText('waits on')).toBeInTheDocument();
     expect(within(waiting!).getByRole('link', { name: /demo-t0002/ })).toHaveAttribute(
       'href',
-      '/projects/demo/item/demo-t0002',
+      '/projects/demo/ticket/demo-t0002',
     );
   });
 
@@ -1014,7 +1014,7 @@ describe('deferred (rag-t0017)', () => {
 
     await user.click(screen.getByRole('button', { name: 'Actions for demo-t0005' }));
     await user.click(screen.getByRole('menuitem', { name: 'Defer' }));
-    const dialog = screen.getByRole('dialog', { name: 'Defer this item?' });
+    const dialog = screen.getByRole('dialog', { name: 'Defer this ticket?' });
     await user.click(within(dialog).getByRole('button', { name: 'Defer' }));
     await waitFor(() =>
       expect(server.matching('/tracker/items/demo-t0005', 'POST')).toHaveLength(1),
@@ -1046,7 +1046,7 @@ describe('deferred (rag-t0017)', () => {
 
     const row = within(section('Deferred')).getAllByRole('listitem')[0]!;
     await user.click(within(row).getByRole('button', { name: 'Resume' }));
-    const dialog = screen.getByRole('dialog', { name: 'Resume this item?' });
+    const dialog = screen.getByRole('dialog', { name: 'Resume this ticket?' });
     await user.type(within(dialog).getByLabelText('Note (optional)'), 'Back on');
     await user.click(within(dialog).getByRole('button', { name: 'Resume' }));
     await waitFor(() =>
@@ -1094,8 +1094,8 @@ describe('parallel, dependencies and the marker on a phone', () => {
     open();
     await screen.findByRole('heading', { name: 'demo' });
 
-    await user.click(screen.getByRole('button', { name: 'Add item' }));
-    const dialog = screen.getByRole('dialog', { name: 'Add an item' });
+    await user.click(screen.getByRole('button', { name: 'Add ticket' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add a ticket' });
     const box = within(dialog).getByRole('checkbox', { name: /^Parallel/ });
     expect(box).not.toBeChecked();
     await user.type(within(dialog).getByLabelText('Title'), 'Scratch build');
@@ -1130,15 +1130,15 @@ describe('parallel, dependencies and the marker on a phone', () => {
     await screen.findByRole('heading', { name: 'demo' });
     const blocked = section('Blocked');
     const [waiting, held] = within(blocked).getAllByRole('listitem');
-    expect(within(waiting!).getByText('Waits on items')).toBeInTheDocument();
+    expect(within(waiting!).getByText('Waits on tickets')).toBeInTheDocument();
     const waits = within(waiting!).getByText('waits on').parentElement!;
     expect(
       within(waits)
         .getAllByRole('link')
         .map((link) => [link.textContent, link.getAttribute('href')]),
     ).toEqual([
-      ['demo-t0001', '/projects/demo/item/demo-t0001'],
-      ['demo-t0002', '/projects/demo/item/demo-t0002'],
+      ['demo-t0001', '/projects/demo/ticket/demo-t0001'],
+      ['demo-t0002', '/projects/demo/ticket/demo-t0002'],
     ]);
     expect(within(held!).queryByText('waits on')).toBeNull();
   });
@@ -1275,7 +1275,7 @@ describe('a done gate under Done (rag-t0021)', () => {
     expect(within(marker!).getByText('Done')).toBeInTheDocument();
     expect(within(marker!).getByText('demo-t0012')).toBeInTheDocument();
     const link = within(marker!).getByRole('link');
-    expect(link).toHaveAttribute('href', '/projects/demo/item/demo-t0012');
+    expect(link).toHaveAttribute('href', '/projects/demo/ticket/demo-t0012');
     expect(link.className).toMatch(/markerLabel/);
     expect(link.className).toMatch(/markerDone/);
     // Two dashed rules either side, in the done tone; no type badge column.
@@ -1381,7 +1381,7 @@ describe('review (rag-t0024)', () => {
     await screen.findByRole('heading', { name: 'demo' });
 
     await user.click(screen.getByRole('button', { name: 'Confirm demo-t0011' }));
-    const dialog = screen.getByRole('dialog', { name: 'Confirm this item?' });
+    const dialog = screen.getByRole('dialog', { name: 'Confirm this ticket?' });
     expect(server.matching('/tracker/items/demo-t0011', 'POST')).toHaveLength(0);
     await user.click(within(dialog).getByRole('button', { name: 'Confirm' }));
     await waitFor(() =>
@@ -1402,7 +1402,7 @@ describe('review (rag-t0024)', () => {
     await screen.findByRole('heading', { name: 'demo' });
 
     await user.click(screen.getByRole('button', { name: 'Send back demo-t0012' }));
-    const dialog = screen.getByRole('dialog', { name: 'Send this item back?' });
+    const dialog = screen.getByRole('dialog', { name: 'Send this ticket back?' });
     await user.type(within(dialog).getByLabelText('Note (optional)'), 'Not yet');
     await user.click(within(dialog).getByRole('button', { name: 'Send back' }));
     await waitFor(() =>
@@ -1422,7 +1422,7 @@ describe('review (rag-t0024)', () => {
     open();
     await screen.findByRole('heading', { name: 'demo' });
     await user.click(screen.getByRole('button', { name: 'Confirm demo-t0011' }));
-    const dialog = screen.getByRole('dialog', { name: 'Confirm this item?' });
+    const dialog = screen.getByRole('dialog', { name: 'Confirm this ticket?' });
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(server.matching(/\/tracker\/items\//, 'POST')).toHaveLength(0);
   });
@@ -1498,83 +1498,193 @@ describe('the row polish (rag-t0023, rag-t0025, rag-t0026)', () => {
     }
   });
 
-  it('fills an in-progress row with the owner’s blue and deepens it under the pointer (rag-t0029)', () => {
+  /** A `--rag-inprogress-row*` token: its share of the owner's blue, and the ground it is mixed into. */
+  function tint(name: string): { share: number; ground: string; hex: string } {
+    const css = readFileSync(resolve(__dirname, '../../../ui/src/tokens.css'), 'utf8');
+    const m = new RegExp(
+      `${name}:\\s*color-mix\\(in srgb, var\\(--rag-inprogress\\) (\\d+)%, var\\((--rag-[a-z0-9-]+)\\)\\);`,
+    ).exec(css);
+    expect(m, name).not.toBeNull();
+    const share = Number(m![1]) / 100;
+    const t = tokens();
+    const ground = t[m![2]!]!;
+    return { share, ground: m![2]!, hex: mix(t['--rag-inprogress']!, ground, share) };
+  }
+
+  it('tints an in-progress row a dark navy near its neighbours, deeper under the pointer (rag-t0033)', () => {
     const sheet = readFileSync(resolve(__dirname, '../tracker/tracker.module.css'), 'utf8');
     expect(sheet).toMatch(
-      /\.rowInProgress:not\(\.lifted\)\s*\{\s*background:\s*var\(--rag-inprogress\);\s*\}/,
+      /\.rowInProgress:not\(\.lifted\)\s*\{\s*background:\s*var\(--rag-inprogress-row\);\s*\}/,
     );
     expect(sheet).toMatch(
-      /\.rowInProgress:not\(\.lifted\):hover\s*\{\s*background:\s*var\(--rag-inprogress-hover\);\s*\}/,
+      /\.rowInProgress:not\(\.lifted\):hover\s*\{\s*background:\s*var\(--rag-inprogress-row-hover\);\s*\}/,
     );
-    // The old light tint is gone.
-    expect(sheet).not.toMatch(
-      /\.rowInProgress[^{]*\{[^}]*color-mix\(in srgb, var\(--rag-acc\) \d+%, transparent\)/,
-    );
+    // rag-t0029's solid fill is gone.
+    expect(sheet).not.toMatch(/background:\s*var\(--rag-inprogress\);/);
     const t = tokens();
     expect(t['--rag-inprogress']).toBe('#0b61ac');
-    // The hover is a visible step: at least as far from the fill as a plain
-    // row's hover (surface2) is from its rest (surface).
-    expect(contrast(t['--rag-inprogress-hover']!, t['--rag-inprogress']!)).toBeGreaterThanOrEqual(
-      contrast(t['--rag-surface2']!, t['--rag-surface']!),
-    );
+    const rest = tint('--rag-inprogress-row');
+    const hover = tint('--rag-inprogress-row-hover');
+    // A low share of the blue over the row's own ground, the panel.
+    expect(rest.ground).toBe('--rag-surface');
+    expect(hover.ground).toBe('--rag-surface');
+    expect(rest.share).toBeGreaterThanOrEqual(0.15);
+    expect(rest.share).toBeLessThanOrEqual(0.25);
+    expect(rest.hex).toBe('#162839');
+    // Clearly apart from a plain row (more than a plain row's hover step) but
+    // close to it: nowhere near the solid blue's step.
+    const plainStep = contrast(t['--rag-surface2']!, t['--rag-surface']!);
+    expect(contrast(rest.hex, t['--rag-surface']!)).toBeGreaterThan(plainStep);
+    expect(contrast(rest.hex, t['--rag-surface']!)).toBeLessThan(1.3);
+    expect(contrast(t['--rag-inprogress']!, t['--rag-surface']!)).toBeGreaterThan(2);
+    // A dark navy: blue-led, and dark in every channel.
+    const [r, g, b] = channels(rest.hex);
+    expect(b).toBeGreaterThan(r! + 20);
+    expect(Math.max(r!, g!, b!)).toBeLessThan(80);
+    // The hover is the same tint a visible step deeper.
+    expect(hover.share).toBeGreaterThan(rest.share);
+    expect(contrast(hover.hex, rest.hex)).toBeGreaterThanOrEqual(1.05);
   });
 
-  it('re-points every foreground on an in-progress row at a colour that reads on the blue', () => {
+  it('keeps the palette’s own foregrounds on an in-progress row, each 4.5:1 on the tint and its hover (rag-t0033)', () => {
     const sheet = readFileSync(resolve(__dirname, '../tracker/tracker.module.css'), 'utf8');
-    const rule = /\.rowInProgress\s*\{([^}]*)\}/.exec(sheet);
-    expect(rule).not.toBeNull();
+    // No re-pointing of the foregrounds, and no on-blue family left behind.
+    expect(sheet).not.toMatch(/\.rowInProgress\s*\{/);
+    expect(sheet).not.toMatch(/--rag-on-inprogress/);
+    const tokensCss = readFileSync(resolve(__dirname, '../../../ui/src/tokens.css'), 'utf8');
+    expect(tokensCss).not.toMatch(/--rag-on-inprogress|--rag-inprogress-hover:/);
     const t = tokens();
+    const grounds = [tint('--rag-inprogress-row').hex, tint('--rag-inprogress-row-hover').hex];
     for (const role of ['bright', 'text', 'dim', 'acc', 'good', 'warn', 'crit']) {
-      expect(rule![1], role).toMatch(
-        new RegExp(`--rag-${role}:\\s*var\\(--rag-on-inprogress-${role}\\);`),
-      );
-      const fg = t[`--rag-on-inprogress-${role}`]!;
-      expect(fg, role).toMatch(/^#[0-9a-f]{6}$/);
-      for (const ground of ['--rag-inprogress', '--rag-inprogress-hover']) {
-        expect(contrast(fg, t[ground]!), `${role} on ${ground}`).toBeGreaterThanOrEqual(4.5);
+      for (const ground of grounds) {
+        expect(
+          contrast(t[`--rag-${role}`]!, ground),
+          `${role} on ${ground}`,
+        ).toBeGreaterThanOrEqual(4.5);
       }
     }
-    // Why: the palette's own foregrounds fail on the blue.
-    for (const role of ['--rag-text', '--rag-dim', '--rag-acc', '--rag-warn']) {
-      expect(contrast(t[role]!, t['--rag-inprogress']!), role).toBeLessThan(4.5);
-    }
+    // Why the hover is not the tint over a plain row's hover grey: dim fails there.
+    const overGrey = mix(
+      t['--rag-inprogress']!,
+      t['--rag-surface2']!,
+      tint('--rag-inprogress-row').share,
+    );
+    expect(contrast(t['--rag-dim']!, overGrey)).toBeLessThan(4.5);
   });
 
-  it('draws a row’s buttons and the ratify pill over the panel’s dark on the blue, readable at rest and on hover', () => {
+  /** A `--rag-tint-*` share token, as a fraction. */
+  function tintShare(name: string): number {
+    const css = readFileSync(resolve(__dirname, '../../../ui/src/tokens.css'), 'utf8');
+    const m = new RegExp(`${name}:\\s*(\\d+)%;`).exec(css);
+    expect(m, name).not.toBeNull();
+    return Number(m![1]) / 100;
+  }
+
+  /**
+   * A row's tinted controls, at rest and under the pointer: the Approve
+   * (`accent`) and Unblock (`caution`) buttons and the ratify pill. Each fill
+   * is its role at a `--rag-tint-*` share over the row; a hovered one's text
+   * is its role lifted by `--rag-tint-lift` of `--rag-bright` (rag-t0034).
+   */
+  function tintedControls(): Array<{
+    what: string;
+    role: string;
+    rest: string;
+    hover: string;
+  }> {
     const sheet = readFileSync(resolve(__dirname, '../tracker/tracker.module.css'), 'utf8');
-    const t = tokens();
-    const cases: Array<[RegExp, string]> = [
-      [/\.rowInProgress \.cellMeta button:not\(\.approvalButton\)\s*\{([^}]*)\}/, 'acc'],
+    const button = readFileSync(
+      resolve(__dirname, '../../../ui/src/components/Button.module.css'),
+      'utf8',
+    );
+    const body = (css: string, selector: RegExp) => {
+      const m = new RegExp(`${selector.source}\\s*\\{([^}]*)\\}`).exec(css);
+      expect(m, String(selector)).not.toBeNull();
+      return m![1]!;
+    };
+    const fillShare = (text: string, role: string, what: string) => {
+      const m = new RegExp(
+        `background:\\s*color-mix\\(in srgb, var\\(--rag-${role}\\) var\\((--rag-tint-[a-z-]+)\\), transparent\\);`,
+      ).exec(text);
+      expect(m, what).not.toBeNull();
+      return m![1]!;
+    };
+    const lifted = (text: string, role: string, what: string) => {
+      expect(text, what).toMatch(
+        new RegExp(
+          `color:\\s*color-mix\\(in srgb, var\\(--rag-bright\\) var\\(--rag-tint-lift\\), var\\(--rag-${role}\\)\\);`,
+        ),
+      );
+    };
+    const out: Array<{ what: string; role: string; rest: string; hover: string }> = [];
+    for (const [what, css, restSel, hoverSel, role] of [
+      ['Approve (accent)', button, /\.accent/, /\.accent:hover:not\(:disabled\)/, 'acc'],
+      ['Unblock (caution)', button, /\.caution/, /\.caution:hover:not\(:disabled\)/, 'warn'],
       [
-        /\.rowInProgress \.cellMeta button:not\(\.approvalButton\):hover:not\(:disabled\)\s*\{([^}]*)\}/,
-        'acc',
-      ],
-      [/\.rowInProgress \.approvalButton > span\s*\{([^}]*)\}/, 'warn'],
-      [
-        /\.rowInProgress \.approvalButton:hover > span,\s*\.rowInProgress \.approvalButton:focus-visible > span\s*\{([^}]*)\}/,
+        'ratify pill',
+        sheet,
+        /\.approvalButton > span/,
+        /\.approvalButton:hover > span,\s*\.approvalButton:focus-visible > span/,
         'warn',
       ],
-    ];
-    const shares: number[] = [];
-    for (const [pattern, role] of cases) {
-      const body = pattern.exec(sheet);
-      expect(body, String(pattern)).not.toBeNull();
-      const fill = new RegExp(
-        `background:\\s*color-mix\\(in srgb, var\\(--rag-${role}\\) (\\d+)%, var\\(--rag-surface\\)\\);`,
-      ).exec(body![1]!);
-      expect(fill, String(pattern)).not.toBeNull();
-      const share = Number(fill![1]) / 100;
-      shares.push(share);
-      const fg = t[`--rag-on-inprogress-${role}`]!;
-      const ground = mix(fg, t['--rag-surface']!, share);
-      expect(contrast(fg, ground), String(pattern)).toBeGreaterThanOrEqual(4.5);
+    ] as const) {
+      const hoverBody = body(css, hoverSel);
+      lifted(hoverBody, role, what);
+      out.push({
+        what,
+        role,
+        rest: fillShare(body(css, restSel), role, what),
+        hover: fillShare(hoverBody, role, what),
+      });
     }
-    // Hover is deeper than rest, for the button and for the pill.
-    expect(shares[1]).toBeGreaterThan(shares[0]!);
-    expect(shares[3]).toBeGreaterThan(shares[2]!);
+    return out;
+  }
+
+  it('draws an in-progress row’s buttons and ratify pill as on any row, readable over the tint (rag-t0033)', () => {
+    const sheet = readFileSync(resolve(__dirname, '../tracker/tracker.module.css'), 'utf8');
+    // rag-t0029's dark control fills are gone.
+    expect(sheet).not.toMatch(/\.rowInProgress \.(cellMeta|approvalButton)/);
+    const t = tokens();
+    const rest = tint('--rag-inprogress-row').hex;
+    for (const c of tintedControls()) {
+      const fg = t[`--rag-${c.role}`]!;
+      const ground = mix(fg, rest, tintShare(c.rest));
+      expect(contrast(fg, ground), c.what).toBeGreaterThanOrEqual(4.5);
+    }
   });
 
-  it('puts the in-progress row’s Approve, ratify pill and Unblock where those rules reach them', async () => {
+  it('keeps hovered Approve, Unblock and ratify-pill text at 4.5:1 on plain, highlighted and in-progress rows (rag-t0034)', () => {
+    const t = tokens();
+    // Under the pointer the row is hovered too: a plain row's hover is the
+    // highlighted ground, surface2; an in-progress row's is its deeper tint.
+    // Keyboard focus lights the pill on a row at rest, so those count too.
+    const grounds: Record<string, string> = {
+      plain: t['--rag-surface']!,
+      'plain or highlighted, hovered': t['--rag-surface2']!,
+      'in progress': tint('--rag-inprogress-row').hex,
+      'in progress, hovered': tint('--rag-inprogress-row-hover').hex,
+    };
+    const lift = tintShare('--rag-tint-lift');
+    for (const c of tintedControls()) {
+      const role = t[`--rag-${c.role}`]!;
+      const text = mix(t['--rag-bright']!, role, lift);
+      // The hover is still a lift: a deeper fill than at rest.
+      expect(tintShare(c.hover), c.what).toBeGreaterThan(tintShare(c.rest));
+      for (const [where, row] of Object.entries(grounds)) {
+        const ground = mix(role, row, tintShare(c.hover));
+        expect(contrast(text, ground), `${c.what} on ${where}`).toBeGreaterThanOrEqual(4.5);
+      }
+      // Without the lifted text, the deeper fill fails on the in-progress hover.
+      const deep = mix(role, grounds['in progress, hovered']!, tintShare(c.hover));
+      expect(contrast(role, deep), c.what).toBeLessThan(4.5);
+    }
+    // The pill lifts with the caution button's tokens, not a share of its own.
+    const [, caution, pill] = tintedControls();
+    expect(pill!.rest).toBe(caution!.rest);
+    expect(pill!.hover).toBe(caution!.hover);
+  });
+
+  it('draws the in-progress row’s Approve, ratify pill and Unblock in its row, Approve still the tinted button', async () => {
     view = queueView({
       queue: [
         item('demo-t0001', { status: 'in_progress', approval: 'unapproved' }),
@@ -1587,15 +1697,14 @@ describe('the row polish (rag-t0023, rag-t0025, rag-t0026)', () => {
     open();
     await screen.findByRole('heading', { name: 'demo' });
     const approve = screen.getByRole('button', { name: 'Approve demo-t0001' });
-    expect(approve.closest('[class*="cellMeta"]')).not.toBeNull();
     expect(approve.closest('li')!.className).toMatch(/rowInProgress/);
+    expect(approve.className).toMatch(/accent/);
     const ratify = screen.getByRole('button', { name: 'Agent-approved: ratify demo-t0002' });
     expect(ratify.className).toMatch(/approvalButton/);
     expect(ratify.closest('li')!.className).toMatch(/rowInProgress/);
     const blocked = within(section('Blocked')).getAllByRole('listitem')[0]!;
     expect(blocked.className).toMatch(/rowInProgress/);
-    const unblock = within(blocked).getByRole('button', { name: 'Unblock' });
-    expect(unblock.closest('[class*="cellMeta"]')).not.toBeNull();
+    expect(within(blocked).getByRole('button', { name: 'Unblock' })).toBeInTheDocument();
   });
 
   it('draws Approve as the design system’s tinted button, not a ghost (rag-t0025)', async () => {
@@ -1609,7 +1718,7 @@ describe('the row polish (rag-t0023, rag-t0025, rag-t0026)', () => {
   it('fills the ratify badge at rest and deepens it on hover and focus, never to a row’s colour', () => {
     const sheet = readFileSync(resolve(__dirname, '../tracker/tracker.module.css'), 'utf8');
     expect(sheet).toMatch(
-      /\.approvalButton > span\s*\{\s*background:\s*color-mix\(in srgb, var\(--rag-warn\) \d+%, transparent\);/,
+      /\.approvalButton > span\s*\{\s*background:\s*color-mix\(in srgb, var\(--rag-warn\) var\(--rag-tint-warn\), transparent\);/,
     );
     const hover =
       /\.approvalButton:hover > span,\s*\.approvalButton:focus-visible > span\s*\{([^}]*)\}/.exec(

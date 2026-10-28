@@ -370,7 +370,7 @@ export function listLabels(project: string, signal?: AbortSignal): Promise<Label
 export const PARALLEL_GATE = 'A gate cannot be parallel.';
 
 /** Blocking on a dependency names what it waits on (rag-t0018). */
-export const DEPENDS_ON_NEEDED = 'Choose at least one item it waits on.';
+export const DEPENDS_ON_NEEDED = 'Choose at least one ticket it waits on.';
 
 /** Refuse a label set the server would refuse (rag-t0027), before sending it. */
 function checkLabels(labels: readonly string[] | undefined): void {
@@ -384,7 +384,7 @@ function checkLabels(labels: readonly string[] | undefined): void {
     }
   }
   if (new Set(labels.map((label) => labelKey(normaliseLabel(label)))).size > LABEL_MAX) {
-    refuse(`An item carries at most ${LABEL_MAX} labels.`);
+    refuse(`A ticket carries at most ${LABEL_MAX} labels.`);
   }
 }
 
@@ -396,7 +396,7 @@ export async function createItem(
   signal?: AbortSignal,
 ): Promise<Item> {
   if (body.title.trim() === '') {
-    refuse('An item needs a title.');
+    refuse('A ticket needs a title.');
   }
   if (body.type === 'gate' && body.intensity === undefined) {
     refuse('A gate needs an intensity.');
@@ -432,7 +432,7 @@ export async function updateItem(
   signal?: AbortSignal,
 ): Promise<Item> {
   if (body.title !== undefined && body.title.trim() === '') {
-    refuse('An item needs a title.');
+    refuse('A ticket needs a title.');
   }
   if (
     body.block_reason === 'dependency' &&

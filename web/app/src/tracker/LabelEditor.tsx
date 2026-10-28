@@ -80,7 +80,7 @@ export function addTyped(
   }
   const labels = cleanLabels([...values, ...parts.filter((p) => p !== '')], vocabulary);
   if (labels.length > LABEL_MAX) {
-    return { problem: `An item carries at most ${LABEL_MAX} labels.` };
+    return { problem: `A ticket carries at most ${LABEL_MAX} labels.` };
   }
   return { labels };
 }

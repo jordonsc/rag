@@ -133,7 +133,7 @@ describe('the label rules', () => {
     });
     const ten = Array.from({ length: LABEL_MAX }, (_, n) => `l${n}`);
     expect(addTyped(ten, ['one more'], [])).toEqual({
-      problem: 'An item carries at most 10 labels.',
+      problem: 'A ticket carries at most 10 labels.',
     });
     // The most used first, none already chosen.
     expect(offeredLabels(VOCABULARY, ['physics'])).toEqual(['Creatures', 'Biomes']);
@@ -146,7 +146,7 @@ describe('the label rules', () => {
     ).rejects.toThrow(/comma/);
     const eleven = Array.from({ length: LABEL_MAX + 1 }, (_, n) => `l${n}`);
     await expect(updateItem('demo-t0001', { labels: eleven }, author)).rejects.toThrow(
-      'An item carries at most 10 labels.',
+      'A ticket carries at most 10 labels.',
     );
     expect(server.matching(/\/tracker\/(demo\/items|items\/)/, 'POST')).toHaveLength(0);
     const read = await listLabels('demo');
@@ -235,7 +235,7 @@ describe('labels on the dashboard', () => {
   it('says so when no queued item carries the label, and offers no filter without labels', async () => {
     openDashboard('/projects/demo?label=Ghosts');
     await screen.findByRole('heading', { name: 'demo' });
-    expect(screen.getByText('No item labelled Ghosts in the queue')).toBeInTheDocument();
+    expect(screen.getByText('No ticket labelled Ghosts in the queue')).toBeInTheDocument();
     expect(screen.queryByRole('list', { name: 'Queue' })).toBeNull();
   });
 
@@ -252,8 +252,8 @@ describe('labels on the dashboard', () => {
     openDashboard();
     await screen.findByRole('heading', { name: 'demo' });
 
-    await user.click(screen.getByRole('button', { name: 'Add item' }));
-    const dialog = screen.getByRole('dialog', { name: 'Add an item' });
+    await user.click(screen.getByRole('button', { name: 'Add ticket' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add a ticket' });
     await user.type(within(dialog).getByLabelText('Title'), 'Gas buoyancy');
     // The most used of the project's labels are one click away.
     await within(dialog).findByRole('button', { name: 'Add label Physics' });
@@ -277,8 +277,8 @@ describe('labels on the dashboard', () => {
     openDashboard();
     await screen.findByRole('heading', { name: 'demo' });
 
-    await user.click(screen.getByRole('button', { name: 'Add item' }));
-    const dialog = screen.getByRole('dialog', { name: 'Add an item' });
+    await user.click(screen.getByRole('button', { name: 'Add ticket' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add a ticket' });
     await user.type(within(dialog).getByLabelText('Title'), 'Too long');
     await user.type(within(dialog).getByLabelText('Labels'), `${'x'.repeat(33)}{Enter}`);
     expect(within(dialog).getByRole('alert')).toHaveTextContent('at most 32 characters');
@@ -294,8 +294,8 @@ describe('labels on the dashboard', () => {
     server.on('/tracker/demo/items', { body: item('demo-t0011') }, 'POST');
     openDashboard();
     await screen.findByRole('heading', { name: 'demo' });
-    await user.click(screen.getByRole('button', { name: 'Add item' }));
-    const dialog = screen.getByRole('dialog', { name: 'Add an item' });
+    await user.click(screen.getByRole('button', { name: 'Add ticket' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add a ticket' });
     await user.type(within(dialog).getByLabelText('Title'), 'Plain');
     await user.click(within(dialog).getByRole('button', { name: 'Add to the bottom' }));
     await waitFor(() => expect(server.matching('/tracker/demo/items', 'POST')).toHaveLength(1));
@@ -329,8 +329,8 @@ describe('labels on the item page', () => {
   });
 
   function openItem() {
-    return mountAt('/projects/:project/item/:id', <ItemView />, {
-      route: `/projects/demo/item/${ID}`,
+    return mountAt('/projects/:project/ticket/:id', <ItemView />, {
+      route: `/projects/demo/ticket/${ID}`,
     });
   }
 

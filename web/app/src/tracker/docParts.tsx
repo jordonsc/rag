@@ -13,6 +13,7 @@ import { cx } from '../util';
 import type { DiffRow } from './diff';
 import styles from './docs.module.css';
 import { docsPath, historyPath, projectPath } from './paths';
+import { RETURN_STATE } from './scrollMemory';
 import { recordStateLabel, recordStateTone } from './vocab';
 
 export interface DocMarkdownProps {
@@ -123,6 +124,9 @@ export function ProjectTabs({ project, active }: { project: string; active: Proj
   const tab = (page: ProjectPage, to: string, icon: string, label: string) => (
     <Link
       to={to}
+      // A tab is a way back: the page it opens returns to where it was left
+      // (rag-t0040).
+      state={RETURN_STATE}
       className={cx(styles.projectTab, active === page && styles.projectTabActive)}
       aria-current={active === page ? 'page' : undefined}
     >

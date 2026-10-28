@@ -1,10 +1,12 @@
 import {
+  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type RefObject,
 } from 'react';
@@ -19,12 +21,17 @@ interface ScrimLayerProps {
   onDismiss: () => void;
   children: ReactNode;
   align: 'center' | 'end';
+  /**
+   * A lighter scrim, for a dialog: one can be dragged aside to read the page
+   * under it (rag-t0045), and a page under a near-black wash is not read.
+   */
+  light?: boolean;
 }
 
-function ScrimLayer({ onDismiss, children, align }: ScrimLayerProps) {
+function ScrimLayer({ onDismiss, children, align, light = false }: ScrimLayerProps) {
   return createPortal(
     <div
-      className={cx(styles.scrim, align === 'end' && styles.scrimEnd)}
+      className={cx(styles.scrim, align === 'end' && styles.scrimEnd, light && styles.scrimLight)}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
           onDismiss();
@@ -117,26 +124,191 @@ function useFocusTrap(open: boolean, ref: RefObject<HTMLDivElement | null>) {
   };
 }
 
+/** Clearance kept between a dragged dialog and the viewport edge, in px. */
+const DIALOG_MARGIN = 8;
+
+/** Where a dialog has been dragged to: a translation from where it is laid out. */
+export interface DialogOffset {
+  x: number;
+  y: number;
+}
+
+/**
+ * The offset a dialog may take so that all of it stays on screen.
+ *
+ * `home` is the dialog's box where layout puts it (centred, offset zero);
+ * `wanted` is the translation the pointer asks for. Each axis is clamped so
+ * the box keeps `DIALOG_MARGIN` from every viewport edge. A box larger than
+ * the viewport on an axis is pinned to its leading margin there, so its title
+ * bar, the handle that moves it, is never the part pushed off screen.
+ *
+ * Exported because it is the part of dragging a headless test can prove:
+ * jsdom has no layout, so the arithmetic is tested directly.
+ */
+export function clampDialogOffset(
+  home: { left: number; top: number; width: number; height: number },
+  wanted: DialogOffset,
+  viewportWidth: number,
+  viewportHeight: number,
+): DialogOffset {
+  const axis = (start: number, extent: number, want: number, available: number) => {
+    const least = DIALOG_MARGIN - start;
+    const most = available - DIALOG_MARGIN - extent - start;
+    return most < least ? least : Math.min(Math.max(want, least), most);
+  };
+  return {
+    x: axis(home.left, home.width, wanted.x, viewportWidth),
+    y: axis(home.top, home.height, wanted.y, viewportHeight),
+  };
+}
+
+const ORIGIN: DialogOffset = { x: 0, y: 0 };
+
+/**
+ * Drag a dialog by its title bar (rag-t0045), so it can be moved aside to
+ * read the page under it.
+ *
+ * Pointer events, so a mouse, a pen and a finger all move it; the header sets
+ * `touch-action: none`, so a finger on it drags the dialog rather than
+ * scrolling the page. The pointer is captured, so a fast drag that outruns the
+ * header keeps moving it. A press on a control in the header (the close
+ * button) is the control's, not a drag.
+ *
+ * The position is a translation, reset to zero each time the dialog opens, so
+ * every opening starts centred. It is clamped to the viewport as it moves, and
+ * again when the window or the dialog changes size (an error line arriving
+ * grows it about its centre), so a dragged dialog is never left off screen.
+ * The keyboard is untouched: there is nothing to drag with it, and the focus
+ * trap and Escape are the dialog's, not the header's.
+ */
+function useDialogDrag(open: boolean, ref: RefObject<HTMLDivElement | null>) {
+  const [offset, setOffset] = useState<DialogOffset>(ORIGIN);
+  const [dragging, setDragging] = useState(false);
+  const live = useRef<DialogOffset>(ORIGIN);
+  const drag = useRef<{ pointer: number; x: number; y: number; from: DialogOffset } | null>(null);
+
+  const move = useCallback(
+    (wanted: DialogOffset) => {
+      const box = ref.current?.getBoundingClientRect();
+      const now = live.current;
+      const next =
+        box === undefined
+          ? wanted
+          : clampDialogOffset(
+              {
+                left: box.left - now.x,
+                top: box.top - now.y,
+                width: box.width,
+                height: box.height,
+              },
+              wanted,
+              window.innerWidth,
+              window.innerHeight,
+            );
+      if (next.x !== now.x || next.y !== now.y) {
+        live.current = next;
+        setOffset(next);
+      }
+    },
+    [ref],
+  );
+
+  // Each opening starts where layout puts it.
+  useLayoutEffect(() => {
+    if (open) {
+      live.current = ORIGIN;
+      drag.current = null;
+      setOffset(ORIGIN);
+      setDragging(false);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+    const keep = () => move(live.current);
+    window.addEventListener('resize', keep);
+    const node = ref.current;
+    const observer =
+      typeof ResizeObserver === 'undefined' || node === null ? null : new ResizeObserver(keep);
+    if (observer !== null && node !== null) {
+      observer.observe(node);
+    }
+    return () => {
+      window.removeEventListener('resize', keep);
+      observer?.disconnect();
+    };
+  }, [open, move, ref]);
+
+  const end = (event: ReactPointerEvent<HTMLElement>) => {
+    if (drag.current?.pointer !== event.pointerId) {
+      return;
+    }
+    drag.current = null;
+    setDragging(false);
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const handle = {
+    onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
+      if (event.button !== 0 || drag.current !== null) {
+        return;
+      }
+      if (event.target instanceof Element && event.target.closest('button, a, input') !== null) {
+        return;
+      }
+      drag.current = {
+        pointer: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        from: live.current,
+      };
+      setDragging(true);
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    },
+    onPointerMove: (event: ReactPointerEvent<HTMLElement>) => {
+      const at = drag.current;
+      if (at === null || at.pointer !== event.pointerId) {
+        return;
+      }
+      move({ x: at.from.x + event.clientX - at.x, y: at.from.y + event.clientY - at.y });
+    },
+    onPointerUp: end,
+    onPointerCancel: end,
+  };
+
+  return { offset, dragging, handle };
+}
+
 export function Dialog({ open, onClose, title, children, footer, width = 440 }: DialogProps) {
   const t = useT();
   const titleId = useId();
   const ref = useRef<HTMLDivElement>(null);
   const onTab = useFocusTrap(open, ref);
+  const { offset, dragging, handle } = useDialogDrag(open, ref);
 
   if (!open) {
     return null;
   }
 
+  const moved = offset.x !== 0 || offset.y !== 0;
+
   return (
-    <ScrimLayer onDismiss={onClose} align="center">
+    <ScrimLayer onDismiss={onClose} align="center" light>
       <div
         ref={ref}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className={styles.dialog}
-        style={{ width }}
+        className={cx(styles.dialog, dragging && styles.dragging)}
+        style={{
+          width,
+          ...(moved ? { transform: `translate(${offset.x}px, ${offset.y}px)` } : {}),
+        }}
         onKeyDown={(event) => {
           if (event.key === 'Escape') {
             event.stopPropagation();
@@ -146,7 +318,7 @@ export function Dialog({ open, onClose, title, children, footer, width = 440 }: 
           onTab(event);
         }}
       >
-        <header className={styles.header}>
+        <header className={cx(styles.header, styles.dragHandle)} {...handle}>
           <h2 id={titleId} className={styles.title}>
             {title}
           </h2>

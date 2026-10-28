@@ -11,6 +11,7 @@ import userEvent from '@testing-library/user-event';
 
 import { ItemView } from '../tracker/ItemView';
 import { dependencyCandidates, editBody } from '../tracker/ItemActions';
+import { NOTE_ROWS } from '../tracker/dialogs';
 import { mountAt } from './harness';
 import { EVENTS, TrackerServer, gateItem, item } from './trackerFixtures';
 
@@ -48,8 +49,8 @@ afterEach(() => {
 });
 
 function open(options: { identity?: string | null } = {}) {
-  return mountAt('/projects/:project/item/:id', <ItemView />, {
-    route: `/projects/demo/item/${ID}`,
+  return mountAt('/projects/:project/ticket/:id', <ItemView />, {
+    route: `/projects/demo/ticket/${ID}`,
     ...options,
   });
 }
@@ -79,7 +80,7 @@ describe('the item page', () => {
     );
     expect(screen.getByRole('link', { name: 'demo-t0001' })).toHaveAttribute(
       'href',
-      '/projects/demo/item/demo-t0001',
+      '/projects/demo/ticket/demo-t0001',
     );
   });
 
@@ -171,7 +172,7 @@ describe('the item page', () => {
     await screen.findByRole('heading', { name: 'Next up' });
 
     await user.click(screen.getByRole('button', { name: /Block…/ }));
-    const dialog = screen.getByRole('dialog', { name: 'Block this item' });
+    const dialog = screen.getByRole('dialog', { name: 'Block this ticket' });
     await user.click(within(dialog).getByRole('radio', { name: 'Needs redesign' }));
     await user.type(within(dialog).getByLabelText('Note (optional)'), 'Wrong shape');
     await user.click(within(dialog).getByRole('button', { name: 'Block' }));
@@ -206,16 +207,16 @@ describe('the item page', () => {
     await screen.findByRole('heading', { name: 'Next up' });
 
     await user.click(screen.getByRole('button', { name: /Block…/ }));
-    const dialog = screen.getByRole('dialog', { name: 'Block this item' });
+    const dialog = screen.getByRole('dialog', { name: 'Block this ticket' });
     // No picker until the reason is a dependency.
     expect(within(dialog).queryByRole('combobox')).toBeNull();
-    await user.click(within(dialog).getByRole('radio', { name: 'Waits on items' }));
+    await user.click(within(dialog).getByRole('radio', { name: 'Waits on tickets' }));
     await waitFor(() => expect(server.matching('/tracker/demo/items', 'GET')).toHaveLength(1));
 
     // Nothing chosen: refused before any write.
     await user.click(within(dialog).getByRole('button', { name: 'Block' }));
     expect(
-      await within(dialog).findByText('Choose at least one item it waits on.'),
+      await within(dialog).findByText('Choose at least one ticket it waits on.'),
     ).toBeInTheDocument();
     expect(server.matching(PATH, 'POST')).toHaveLength(0);
 
@@ -265,13 +266,13 @@ describe('the item page', () => {
     server.onceOn(PATH, { body: blocked }, 'GET');
     open();
     await screen.findByRole('heading', { name: 'Next up' });
-    expect(screen.getByText('Waits on items')).toBeInTheDocument();
+    expect(screen.getByText('Waits on tickets')).toBeInTheDocument();
     const waits = screen.getByText('waits on').parentElement!;
     expect(
       within(waits)
         .getAllByRole('link')
         .map((link) => link.getAttribute('href')),
-    ).toEqual(['/projects/demo/item/demo-t0001', '/projects/demo/item/demo-t0005']);
+    ).toEqual(['/projects/demo/ticket/demo-t0001', '/projects/demo/ticket/demo-t0005']);
     expect(screen.getByText('Parallel')).toBeInTheDocument();
     expect(screen.getByText('Unblocked: demo-t0005 is done.')).toBeInTheDocument();
   });
@@ -319,7 +320,7 @@ describe('the item page', () => {
     await screen.findByRole('heading', { name: 'Next up' });
 
     await user.click(screen.getByRole('button', { name: /Block…/ }));
-    let dialog = screen.getByRole('dialog', { name: 'Block this item' });
+    let dialog = screen.getByRole('dialog', { name: 'Block this ticket' });
     await user.click(within(dialog).getByRole('button', { name: 'Block' }));
     await waitFor(() => expect(server.matching(PATH, 'POST')).toHaveLength(1));
     expect(server.last(PATH, 'POST').body).toEqual({
@@ -406,7 +407,7 @@ describe('the item page', () => {
     expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull();
 
     await user.click(screen.getByRole('button', { name: 'Defer' }));
-    const dialog = screen.getByRole('dialog', { name: 'Defer this item?' });
+    const dialog = screen.getByRole('dialog', { name: 'Defer this ticket?' });
     await user.click(within(dialog).getByRole('button', { name: 'Defer' }));
     await waitFor(() => expect(server.matching(PATH, 'POST')).toHaveLength(1));
     expect(server.last(PATH, 'POST').body).toEqual({
@@ -456,7 +457,7 @@ describe('the item page', () => {
     await user.click(within(statusDialog).getByRole('button', { name: 'Cancel' }));
 
     await user.click(screen.getByRole('button', { name: 'Resume' }));
-    const dialog = screen.getByRole('dialog', { name: 'Resume this item?' });
+    const dialog = screen.getByRole('dialog', { name: 'Resume this ticket?' });
     await user.click(within(dialog).getByRole('button', { name: 'Resume' }));
     await waitFor(() => expect(server.matching(PATH, 'POST')).toHaveLength(1));
     expect(server.last(PATH, 'POST').body).toEqual({
@@ -494,7 +495,7 @@ describe('the item page', () => {
     await user.click(within(statusDialog).getByRole('button', { name: 'Cancel' }));
 
     await user.click(screen.getByRole('button', { name: 'Confirm' }));
-    let dialog = screen.getByRole('dialog', { name: 'Confirm this item?' });
+    let dialog = screen.getByRole('dialog', { name: 'Confirm this ticket?' });
     await user.click(within(dialog).getByRole('button', { name: 'Confirm' }));
     await waitFor(() => expect(server.matching(PATH, 'POST')).toHaveLength(1));
     expect(server.last(PATH, 'POST').body).toEqual({
@@ -504,7 +505,7 @@ describe('the item page', () => {
     });
 
     await user.click(await screen.findByRole('button', { name: 'Send back' }));
-    dialog = screen.getByRole('dialog', { name: 'Send this item back?' });
+    dialog = screen.getByRole('dialog', { name: 'Send this ticket back?' });
     await user.type(within(dialog).getByLabelText('Note (optional)'), 'Fix the copy');
     await user.click(within(dialog).getByRole('button', { name: 'Send back' }));
     await waitFor(() => expect(server.matching(PATH, 'POST')).toHaveLength(2));
@@ -514,6 +515,51 @@ describe('the item page', () => {
       author_email: 'alice@example.com',
       surface: 'web',
     });
+  });
+
+  it('puts Confirm and Send back on a row of their own, green and amber (rag-t0041)', async () => {
+    server.onceOn(PATH, { body: { ...RECORD, status: 'review' } }, 'GET');
+    open();
+    await screen.findByRole('heading', { name: 'Next up' });
+
+    const row = screen.getByRole('group', { name: 'Review' });
+    const confirm = within(row).getByRole('button', { name: 'Confirm' });
+    const sendBack = within(row).getByRole('button', { name: 'Send back' });
+    expect(within(row).getAllByRole('button')).toEqual([confirm, sendBack]);
+    // Under the other writes, not among them.
+    const first = screen.getByRole('button', { name: 'Note' }).parentElement!;
+    expect(first).not.toContainElement(confirm);
+    expect(first.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The done green and the blocked amber (the design system's tinted controls).
+    expect(confirm).toHaveClass('good');
+    expect(sendBack).toHaveClass('caution');
+  });
+
+  it('gives Send back a note box twice the height of the others (rag-t0045)', async () => {
+    const user = userEvent.setup();
+    for (let read = 0; read < 3; read += 1) {
+      server.onceOn(PATH, { body: { ...RECORD, status: 'review' } }, 'GET');
+    }
+    open();
+    await screen.findByRole('heading', { name: 'Next up' });
+
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
+    const confirm = screen.getByRole('dialog', { name: 'Confirm this ticket?' });
+    const normal = Number(within(confirm).getByLabelText('Note (optional)').getAttribute('rows'));
+    expect(normal).toBe(NOTE_ROWS);
+    await user.click(within(confirm).getByRole('button', { name: 'Cancel' }));
+
+    await user.click(screen.getByRole('button', { name: 'Send back' }));
+    const sendBack = screen.getByRole('dialog', { name: 'Send this ticket back?' });
+    const rows = Number(within(sendBack).getByLabelText('Note (optional)').getAttribute('rows'));
+    expect(rows).toBe(normal * 2);
+  });
+
+  it('draws no review row for an item not in review', async () => {
+    open();
+    await screen.findByRole('heading', { name: 'Next up' });
+    expect(screen.queryByRole('group', { name: 'Review' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Note' })).toBeInTheDocument();
   });
 
   it('offers a pending item review, and no Confirm or Send back', async () => {
@@ -536,7 +582,7 @@ describe('the item page', () => {
     open();
     await screen.findByRole('heading', { name: 'Next up' });
     await user.click(screen.getByRole('button', { name: /Block…/ }));
-    const dialog = screen.getByRole('dialog', { name: 'Block this item' });
+    const dialog = screen.getByRole('dialog', { name: 'Block this ticket' });
     expect(
       within(dialog)
         .getAllByRole('radio')
@@ -547,9 +593,9 @@ describe('the item page', () => {
   });
 
   it('names an unknown item', async () => {
-    server.onceOn(PATH, { status: 404, body: { error: 'no item demo-t0002' } }, 'GET');
+    server.onceOn(PATH, { status: 404, body: { error: 'no ticket demo-t0002' } }, 'GET');
     open();
-    expect(await screen.findByText(`There is no item ${ID}.`)).toBeInTheDocument();
+    expect(await screen.findByText(`There is no ticket ${ID}.`)).toBeInTheDocument();
   });
 });
 

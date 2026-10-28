@@ -40,6 +40,7 @@ const TYPE_LABEL: Record<ItemType, string> = {
   recon: 'Recon',
   analysis: 'Analysis',
   gate: 'Gate',
+  request: 'Request',
 };
 
 const TYPE_HINT: Record<ItemType, string> = {
@@ -48,6 +49,7 @@ const TYPE_HINT: Record<ItemType, string> = {
   recon: 'Research and preparation',
   analysis: 'Debugging',
   gate: 'Gate and release',
+  request: 'The owner’s idea, broken into tickets by the manager',
 };
 
 const TYPE_ICON: Record<ItemType, string> = {
@@ -56,6 +58,7 @@ const TYPE_ICON: Record<ItemType, string> = {
   recon: 'telescope',
   analysis: 'bug',
   gate: 'flag',
+  request: 'message-square',
 };
 
 export function itemTypeLabel(type: string): string {
@@ -69,6 +72,14 @@ export function itemTypeHint(type: string): string | undefined {
 export function itemTypeIcon(type: string): string {
   return lookup(TYPE_ICON, type) ?? 'circle-dot';
 }
+
+/**
+ * Every type's word, one a line: the hidden sizer under a row's type
+ * (rag-t0033). Drawn in the badge's own font with `white-space: pre`, it is as
+ * wide as the widest of them however the page's font sets them, so the slot is
+ * never a guess and no word can overflow it.
+ */
+export const ITEM_TYPE_SIZER: string = Object.values(TYPE_LABEL).join('\n');
 
 // ---- Status -----------------------------------------------------------------
 
@@ -92,6 +103,13 @@ const STATUS_LABEL: Record<DotState, string> = {
 export function itemStatusLabel(status: string): string {
   return lookup(STATUS_LABEL, status) ?? status;
 }
+
+/**
+ * Every status word, one a line: the hidden sizer under a row's status
+ * (rag-t0033), so a row's status column is as wide as the widest word in
+ * whatever font the page has, on every row of every section alike.
+ */
+export const STATUS_SIZER: string = Object.values(STATUS_LABEL).join('\n');
 
 /**
  * The state a row's dot shows: blocked wins over the status beneath it, except
@@ -172,7 +190,7 @@ export function transitionLabel(from: ItemStatus, to: ItemStatus): string {
 const REASON_LABEL: Record<BlockReason, string> = {
   redesign: 'Needs redesign',
   review: 'Needs review',
-  dependency: 'Waits on items',
+  dependency: 'Waits on tickets',
 };
 
 export function blockReasonLabel(reason: string): string {
@@ -231,7 +249,9 @@ const LINK_LABEL: Record<LinkKind, string> = {
   milestone: 'Milestone',
   concept: 'Concept',
   ledger: 'Ledger',
-  item: 'Item',
+  item: 'Ticket',
+  from: 'From request',
+  became: 'Became',
 };
 
 const LINK_ICON: Record<LinkKind, string> = {
@@ -240,6 +260,8 @@ const LINK_ICON: Record<LinkKind, string> = {
   concept: 'sparkles',
   ledger: 'book-open',
   item: 'link',
+  from: 'message-square',
+  became: 'git-branch',
 };
 
 export function linkKindLabel(kind: string): string {

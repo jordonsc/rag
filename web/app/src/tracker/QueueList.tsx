@@ -431,7 +431,7 @@ export function QueueList({
             tabIndex={0}
             data-id={item.id}
             data-index={index}
-            aria-label={`${gate ? 'Gate' : 'Item'} ${item.id}: ${item.title}`}
+            aria-label={`${gate ? 'Gate' : 'Ticket'} ${item.id}: ${item.title}`}
             onKeyDown={(event) => keyMove(event, index)}
           >
             {gate ? (
@@ -444,7 +444,7 @@ export function QueueList({
               <>
                 {grip}
                 <span className={styles.cellStatus}>
-                  <StatusDot state={dotState(item)} />
+                  <StatusDot state={dotState(item)} slotted />
                 </span>
                 <code className={styles.cellId}>{item.id}</code>
                 <Link to={itemPath(project, item.id)} className={styles.cellTitle}>
