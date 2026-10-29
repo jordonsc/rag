@@ -447,7 +447,7 @@ export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProp
 
 /** The labels field's help, on Add item and the item page's Edit (rag-t0027). */
 export const LABELS_HELP =
-  'Optional: what it is about, such as Physics or Biomes. The project’s labels are offered.';
+  'Optional: what it is about, such as Frontend or Docs. The project’s labels are offered.';
 
 // ---- Add a request -----------------------------------------------------------
 

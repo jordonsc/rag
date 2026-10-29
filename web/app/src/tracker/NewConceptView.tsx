@@ -117,7 +117,6 @@ function NewConcept({ project }: { project: string }) {
           <Input
             value={meta.title}
             onChange={(title) => setMeta((current) => ({ ...current, title }))}
-            placeholder="Power generation"
           />
         </Field>
         <Field

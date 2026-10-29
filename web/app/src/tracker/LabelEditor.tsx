@@ -141,7 +141,7 @@ export function LabelEditor({
         suggestions={offered}
         maxItems={LABEL_MAX}
         maxLength={LABEL_MAX_CHARS * 4}
-        placeholder="Physics, Biomes…"
+        placeholder="Frontend, Docs…"
         disabled={disabled}
         {...(handleRef === undefined ? {} : { handleRef })}
         {...(id === undefined ? {} : { id })}
