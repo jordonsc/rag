@@ -607,6 +607,10 @@ another host, forward the port over ssh and use the same `127.0.0.1` URL, or run
 or any small client printing each text frame as a line). The one-shot read has no such limit. Built in `crates/core/src/tracker/feed.rs`
 (the channel) and `crates/serve/src/tracker/feed.rs` (the routes).
 
+**The web UI's ticket page reads it too** (2026-10-29): same origin, `surface=any&kinds=all&format=json`, no
+`since` (it re-reads the ticket on every open instead), so a write over MCP shows on an open ticket as it commits.
+See `web/README.md` § *The tracker*.
+
 **Event ids are global** (one sequence across every project), increase in commit order, and are the cursor: a
 client keeps the last id it was sent and resumes after it with `since`.
 

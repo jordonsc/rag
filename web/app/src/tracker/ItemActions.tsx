@@ -473,8 +473,12 @@ interface EditItemDialogProps {
  * Edit the title, body, assignee, labels (rag-t0027) and links, a gate's
  * intensity and release, and whether any other item is parallel (rag-t0013).
  */
-function EditItemDialog({ item, onCancel, onDone }: EditItemDialogProps) {
+function EditItemDialog({ item: opened, onCancel, onDone }: EditItemDialogProps) {
   const gate = useTrackerGate();
+  // The ticket as it was when the dialog opened. The page re-reads it live
+  // while the dialog is up; diffing the draft against that newer copy would
+  // send back, as an edit, whatever someone else changed meanwhile.
+  const [item] = useState(opened);
   const [title, setTitle] = useState(item.title);
   const [body, setBody] = useState(item.body);
   const [assignee, setAssignee] = useState(item.assignee ?? '');

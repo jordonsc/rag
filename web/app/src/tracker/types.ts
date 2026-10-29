@@ -134,6 +134,23 @@ export interface TrackerEvent {
   fields: Record<string, unknown>;
 }
 
+/** The kind of record an event belongs to. */
+export type TargetKind = 'item' | 'spec' | 'milestone' | 'concept' | 'document';
+
+/**
+ * One event as the feed sends it with `format=json` (api.md § The event
+ * feed): the event, plus where it belongs.
+ */
+export interface FeedEvent extends TrackerEvent {
+  project: string;
+  target_kind: TargetKind;
+  target_id: string;
+  /** The record's current title; `null` when the record is gone. */
+  title: string | null;
+  /** What the event's fields held before the write; `null` on a create. */
+  before: Record<string, unknown> | null;
+}
+
 // ---- Records ----------------------------------------------------------------
 
 export interface Item {

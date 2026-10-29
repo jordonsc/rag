@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Badge, Card, ErrorState, Icon, Panel, Spinner, useFormat } from '@rag/ui';
 import { Link, useParams } from 'react-router';
 
@@ -14,7 +14,8 @@ import { ApprovalBadge, LabelChips, ParallelBadge, StatusDot, TypeBadge, WaitsOn
 import { itemPath, linkHref, projectPath } from './paths';
 import { RETURN_STATE } from './scrollMemory';
 import styles from './item.module.css';
-import type { Item, Link as ItemLink, TrackerEvent } from './types';
+import type { FeedEvent, Item, Link as ItemLink, TrackerEvent } from './types';
+import { useProjectFeed } from './useFeed';
 import {
   approvalLabel,
   blockReasonLabel,
@@ -31,6 +32,17 @@ import {
 
 type Loaded =
   { kind: 'loading' } | { kind: 'ready'; item: Item } | { kind: 'error'; error: LedgerApiError };
+
+/**
+ * How long the page waits after a feed event before re-reading, so that a
+ * burst (a drag reorder, an agent's run of writes) costs one read.
+ */
+export const LIVE_SETTLE_MS = 250;
+
+/** Whether two reads of an item say the same thing (so the page need not re-render). */
+function sameItem(a: Item, b: Item): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 /** A `place` field as a sentence: `top`, `bottom`, `{before: id}`, `{after: id}`. */
 function placeText(place: unknown): string | null {
@@ -174,13 +186,25 @@ type Became = { id: string; item: Item | null };
  * by id, with its title and status once read. A ticket that cannot be read
  * (gone, or the read failed) stays as its id, still a link.
  */
-function BecameList({ project, ids }: { project: string; ids: readonly string[] }) {
+function BecameList({
+  project,
+  ids,
+  tick,
+}: {
+  project: string;
+  ids: readonly string[];
+  /** Bumped when the feed says one of these tickets changed: read them again. */
+  tick: number;
+}) {
   const [rows, setRows] = useState<Became[]>(ids.map((id) => ({ id, item: null })));
   const key = ids.join(' ');
   useEffect(() => {
     const controller = new AbortController();
     const wanted = key === '' ? [] : key.split(' ');
-    setRows(wanted.map((id) => ({ id, item: null })));
+    // A row already read stays on screen while it is read again.
+    setRows((known) =>
+      wanted.map((id) => known.find((row) => row.id === id) ?? { id, item: null }),
+    );
     for (const id of wanted) {
       getItem(id, { history: false }, controller.signal)
         .then((item) =>
@@ -191,7 +215,7 @@ function BecameList({ project, ids }: { project: string; ids: readonly string[] 
         });
     }
     return () => controller.abort();
-  }, [key]);
+  }, [key, tick]);
   return (
     <ul className={styles.became}>
       {rows.map(({ id, item }) => (
@@ -217,37 +241,108 @@ function BecameList({ project, ids }: { project: string; ids: readonly string[] 
  * and the writes that act on it. A ticket broken out of a request names it
  * (*From request*), and a request lists what it became (rag-t0044); those
  * two kinds are not repeated under Links.
+ *
+ * Live: the page follows its project's event feed (`useProjectFeed`) and
+ * re-reads the item after any item event there, since an agent's write to
+ * this ticket and a move of its neighbours both change what it shows. A read
+ * that says nothing new does not re-render, and a failed one keeps the page.
  */
 export function ItemView() {
   const { id = '' } = useParams();
   const format = useFormat();
   const { email } = useIdentity();
-  const [attempt, setAttempt] = useState(0);
   const [loaded, setLoaded] = useState<Loaded>({ kind: 'loading' });
+  const [becameTick, setBecameTick] = useState(0);
+  // Only the newest read may land: one that set out before a write must not
+  // paint the ticket from before it over the ticket after it.
+  const latest = useRef(0);
+  const controller = useRef<AbortController | null>(null);
+  const settle = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /**
+   * Read the item. `quiet` is a live re-read: when it fails, what is on
+   * screen stays (the next event or resync tries again).
+   */
+  const load = useCallback(
+    async (quiet: boolean) => {
+      const seq = ++latest.current;
+      controller.current?.abort();
+      const abort = new AbortController();
+      controller.current = abort;
+      try {
+        const item = await getItem(id, {}, abort.signal);
+        if (seq !== latest.current) {
+          return;
+        }
+        setLoaded((prev) =>
+          prev.kind === 'ready' && sameItem(prev.item, item) ? prev : { kind: 'ready', item },
+        );
+      } catch (error) {
+        if (isAbort(error) || seq !== latest.current) {
+          return;
+        }
+        setLoaded((prev) =>
+          quiet && prev.kind === 'ready' ? prev : { kind: 'error', error: asApiError(error) },
+        );
+      }
+    },
+    [id],
+  );
 
   /** The response to every write here: read the item again, by id. */
-  const refetch = useCallback(() => setAttempt((n) => n + 1), []);
+  const refetch = useCallback(() => void load(false), [load]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    // A re-read after a write keeps the page on screen; another item does not.
+    // A re-read keeps the page on screen; another item does not.
     setLoaded((prev) =>
       prev.kind === 'ready' && prev.item.id === id ? prev : { kind: 'loading' },
     );
-    getItem(id, {}, controller.signal)
-      .then((item) => setLoaded({ kind: 'ready', item }))
-      .catch((error: unknown) => {
-        if (!isAbort(error)) {
-          setLoaded({ kind: 'error', error: asApiError(error) });
-        }
-      });
-    return () => controller.abort();
-  }, [id, attempt]);
+    void load(false);
+    return () => {
+      latest.current += 1;
+      controller.current?.abort();
+      if (settle.current !== null) {
+        clearTimeout(settle.current);
+        settle.current = null;
+      }
+    };
+  }, [id, load]);
 
   // Every link's target is read for its title (rag-t0046); a milestone's
   // read also gives its document's path, which holds the milestone's name and
   // which only its record knows. *Became* reads its own rows (`BecameList`).
   const item = loaded.kind === 'ready' ? loaded.item : null;
+
+  const becameIds = useRef<readonly string[]>([]);
+  becameIds.current = (item?.links ?? [])
+    .filter((link) => link.kind === 'became')
+    .map((link) => link.target);
+  const resync = useCallback(() => {
+    if (settle.current !== null) {
+      clearTimeout(settle.current);
+      settle.current = null;
+    }
+    void load(true);
+    setBecameTick((n) => n + 1);
+  }, [load]);
+  const onFeedEvent = useCallback(
+    (event: FeedEvent) => {
+      if (event.target_kind !== 'item') {
+        return;
+      }
+      if (becameIds.current.includes(event.target_id)) {
+        setBecameTick((n) => n + 1);
+      }
+      if (settle.current === null) {
+        settle.current = setTimeout(() => {
+          settle.current = null;
+          void load(true);
+        }, LIVE_SETTLE_MS);
+      }
+    },
+    [load],
+  );
+  useProjectFeed(item?.project ?? null, onFeedEvent, resync);
   const titles = useLinkTitles(
     item?.project ?? '',
     (item?.links ?? []).filter((link) => link.kind !== 'became'),
@@ -430,7 +525,7 @@ export function ItemView() {
           {became.length === 0 ? (
             <p className={styles.empty}>Not broken down yet.</p>
           ) : (
-            <BecameList project={project} ids={became} />
+            <BecameList project={project} ids={became} tick={becameTick} />
           )}
         </Panel>
       )}

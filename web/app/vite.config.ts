@@ -22,6 +22,10 @@ const api = ['/search', '/ledger', '/health', '/info', '/reindex', '/prompts', '
 export default defineConfig({
   plugins: [react()],
   server: {
-    proxy: Object.fromEntries(api.map((path) => [path, { target, changeOrigin: true }])),
+    // `ws` for the tracker's event feed (`/tracker/{project}/events/ws`), which
+    // the ticket page reads live.
+    proxy: Object.fromEntries(
+      api.map((path) => [path, { target, changeOrigin: true, ws: path === '/tracker' }]),
+    ),
   },
 });

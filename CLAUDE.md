@@ -126,7 +126,7 @@ unless you explicitly want the Skill instead.
 | Building the ledger web UI (dev loop, design system, tests) | `web/README.md`, the Node stage in `Containerfile` |
 | The tracker store (`[tracker] db_path`, `attachments_dir`; queue, specs, concepts, attachments) | `crates/core/src/tracker/`, `deploy/rag-serve.container` |
 | The tracker HTTP API (`/tracker/…`) and its contract | `crates/serve/src/tracker.rs`, `specs/tracker/api.md` |
-| The tracker's live event feed (`/tracker/{project}/events/ws`: the broadcast after commit, replay and resume, burst coalescing, the `Monitor` pattern on `127.0.0.1`) | `crates/core/src/tracker/feed.rs`, `crates/serve/src/tracker/feed.rs`, `specs/tracker/api.md` § *The event feed*, `user-claude.md` § *Tracker* |
+| The tracker's live event feed (`/tracker/{project}/events/ws`: the broadcast after commit, replay and resume, burst coalescing, the `Monitor` pattern on `127.0.0.1`) | `crates/core/src/tracker/feed.rs`, `crates/serve/src/tracker/feed.rs`, `specs/tracker/api.md` § *The event feed*, `user-claude.md` § *Tracker*; the ticket page's live read: `web/app/src/tracker/useFeed.ts` |
 | The tracker's design and milestones | `specs/tracker/master.md` |
 | The tracker MCP tools (`--server tracker`, `/tracker` on the gateway; the shared rules in its `INSTRUCTIONS`, the definitions' size budget, one-line write replies) | `crates/mcp/src/tracker.rs`, `specs/tracker/m02-mcp-server.md` (rag-t0039 addendum) |
 | Tracker search (`corpus = tracker`: the reconcile, its trigger and units, the citation) | `crates/ingest/src/tracker_reconcile.rs`, `crates/core/src/tracker/index.rs`, `deploy/rag-tracker-*`, `deploy/RUNBOOK.md` § *Tracker: reconcile now* |

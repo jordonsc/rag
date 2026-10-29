@@ -539,3 +539,30 @@ list's preview opened it, and the X closed it. Tests: `trackerAttach.test.tsx` (
 `trackerDocUnits.test.ts` (3 more: the wrapping link, a writer's link kept, nothing without attachments),
 `trackerDocs.test.tsx` (Attach in the editor), `trackerClient.test.ts` (its link found by name, now the image has
 one too).
+
+### Addendum, 2026-10-29: the ticket page live
+
+The owner's report: the ticket page did not show a change made elsewhere (an agent's status move over MCP) until it
+was reloaded, while the dashboard did (its 10 s conditional poll, D14). The ticket page read the ticket once and
+again only after its own writes.
+
+**It now follows the event feed** (`api.md` § *The event feed*) rather than polling: `tracker/useFeed.ts` opens
+`/tracker/{project}/events/ws?surface=any&kinds=all&format=json` on the same origin, and the page re-reads the
+ticket (`GET /tracker/items/{id}`) 250 ms after any **item** event in its project, so a burst costs one read. Any
+item, not only this one: a neighbour's move or create changes *In the queue*. Spec, milestone, concept and document
+events are ignored. A read identical to what is on screen does not re-render, and a failed live read keeps the page
+(only a first read, or a re-read after the owner's own write, shows the error). A request's *Became* rows re-read
+when an event names one of them, keeping what they showed meanwhile.
+
+The socket carries no `since`: **every open re-reads the ticket**, which covers whatever committed before the first
+read or while it was closed. **Hidden, it closes**; shown, it reopens. **Down** (closed by the server, refused, a
+proxy without WebSockets), it reconnects with backoff from 1 s to 30 s and **polls every 10 s meanwhile**, so it
+degrades to the dashboard's behaviour, never to a page that stops updating. The dashboard keeps its poll.
+
+**Edit now diffs against the ticket as it was when the dialog opened.** It diffed against the page's ticket, which
+could not change while the dialog was up; live, an agent's body edit during the owner's title edit would otherwise
+have been sent back as the owner's (the draft's old body differing from the new one).
+
+The Vite dev proxy forwards `/tracker` with `ws: true`. Tests: `trackerItemLive.test.tsx` (9), against a fake
+WebSocket every test now gets (`__tests__/fakeSocket.ts`, assigned in `vitest.setup.ts` so no test reaches a
+server). Checked against the deployed `rag-serve`: the page's query upgrades (101).
