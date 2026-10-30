@@ -16,7 +16,8 @@
  *
  * **Drafts** (2026-10-30): a draft document shows a Draft badge and
  * **Publish**; a published one offers **Make draft**. A draft's writes, and
- * its spec's, milestone's or concept's, stay out of the feed. Text typed and
+ * its concept's, stay out of the feed. Only a concept's or a free document can
+ * be one: a spec has its own draft state. Text typed and
  * not yet saved is called *unsaved* here, never a draft.
  */
 
@@ -209,6 +210,9 @@ function DocumentPage({ project, path }: { project: string; path: string }) {
   }
 
   const current = loaded.doc;
+  // A spec has its own draft state and is the agents' work: only a concept's
+  // or a free document can be the owner's draft (2026-10-30).
+  const draftable = current.kind === 'concept' || current.kind === 'doc';
   const storage = draftKey(project, current.id);
 
   const renamed = ({ doc: next, problem: left }: Renamed) => {
@@ -255,7 +259,7 @@ function DocumentPage({ project, path }: { project: string; path: string }) {
         </div>
         <h1 className={frame.title}>{current.title}</h1>
         <div className={writeStyles.actions}>
-          {current.draft === true && (
+          {draftable && current.draft === true && (
             <Button
               size="sm"
               variant="accent"
@@ -269,7 +273,7 @@ function DocumentPage({ project, path }: { project: string; path: string }) {
             <Icon name="pencil" size={14} />
             Rename…
           </Button>
-          {current.draft !== true && (
+          {draftable && current.draft !== true && (
             <Button
               size="sm"
               variant="ghost"

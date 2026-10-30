@@ -278,6 +278,9 @@ describe('the documents page', () => {
     await screen.findByRole('region', { name: 'Open' });
 
     await user.click(screen.getByRole('tab', { name: 'Specs · 1' }));
+    expect(
+      screen.getByText('Specs are agent-created documents, refined from a concept.'),
+    ).toBeInTheDocument();
     const spec = screen.getByRole('region', { name: 'Audio' });
     expect(within(spec).getByRole('link', { name: 'Audio' })).toHaveAttribute(
       'href',

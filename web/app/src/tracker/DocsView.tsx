@@ -404,19 +404,30 @@ function SpecsTab({
       });
   };
 
+  const about = (
+    <div className={styles.toolbar}>
+      <p className={styles.toolbarNote}>
+        Specs are agent-created documents, refined from a concept.
+      </p>
+    </div>
+  );
   if (specs.length === 0) {
     return (
-      <Card>
-        <EmptyState
-          icon="file-text"
-          title="No specs yet"
-          message="Specs and their milestones are created by the project’s manager through the MCP tools."
-        />
-      </Card>
+      <div className={styles.tabBody}>
+        {about}
+        <Card>
+          <EmptyState
+            icon="file-text"
+            title="No specs yet"
+            message="Specs and their milestones are created by the project’s manager through the MCP tools."
+          />
+        </Card>
+      </div>
     );
   }
   return (
     <div className={styles.tabBody} ref={body}>
+      {about}
       {problem !== null && (
         <p className={cx(frame.notice, frame.notice_warn)} role="alert">
           <Icon name="triangle-alert" size={14} />
@@ -436,7 +447,6 @@ function SpecsTab({
             </Link>
             <code className={styles.docPath}>{spec.path}</code>
             <span className={styles.docMeta}>
-              {spec.draft === true && <DraftBadge />}
               <StateBadge state={spec.state} />
               <ApprovalBadge approval={spec.approval} />
             </span>
@@ -459,7 +469,6 @@ function SpecsTab({
                     {milestone.title}
                   </Link>
                   <span className={styles.docMeta}>
-                    {milestone.draft === true && <DraftBadge />}
                     <StateBadge state={milestone.state} />
                     <ApprovalBadge approval={milestone.approval} always />
                   </span>

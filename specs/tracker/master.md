@@ -215,8 +215,9 @@ Design
     resume id.
   *Amended 2026-10-30 (owner): **drafts**.* "A new or updated record in draft state is not sent on the websocket
   by default (but may ask explicitly for it). This helps me create & update records without a monitoring agent
-  concerning themselves with it." A ticket and a document carry a **`draft`** flag (a spec, milestone or concept
-  is a draft while its document is). An event written while its record is a draft is stamped a **draft event**
+  concerning themselves with it." A ticket and a document carry a **`draft`** flag (a concept is a draft while
+  its document is; specs and milestones never are, since a spec has its own `draft` state and is the agents'
+  work). An event written while its record is a draft is stamped a **draft event**
   and left out of the feed and the one-shot read unless the client passes `drafts=true` (the web UI's ticket page
   does). Choices: **a flag, not a status**, since documents have no status and a draft ticket still needs one;
   **stamped on the event at write time**, not looked up at read, so a replay after publishing still leaves the

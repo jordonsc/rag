@@ -368,6 +368,20 @@ describe('drafts and Ctrl+S on a document', () => {
     expect(server.last(DRAFT, 'POST').body).toEqual({ draft: true, ...AS_OWNER });
   });
 
+  it('offers no Publish or Make draft on a spec’s or a milestone’s document', async () => {
+    for (const kind of ['spec', 'milestone'] as const) {
+      server.on(DOC_URL, { body: doc({ kind, draft: false }) }, 'GET');
+      server.on(`/tracker/docs/${DOC_ID}/revisions`, { body: { doc_id: DOC_ID, revisions: [] } });
+      const { unmount } = mountAt('/projects/:project/doc/*', <DocView />, {
+        route: '/projects/demo/doc/concepts/power.md',
+      });
+      await screen.findByRole('heading', { name: 'Power' });
+      expect(screen.queryByRole('button', { name: 'Make draft' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Publish' })).not.toBeInTheDocument();
+      unmount();
+    }
+  });
+
   it('Ctrl+S saves the editor from outside the text box', async () => {
     const user = userEvent.setup();
     openDoc(false, '?tab=edit');

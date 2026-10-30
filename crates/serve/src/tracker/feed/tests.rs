@@ -478,7 +478,6 @@ async fn spec_with_milestones(store: &TrackerStore, n: usize) {
     store
         .create_spec(
             NewSpec {
-                draft: false,
                 project: "p".into(),
                 slug: "big".into(),
                 title: "Big".into(),
@@ -487,7 +486,6 @@ async fn spec_with_milestones(store: &TrackerStore, n: usize) {
                 body: String::new(),
                 milestones: (1..=n)
                     .map(|i| NewMilestone {
-                        draft: false,
                         code: format!("m{i:03}"),
                         title: format!("M {i}"),
                         name: None,

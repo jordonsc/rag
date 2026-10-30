@@ -837,9 +837,11 @@ async fn append_event(
 ///
 /// The record's draft flag is read in the writing transaction, after the
 /// change, so every write path is covered without saying so. An item holds its
-/// own flag; a document holds its own, and a spec, milestone or concept is a
-/// draft while **its document** is (it has exactly one). A record that is gone
-/// or was never a draft reads as published. The flag is stamped on the event
+/// own flag; a document holds its own, and a concept is a draft while **its
+/// document** is (it has exactly one). Specs and milestones are never drafts
+/// (owner, 2026-10-30): a spec has its own `draft` state and is the agents'
+/// work, so every change to one, or to its documents, is sent. A record that
+/// is gone or was never a draft reads as published. The flag is stamped on the event
 /// at write time, so a replay after the record is published still leaves its
 /// draft history out.
 pub(crate) async fn event_is_draft(
@@ -864,52 +866,31 @@ pub(crate) async fn record_is_draft(
     target_kind: TargetKind,
     target_id: &str,
 ) -> TResult<bool> {
-    let draft: Option<i64> =
-        match target_kind {
-            TargetKind::Item => {
-                sqlx::query_scalar("SELECT draft FROM items WHERE id = ?")
-                    .bind(target_id)
-                    .fetch_optional(&mut *conn)
-                    .await?
-            }
-            TargetKind::Document => {
-                sqlx::query_scalar("SELECT draft FROM documents WHERE id = ?")
-                    .bind(target_id)
-                    .fetch_optional(&mut *conn)
-                    .await?
-            }
-            TargetKind::Spec => sqlx::query_scalar(
-                "SELECT draft FROM documents WHERE project = ? AND kind = 'spec' AND spec_slug = ?",
+    let draft: Option<i64> = match target_kind {
+        TargetKind::Item => {
+            sqlx::query_scalar("SELECT draft FROM items WHERE id = ?")
+                .bind(target_id)
+                .fetch_optional(&mut *conn)
+                .await?
+        }
+        TargetKind::Document => {
+            sqlx::query_scalar("SELECT draft FROM documents WHERE id = ?")
+                .bind(target_id)
+                .fetch_optional(&mut *conn)
+                .await?
+        }
+        TargetKind::Concept => {
+            sqlx::query_scalar(
+                "SELECT draft FROM documents WHERE project = ? AND kind = 'concept' \
+                 AND concept_slug = ?",
             )
             .bind(project)
             .bind(target_id)
             .fetch_optional(&mut *conn)
-            .await?,
-            TargetKind::Milestone => {
-                let Some((spec, code)) = target_id.split_once('/') else {
-                    return Ok(false);
-                };
-                sqlx::query_scalar(
-                    "SELECT draft FROM documents WHERE project = ? AND kind = 'milestone' \
-                 AND spec_slug = ? AND milestone_code = ?",
-                )
-                .bind(project)
-                .bind(spec)
-                .bind(code)
-                .fetch_optional(&mut *conn)
-                .await?
-            }
-            TargetKind::Concept => {
-                sqlx::query_scalar(
-                    "SELECT draft FROM documents WHERE project = ? AND kind = 'concept' \
-                 AND concept_slug = ?",
-                )
-                .bind(project)
-                .bind(target_id)
-                .fetch_optional(&mut *conn)
-                .await?
-            }
-        };
+            .await?
+        }
+        TargetKind::Spec | TargetKind::Milestone => return Ok(false),
+    };
     Ok(draft.unwrap_or(0) != 0)
 }
 

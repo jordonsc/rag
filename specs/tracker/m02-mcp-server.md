@@ -344,7 +344,8 @@ instructions or in any description but `tracker_list`'s.
 ### Addendum, 2026-10-30: drafts (owner)
 
 The owner's drafts (m01 addendum of the same date) reach the tools lightly. `draft` is accepted by `tracker_create`,
-`tracker_create_record` and `tracker_update` (`false` publishes), so an agent can file a draft when the owner asks
+`tracker_create_record` (a concept or a free document; not a spec or milestone, which have their own `draft`
+state) and `tracker_update` (`false` publishes), so an agent can file a draft when the owner asks
 for one; there is no tool for a document's draft flag (the web UI's, `POST /tracker/docs/{id}/draft`). A ticket line
 carries `draft` when it is one. Drafts are **never listed** by `tracker_queue` or `tracker_next`, only counted in the
 `Not shown:` footer (`1 draft`), since the queue view keeps them out of every section the tools list, and

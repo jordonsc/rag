@@ -363,8 +363,6 @@ export interface Milestone {
   approval: Approval;
   doc_id: string;
   path: string;
-  /** Its document's `draft` (2026-10-30). Absent from a server before drafts. */
-  draft?: boolean;
   created_at: string;
   updated_at: string;
   events?: TrackerEvent[];
@@ -378,8 +376,6 @@ export interface Spec {
   approval: Approval;
   doc_id: string;
   path: string;
-  /** Its master document's `draft` (2026-10-30). Absent from a server before drafts. */
-  draft?: boolean;
   milestones: Milestone[];
   created_at: string;
   updated_at: string;
@@ -530,7 +526,6 @@ export interface MilestoneCreate {
   approval?: Exclude<Approval, 'ratified'>;
   body?: string;
   note?: string;
-  draft?: boolean;
 }
 
 export interface SpecCreate {
@@ -541,7 +536,6 @@ export interface SpecCreate {
   body?: string;
   milestones?: MilestoneCreate[];
   note?: string;
-  draft?: boolean;
 }
 
 export interface SpecUpdate {

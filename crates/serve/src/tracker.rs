@@ -888,14 +888,11 @@ struct MilestoneInput {
     body: String,
     #[serde(default)]
     note: Option<String>,
-    #[serde(default)]
-    draft: bool,
 }
 
 impl From<MilestoneInput> for NewMilestone {
     fn from(m: MilestoneInput) -> Self {
         NewMilestone {
-            draft: m.draft,
             code: m.code,
             title: m.title,
             name: m.name,
@@ -922,8 +919,6 @@ struct SpecCreateBody {
     milestones: Vec<MilestoneInput>,
     #[serde(default)]
     note: Option<String>,
-    #[serde(default)]
-    draft: bool,
     author_email: String,
     #[serde(default)]
     agent: Option<String>,
@@ -937,7 +932,6 @@ async fn spec_create(State(api): St, Path(project): Path<String>, body: Bytes) -
         .store()?
         .create_spec(
             NewSpec {
-                draft: b.draft,
                 project,
                 slug: b.slug,
                 title: b.title,
@@ -1020,8 +1014,6 @@ struct MilestoneCreateBody {
     body: String,
     #[serde(default)]
     note: Option<String>,
-    #[serde(default)]
-    draft: bool,
     author_email: String,
     #[serde(default)]
     agent: Option<String>,
@@ -1036,7 +1028,6 @@ async fn milestone_create(
     let b: MilestoneCreateBody = parse(&body)?;
     let actor = Actor::new(b.author_email, b.agent.as_deref(), b.surface);
     let new = NewMilestone {
-        draft: b.draft,
         code: b.code,
         title: b.title,
         name: b.name,

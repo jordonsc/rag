@@ -38,9 +38,10 @@ pub struct Document {
     /// The concept it belongs to (a concept's document).
     pub concept: Option<String>,
     /// The owner is still writing it (owner, 2026-10-30): its events, and
-    /// those of the spec, milestone or concept it belongs to, are left out of
-    /// the feed unless a feed asks for drafts. Set on create, changed with
-    /// [`TrackerStore::set_document_draft`].
+    /// those of the concept it belongs to, are left out of the feed unless a
+    /// feed asks for drafts. Set on create, changed with
+    /// [`TrackerStore::set_document_draft`]. Never on a spec's or a
+    /// milestone's document: a spec has its own `draft` state.
     pub draft: bool,
     pub created_at: String,
     pub updated_at: String,
@@ -703,7 +704,8 @@ impl TrackerStore {
     /// Make a document a draft, or publish it (owner, 2026-10-30; see
     /// [`Document::draft`]). One `edit` event, `{draft}`. Making a published
     /// document a draft is announced on the feed once; publishing a draft is
-    /// its arrival there. Refused when it is already so.
+    /// its arrival there. Refused when it is already so, and on a spec's or a
+    /// milestone's document (a spec has its own `draft` state).
     pub async fn set_document_draft(
         &self,
         id: &str,
@@ -715,6 +717,13 @@ impl TrackerStore {
         let now = now_iso();
         let mut tx = self.write_tx().await?;
         let doc = must_doc(&mut tx, id).await?;
+        if matches!(doc.kind, DocKind::Spec | DocKind::Milestone) {
+            return refused(format!(
+                "document {id} is a {}'s: specs and milestones are not drafts (a spec has its \
+                 own draft state)",
+                doc.kind
+            ));
+        }
         if doc.draft == draft {
             return refused(format!(
                 "document {id} is already {}",

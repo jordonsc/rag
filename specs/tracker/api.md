@@ -195,8 +195,9 @@ leaves it out unless asked (`drafts=true`). It is stamped at write time: the rec
 except the write that made a published record a draft (`fields.draft: true`, `before.draft: false`), which is
 announced once so whoever worked from it knows to stop. Publishing (`draft: false`) is never a draft event: it is
 the record's arrival, an `edit` whose `fields` carry `draft: false` and, on a ticket, its `type` (so a published
-request's frame says `{draft: yes → no; type: request}`). A ticket and a document hold their own flag; a spec,
-milestone or concept is a draft while **its document** is. A replay after publishing still leaves the draft history
+request's frame says `{draft: yes → no; type: request}`). A ticket and a document hold their own flag; a concept
+is a draft while **its document** is. **Specs and milestones are never drafts** (owner, 2026-10-30): a spec has
+its own `draft` state and is the agents' work, so every change to one is sent. A replay after publishing still leaves the draft history
 out. Every event written before drafts existed reads `false`.
 `before` (added 2026-10-27, rag-t0038) holds what those fields were before the write, keyed the same way: the "from"
 of each from → to. It is `null` on a `create` (nothing came before) and on every event written before it was
@@ -246,9 +247,9 @@ When one write changes several things, its `kind` is the first that applies of `
 ```
 `revision` is always the **current** revision: what an edit names as its `base_revision`. `spec` / `milestone` /
 `concept` name the record that owns it (`null` for a free-standing `doc`). `draft` (added 2026-10-30, owner) is
-true while the owner is still writing it: its events, and its owning spec's, milestone's or concept's, are draft
-events (see Event). Set it on create (`draft: true` on any create route below) and change it with
-`POST /tracker/docs/{id}/draft`.
+true while the owner is still writing it: its events, and its concept's, are draft events (see Event). Set it on
+create (`draft: true` on the free-document and concept create routes) and change it with
+`POST /tracker/docs/{id}/draft`. Always false on a spec's or a milestone's document.
 
 The **document view** (every `GET` of one document, and every document write's response) adds:
 ```json
@@ -512,9 +513,9 @@ redirect). A rename that changes nothing is 400. Response: the document view (a 
 
 #### `POST /tracker/docs/{id}/draft` — make a draft, or publish (2026-10-30)
 `{"draft": true|false, "note" (optional), …author}`. One `edit` event, `fields: {"draft": …}`, body `Published.` or
-`Made a draft.` without a note. Publishing is the document's (and its spec's, milestone's or concept's) arrival on
-the feed; making a published one a draft is announced once. Refused (400) when it is already so. Response: the
-document view. Each document is published on its own, a draft spec's milestones included.
+`Made a draft.` without a note. Publishing is the document's (and its concept's) arrival on the feed; making a
+published one a draft is announced once. Refused (400) when it is already so, and on a spec's or a milestone's
+document (a spec has its own `draft` state). Response: the document view.
 
 #### `GET /tracker/docs/{id}/revisions`
 `{"doc_id", "revisions": [Revision, …]}`, oldest first.
@@ -550,7 +551,7 @@ Checked against `base_revision` as an edit is (409 when stale). Restoring a body
   "body": "master document markdown",
   "milestones": [
     {"code": "m01", "title": "Sound effects", "name": "sfx", "state": "not_started", "approval": "unapproved", "body": "…", "note": null},
-    {"code": "m02", "title": "Music", "body": "…", "draft": false}
+    {"code": "m02", "title": "Music", "body": "…"}
   ],
   "note": "…",
   …author
@@ -561,8 +562,6 @@ One transaction: the spec, its master at `specs/<slug>/master.md`, and each mile
 `the-store-and-the-http-api`); pass it to keep a repository's existing file name. Milestones are ordered as
 listed. `state` defaults to `draft` (`not_started` for a milestone). A clash on any path, a duplicate code or an
 existing slug creates **nothing** (400). `note` is optional (a milestone without its own `note` uses the spec's).
-`draft` (optional, default false; 2026-10-30) makes the master document a draft, and with it every milestone
-created here; each is published on its own (`POST /tracker/docs/{id}/draft`).
 Response: the Spec with milestones and events.
 
 #### `GET /tracker/{project}/specs/{slug}`
@@ -574,7 +573,7 @@ The Spec with its milestones and events. 404 if unknown.
 `agent`. The master document is edited through the document routes, by its `doc_id`.
 
 #### `POST /tracker/{project}/specs/{slug}/milestones`
-`{"code", "title", "name", "state", "approval", "body", "draft", "note", …author}`: adds a milestone after the spec's last.
+`{"code", "title", "name", "state", "approval", "body", "note", …author}`: adds a milestone after the spec's last.
 404 when the spec does not exist. Response: the Milestone with events.
 
 #### `GET /tracker/{project}/specs/{slug}/milestones/{code}`

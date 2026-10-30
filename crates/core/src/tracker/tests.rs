@@ -2184,7 +2184,6 @@ async fn documents_list_by_kind_and_prefix() {
 
 fn new_spec(slug: &str, milestones: Vec<NewMilestone>) -> NewSpec {
     NewSpec {
-        draft: false,
         project: "p".into(),
         slug: slug.into(),
         title: "Tracker".into(),
@@ -2198,7 +2197,6 @@ fn new_spec(slug: &str, milestones: Vec<NewMilestone>) -> NewSpec {
 
 fn ms(code: &str, title: &str, name: Option<&str>) -> NewMilestone {
     NewMilestone {
-        draft: false,
         code: code.into(),
         title: title.into(),
         name: name.map(str::to_string),
@@ -3754,7 +3752,6 @@ async fn a_spec_with_milestones_publishes_every_event_it_wrote_in_id_order() {
     f.store
         .create_spec(
             NewSpec {
-                draft: false,
                 project: "p".into(),
                 slug: "feed".into(),
                 title: "The feed".into(),
@@ -3762,7 +3759,6 @@ async fn a_spec_with_milestones_publishes_every_event_it_wrote_in_id_order() {
                 approval: Approval::Unapproved,
                 body: "# The feed".into(),
                 milestones: vec![NewMilestone {
-                    draft: false,
                     code: "m01".into(),
                     title: "Socket".into(),
                     name: None,
@@ -5469,23 +5465,26 @@ async fn a_draft_concept_is_quiet_with_its_document_until_published() {
 }
 
 #[tokio::test]
-async fn a_draft_spec_makes_its_milestones_drafts() {
+async fn specs_and_milestones_are_never_drafts() {
+    // A spec has its own `draft` state and is the agents' work (owner,
+    // 2026-10-30): its documents cannot be drafts, and every change is sent.
     let f = fixture().await;
     let s = &f.store;
     let start = s.latest_event_id().await.unwrap();
-    s.create_spec(
-        NewSpec {
-            draft: true,
-            ..new_spec("feed", vec![ms("m01", "First", None)])
-        },
-        &web(),
-    )
-    .await
-    .unwrap();
+    s.create_spec(new_spec("feed", vec![ms("m01", "First", None)]), &web())
+        .await
+        .unwrap();
     let docs = s.list_documents("p", None, None).await.unwrap();
     assert_eq!(docs.len(), 2);
-    assert!(docs.iter().all(|d| d.draft));
+    for d in &docs {
+        assert!(!d.draft);
+        let e = s
+            .set_document_draft(&d.id, true, None, &web())
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("not drafts"), "{e}");
+    }
     let (quiet, all) = feed_ids(s, start).await;
-    assert!(quiet.is_empty(), "{quiet:?}");
-    assert_eq!(all.len(), 4);
+    assert_eq!(quiet.len(), all.len());
+    assert_eq!(quiet.len(), 4);
 }

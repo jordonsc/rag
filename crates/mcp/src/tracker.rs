@@ -564,7 +564,7 @@ struct CreateRecordArgs {
     /// doc: the first revision's message
     #[serde(default, skip_serializing_if = "Option::is_none")]
     message: Option<String>,
-    /// The owner's draft: out of the feed and the queue until published
+    /// concept or doc: the owner's draft, out of the feed until published
     #[serde(default, skip_serializing_if = "Option::is_none")]
     draft: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1030,12 +1030,9 @@ const SPEC_CREATE: &[&str] = &[
     "approval",
     "body",
     "milestones",
-    "draft",
     "note",
 ];
-const MILESTONE_CREATE: &[&str] = &[
-    "code", "title", "name", "state", "approval", "body", "draft", "note",
-];
+const MILESTONE_CREATE: &[&str] = &["code", "title", "name", "state", "approval", "body", "note"];
 const CONCEPT_CREATE: &[&str] = &[
     "slug", "title", "state", "approval", "body", "links", "draft", "note",
 ];

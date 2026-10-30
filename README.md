@@ -351,8 +351,8 @@ specs and concepts move out of the project's repository into it, keeping their p
   `… (+812 chars in #13950)`. Monitor's `ws` source refuses private addresses, so on the
   server host the URL is `ws://127.0.0.1:17793/…`.
   `rag-serve` now also stops cleanly on SIGTERM.
-- **Drafts** (owner, 2026-10-30): a ticket or a document (and with it its spec, milestone or
-  concept) can be the owner's **draft**: created with `draft: true`, published with `draft:
+- **Drafts** (owner, 2026-10-30): a ticket, a free document or a concept can be the owner's
+  **draft** (specs and milestones cannot: a spec has its own `draft` state): created with `draft: true`, published with `draft:
   false` (`POST /tracker/items/{id}`, `POST /tracker/docs/{id}/draft`). An event written while
   its record is a draft is stamped a draft event and **left out of the feed** unless the client
   passes `drafts=true`, so the owner can write and rework without waking a monitoring agent;

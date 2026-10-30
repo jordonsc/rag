@@ -158,9 +158,11 @@ the cursor, drag to pan, Esc, the X or a backdrop click to close. Checked in hea
 The web's half of the owner's draft state (m03's addendum of the same date; the store's in `api.md`). A document's
 page shows a **Draft** badge beside its state while `draft` is true, with **Publish** (accent) before *Rename…*; a
 published one offers **Make draft** (ghost) after it. Both open the note dialog and send
-`POST /tracker/docs/{id}/draft` with `{draft, note?}`. A concept's, spec's or milestone's draft-ness is its
-document's. The documents page's rows (concepts, specs, milestones, other documents) carry the badge from the
-record's `draft` (a document's own, or its owner record's when the server sends it). **New concept** gains **Save
+`POST /tracker/docs/{id}/draft` with `{draft, note?}`. A concept's draft-ness is its document's. The documents
+page's concept and other-document rows carry the badge. *Amended the same day (owner):* a spec's or a milestone's
+document offers neither Publish nor Make draft, and the Specs tab shows no Draft badge, since a spec has its own
+`draft` state and is agent-driven; the Specs tab now opens with a line saying so, *Specs are agent-created
+documents, refined from a concept.*, as the Concepts tab's does. **New concept** gains **Save
 as draft** beside *Create concept* (the editor's `offerDraft`; its `onSave` now takes `asDraft`), creating the
 concept with `draft: true`.
 
