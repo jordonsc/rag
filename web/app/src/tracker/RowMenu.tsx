@@ -23,7 +23,7 @@ export interface RowMenuProps {
 const MENU_WIDTH = 208;
 
 /**
- * A row's action menu: Open, Move to top, Move to bottom, Defer, Remove.
+ * A row's action menu: Open, Move to top, Move to bottom, Defer, Make draft, Remove.
  *
  * The keyboard and touch route to every reordering a drag can do (TD-04), so
  * it has to be reachable without a pointer: a real button, a `menu` of

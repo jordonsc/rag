@@ -21,14 +21,16 @@ import {
   AddItemDialog,
   AddRequestDialog,
   ApprovalDialog,
+  MakeDraftDialog,
   NoteDialog,
+  PublishDialog,
   SEND_BACK_NOTE_ROWS,
   type ApprovalAction,
 } from './dialogs';
 import { ProjectTabs } from './docParts';
 import { TRACKER_IDENTITY_NEEDED, useTrackerGate } from './gate';
 import { hasLabel, labelsIn, normaliseLabel } from './labels';
-import { ApprovalControl, SecondLine, StatusDot, WaitsOn } from './parts';
+import { ApprovalControl, DraftBadge, SecondLine, StatusDot, WaitsOn } from './parts';
 import { itemPath, storeLastProject } from './paths';
 import { ProjectPicker } from './ProjectPicker';
 import { GateMarker, QueueList } from './QueueList';
@@ -153,6 +155,9 @@ export function QueueView() {
  * Top to bottom: **Done** (green, oldest first, the latest finished last,
  * in the server's order: rag-t0029; until *Acknowledge all done*;
  * a done gate is the queue's marker line, in green: rag-t0021),
+ * **Drafts** (a dashed edge: the owner's tickets not yet published, any type,
+ * each with *Publish*; the feed leaves their changes out and nothing
+ * dispatches them; a queue row's menu has *Make draft*: 2026-10-30),
  * **Requests** (the accent: the owner's ideas waiting for the manager to break
  * them into tickets, whatever their status; filed with *Add request* in the
  * header, never in the queue: rag-t0044),
@@ -204,6 +209,8 @@ function Dashboard({ project }: { project: string }) {
   const [unblocking, setUnblocking] = useState<Item | null>(null);
   const [deferring, setDeferring] = useState<Item | null>(null);
   const [resuming, setResuming] = useState<Item | null>(null);
+  const [publishing, setPublishing] = useState<Item | null>(null);
+  const [drafting, setDrafting] = useState<Item | null>(null);
   const [confirming, setConfirming] = useState<Item | null>(null);
   const [sendingBack, setSendingBack] = useState<Item | null>(null);
   const [approving, setApproving] = useState<{ item: Item; action: ApprovalAction } | null>(null);
@@ -324,6 +331,10 @@ function Dashboard({ project }: { project: string }) {
     () => (view === null ? [] : (view.requests ?? []).filter(keep)),
     [view, keep],
   );
+  const drafts = useMemo(
+    () => (view === null ? [] : (view.drafts ?? []).filter(keep)),
+    [view, keep],
+  );
 
   if (state.kind === 'loading') {
     return (
@@ -350,6 +361,7 @@ function Dashboard({ project }: { project: string }) {
   const gates = queue.filter((item) => item.type === 'gate').length;
   const unratifiedCount = [
     ...full.done,
+    ...(full.drafts ?? []),
     ...(full.requests ?? []),
     ...(full.review ?? []),
     ...full.queue,
@@ -367,6 +379,7 @@ function Dashboard({ project }: { project: string }) {
     ...labelsIn(
       [
         ...full.done,
+        ...(full.drafts ?? []),
         ...(full.requests ?? []),
         ...(full.review ?? []),
         ...full.queue,
@@ -498,6 +511,51 @@ function Dashboard({ project }: { project: string }) {
         </section>
       )}
 
+      {drafts.length > 0 && (
+        <section className={cx(styles.section, styles.section_drafts)} aria-label="Drafts">
+          <header className={styles.sectionHead}>
+            <h2 className={styles.sectionTitle}>
+              Drafts <span className={styles.count}>{drafts.length}</span>
+            </h2>
+          </header>
+          <ul className={styles.flat}>
+            {drafts.map((item) => (
+              <FlatRow
+                key={item.id}
+                project={project}
+                item={item}
+                state={dotState(item)}
+                actions={
+                  <>
+                    <ApprovalControl
+                      id={item.id}
+                      approval={item.approval}
+                      onRatify={() => approve(item, 'ratify')}
+                      onApprove={() => approve(item, 'approve')}
+                    />
+                    <Button
+                      size="sm"
+                      aria-label={`Publish ${item.id}`}
+                      onClick={() => setPublishing(item)}
+                    >
+                      <Icon name="eye" size={14} />
+                      Publish
+                    </Button>
+                  </>
+                }
+                detail={
+                  <>
+                    <DraftBadge />
+                    <BlockDetail project={project} item={item} />
+                  </>
+                }
+                note={item.blocked ? item.block_note : null}
+              />
+            ))}
+          </ul>
+        </section>
+      )}
+
       {requests.length > 0 && (
         <section className={cx(styles.section, styles.section_requests)} aria-label="Requests">
           <header className={styles.sectionHead}>
@@ -618,6 +676,7 @@ function Dashboard({ project }: { project: string }) {
             onMove={move}
             onRemove={setRemoving}
             onDefer={setDeferring}
+            onDraft={setDrafting}
             onApproval={approve}
             onInterrupted={interrupted}
           />
@@ -818,6 +877,24 @@ function Dashboard({ project }: { project: string }) {
         }
         onDone={() => {
           setSendingBack(null);
+          void refresh();
+        }}
+      />
+      <PublishDialog
+        project={project}
+        item={publishing}
+        onCancel={() => setPublishing(null)}
+        onDone={() => {
+          setPublishing(null);
+          void refresh();
+        }}
+      />
+      <MakeDraftDialog
+        project={project}
+        item={drafting}
+        onCancel={() => setDrafting(null)}
+        onDone={() => {
+          setDrafting(null);
           void refresh();
         }}
       />

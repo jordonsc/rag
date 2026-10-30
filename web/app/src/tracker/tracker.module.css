@@ -148,6 +148,11 @@
   border-left: 3px solid var(--rag-crit);
 }
 
+/* The owner's drafts (2026-10-30): dashed, not final yet. */
+.section_drafts {
+  border-left: 3px dashed var(--rag-dim);
+}
+
 /* The owner's requests (rag-t0044), in the accent: the owner's own voice. */
 .section_requests {
   border-left: 3px solid var(--rag-acc);
@@ -912,6 +917,15 @@
 /* The Parallel badge (rag-t0013). */
 .parallel {
   display: inline-flex;
+}
+
+/* A Draft badge (2026-10-30): the neutral badge, its edge dashed. */
+.draftBadge {
+  display: inline-flex;
+}
+
+.draftBadge > span {
+  border-style: dashed;
 }
 
 .chipMore {

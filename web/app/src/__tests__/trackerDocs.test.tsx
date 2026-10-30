@@ -577,7 +577,7 @@ describe('the editor', () => {
     );
     const again = await editor();
     expect(again.value).toBe(`${BODY} unsaved`);
-    expect(screen.getByText('Your unsaved draft was restored.')).toBeInTheDocument();
+    expect(screen.getByText('Your unsaved changes were restored.')).toBeInTheDocument();
   });
 
   it('flags a draft written against an older revision', async () => {
@@ -587,10 +587,10 @@ describe('the editor', () => {
     );
     window.localStorage.setItem('rag.ledger.author_email', AUTHOR);
     remount('/projects/demo/doc/concepts/power.md', '/projects/:project/doc/*', <DocView />);
-    expect(await screen.findByRole('tab', { name: 'Edit · draft' })).toBeInTheDocument();
-    expect(screen.getByText(/You have an unsaved draft of this document/)).toBeInTheDocument();
+    expect(await screen.findByRole('tab', { name: 'Edit · unsaved' })).toBeInTheDocument();
+    expect(screen.getByText(/You have unsaved changes to this document/)).toBeInTheDocument();
     await act(async () => {
-      fireEvent.click(screen.getByRole('tab', { name: 'Edit · draft' }));
+      fireEvent.click(screen.getByRole('tab', { name: 'Edit · unsaved' }));
     });
     expect((await editor()).value).toBe('old draft');
     expect(

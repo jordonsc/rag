@@ -4,7 +4,7 @@
  * path opening that document here), the record it belongs to with its writes,
  * and three tabs: **View**, **Edit** (the editor, TC-03) and **History**
  * (TC-04). The tab is in the address (`?tab=edit`), so a reload in the editor
- * comes back to the editor, where the draft is restored.
+ * comes back to the editor, where the unsaved text is restored.
  *
  * An old path left by a rename **redirects**: the page moves to the current
  * path (replacing the address, so Back does not bounce) and says it did.
@@ -13,6 +13,11 @@
  * and offers to retitle its spec, milestone or concept too
  * (`RenameDialogs.tsx`). A new path moves the page there the way a redirect
  * does, and the old one keeps opening the document.
+ *
+ * **Drafts** (2026-10-30): a draft document shows a Draft badge and
+ * **Publish**; a published one offers **Make draft**. A draft's writes, and
+ * its spec's, milestone's or concept's, stay out of the feed. Text typed and
+ * not yet saved is called *unsaved* here, never a draft.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -29,14 +34,17 @@ import {
   getSpec,
   isProjectName,
   PROJECT_NAME_ERROR,
+  setDocDraft,
   writeDoc,
 } from './api';
 import { DocEditor } from './DocEditor';
 import { DocHistory } from './DocHistory';
+import { NoteDialog } from './dialogs';
 import { DocMarkdown, StateBadge } from './docParts';
 import styles from './docs.module.css';
 import { draftKey, hasDraft } from './drafts';
 import { useTrackerGate } from './gate';
+import { DraftBadge } from './parts';
 import { docPath, docsPath } from './paths';
 import { RecordPanel, type DocRecord } from './RecordPanel';
 import { DocRenameDialog, type Renamed } from './RenameDialogs';
@@ -92,6 +100,7 @@ function DocumentPage({ project, path }: { project: string; path: string }) {
   const navState = location.state as Moved | null;
   const moved = navState?.redirectedFrom;
   const [renaming, setRenaming] = useState(false);
+  const [drafting, setDrafting] = useState<'publish' | 'draft' | null>(null);
   const [problem, setProblem] = useState<string | null>(navState?.problem ?? null);
   // Carried through a redirect, so `?tab=edit` on an old path still edits.
   const search = location.search;
@@ -239,18 +248,70 @@ function DocumentPage({ project, path }: { project: string; path: string }) {
             {docKindLabel(current.kind)}
           </span>
           {record !== null && <StateBadge state={record.record.state} />}
+          {current.draft === true && <DraftBadge />}
           <code className={styles.mono}>{current.path}</code>
           <code className={styles.mono}>{current.id}</code>
           <span>revision {current.revision}</span>
         </div>
         <h1 className={frame.title}>{current.title}</h1>
         <div className={writeStyles.actions}>
+          {current.draft === true && (
+            <Button
+              size="sm"
+              variant="accent"
+              onClick={() => (gate.ready ? setDrafting('publish') : gate.prompt())}
+            >
+              <Icon name="eye" size={14} />
+              Publish
+            </Button>
+          )}
           <Button size="sm" onClick={() => (gate.ready ? setRenaming(true) : gate.prompt())}>
             <Icon name="pencil" size={14} />
             Rename…
           </Button>
+          {current.draft !== true && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => (gate.ready ? setDrafting('draft') : gate.prompt())}
+            >
+              <Icon name="eye-off" size={14} />
+              Make draft
+            </Button>
+          )}
         </div>
       </header>
+
+      <NoteDialog
+        project={project}
+        open={drafting !== null}
+        title={drafting === 'publish' ? 'Publish this document?' : 'Make this document a draft?'}
+        subject={{ id: current.id, title: current.title }}
+        message={
+          drafting === 'publish' ? (
+            <p>Agents watching the feed are told, once, with it as it now stands.</p>
+          ) : (
+            <p>
+              Agents are told once; after that its edits, and its record’s, stay out of the feed
+              until you publish it.
+            </p>
+          )
+        }
+        noteHelp="Why, when it is not obvious. It is kept in the document’s history."
+        confirmLabel={drafting === 'publish' ? 'Publish' : 'Make draft'}
+        onCancel={() => setDrafting(null)}
+        onSubmit={(note, fields) =>
+          setDocDraft(
+            current.id,
+            { draft: drafting !== 'publish', ...(note === '' ? {} : { note }) },
+            fields,
+          )
+        }
+        onDone={() => {
+          setDrafting(null);
+          refetch();
+        }}
+      />
 
       {renaming && (
         <DocRenameDialog
@@ -278,14 +339,14 @@ function DocumentPage({ project, path }: { project: string; path: string }) {
       {drafted && (
         <p className={cx(frame.notice, frame.notice_warn)} role="status">
           <Icon name="pencil" size={14} />
-          <span>You have an unsaved draft of this document. Edit restores it.</span>
+          <span>You have unsaved changes to this document. Edit restores them.</span>
         </p>
       )}
 
       <Tabs
         tabs={[
           { id: 'view', label: 'View' },
-          { id: 'edit', label: drafted ? 'Edit · draft' : 'Edit' },
+          { id: 'edit', label: drafted ? 'Edit · unsaved' : 'Edit' },
           { id: 'history', label: 'History' },
         ]}
         active={tab}

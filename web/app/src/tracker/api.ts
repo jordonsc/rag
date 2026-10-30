@@ -41,6 +41,7 @@ import type {
   ConceptsResponse,
   DiffResponse,
   DocCreate,
+  DocDraft,
   DocEdit,
   DocRename,
   DocRestore,
@@ -559,6 +560,23 @@ export async function renameDoc(
   signal?: AbortSignal,
 ): Promise<DocumentView> {
   return request<DocumentView>(`/tracker/docs/${enc(id)}/rename`, {
+    signal,
+    json: { ...body, ...author(fields) },
+  });
+}
+
+/**
+ * Publish a draft document (`draft: false`) or make it a draft again
+ * (2026-10-30). A concept's, spec's or milestone's draft-ness is its
+ * document's.
+ */
+export async function setDocDraft(
+  id: string,
+  body: DocDraft,
+  fields: TrackerAuthor,
+  signal?: AbortSignal,
+): Promise<DocumentView> {
+  return request<DocumentView>(`/tracker/docs/${enc(id)}/draft`, {
     signal,
     json: { ...body, ...author(fields) },
   });

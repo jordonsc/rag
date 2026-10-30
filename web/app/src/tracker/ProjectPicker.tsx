@@ -65,6 +65,9 @@ export function summary(project: ProjectSummary): string {
   if ((project.deferred ?? 0) > 0) {
     parts.push(`${project.deferred} deferred`);
   }
+  if ((project.drafts ?? 0) > 0) {
+    parts.push(`${project.drafts} ${project.drafts === 1 ? 'draft' : 'drafts'}`);
+  }
   if (project.done_unacknowledged > 0) {
     parts.push(`${project.done_unacknowledged} done`);
   }

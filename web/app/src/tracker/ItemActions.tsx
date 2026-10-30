@@ -22,10 +22,13 @@ import { AttachTextarea, useAttachments } from './attach';
 import {
   ApprovalDialog,
   LABELS_HELP,
+  MakeDraftDialog,
   NoteDialog,
   PARALLEL_LABEL,
+  PublishDialog,
   SEND_BACK_NOTE_ROWS,
 } from './dialogs';
+import { useSaveShortcut } from './saveShortcut';
 import { TRACKER_IDENTITY_NEEDED, useTrackerGate } from './gate';
 import { LabelEditor, submittedLabels, useProjectLabels } from './LabelEditor';
 import { sameLabels } from './labels';
@@ -63,6 +66,8 @@ type Open =
   | 'approve'
   | 'ratify'
   | 'withdraw'
+  | 'publish'
+  | 'makeDraft'
   | 'edit';
 
 export interface ItemActionsProps {
@@ -77,7 +82,8 @@ const REASON_OPTIONS = BLOCK_REASONS.map((value) => ({ value, label: blockReason
  * The item page's writes (D15): note, status, block or unblock, defer or
  * resume (rag-t0017), confirm or send back an item in review (rag-t0024; on
  * a second row of their own, green and amber: rag-t0041),
- * approve or ratify, edit.
+ * approve or ratify, edit, and publish a draft or make one (2026-10-30: a
+ * draft's Publish is a row of its own, first, as the thing to do next).
  *
  * Each is one `POST /tracker/items/{id}`. Only **Note** needs text; every
  * other write's note is optional (D7, amended by the owner 2026-10-27), and
@@ -139,6 +145,14 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
 
   return (
     <div className={styles.actionRows}>
+      {item.draft === true && (
+        <div className={writeStyles.actions} role="group" aria-label="Draft">
+          <Button size="sm" variant="accent" onClick={show('publish')}>
+            <Icon name="eye" size={14} />
+            Publish
+          </Button>
+        </div>
+      )}
       <div className={writeStyles.actions}>
         <Button size="sm" onClick={show('note')}>
           <Icon name="message-square" size={14} />
@@ -190,6 +204,12 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
         {(item.approval === 'owner' || item.approval === 'ratified') && (
           <Button size="sm" variant="ghost" onClick={show('withdraw')}>
             Withdraw approval
+          </Button>
+        )}
+        {item.draft !== true && item.queued && (
+          <Button size="sm" variant="ghost" onClick={show('makeDraft')}>
+            <Icon name="eye-off" size={14} />
+            Make draft
           </Button>
         )}
         <Button size="sm" onClick={show('edit')}>
@@ -383,6 +403,18 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
         onSubmit={send({ approval: 'unapproved' })}
         onDone={done}
       />
+      <PublishDialog
+        project={item.project}
+        item={open === 'publish' ? item : null}
+        onCancel={close}
+        onDone={done}
+      />
+      <MakeDraftDialog
+        project={item.project}
+        item={open === 'makeDraft' ? item : null}
+        onCancel={close}
+        onDone={done}
+      />
       {open === 'edit' && <EditItemDialog item={item} onCancel={close} onDone={done} />}
     </div>
   );
@@ -503,6 +535,7 @@ function EditItemDialog({ item: opened, onCancel, onDone }: EditItemDialogProps)
   const bodyFiles = useAttachments(item.project, setBody);
   const noteFiles = useAttachments(item.project, setNote);
   const uploading = bodyFiles.uploads + noteFiles.uploads > 0;
+  const root = useRef<HTMLDivElement>(null);
 
   const changes = editBody(item, {
     title,
@@ -572,6 +605,8 @@ function EditItemDialog({ item: opened, onCancel, onDone }: EditItemDialogProps)
         setError(asApiError(cause));
       });
   };
+  // Ctrl+S is Save (2026-10-30), and does nothing while Save is disabled.
+  useSaveShortcut(true, gate.ready && !busy && !uploading && !unchanged ? submit : null, root);
 
   return (
     <Dialog
@@ -596,7 +631,7 @@ function EditItemDialog({ item: opened, onCancel, onDone }: EditItemDialogProps)
       }
     >
       <Form onSubmit={submit}>
-        <div className={writeStyles.dialogBody}>
+        <div className={writeStyles.dialogBody} ref={root}>
           <Field label="Title" error={title.trim() === '' ? 'A ticket needs a title.' : undefined}>
             <Input value={title} onChange={setTitle} invalid={title.trim() === ''} />
           </Field>

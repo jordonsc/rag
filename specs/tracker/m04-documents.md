@@ -152,3 +152,22 @@ a concept's links) and `NoteDialog`'s (state changes, restore) take files the sa
 attached image in a document, the editor's preview or the **Attachments** list (its preview is now a button,
 *View <name>*) opens the image viewer (`tracker/ImageViewer.tsx`): 100 % or fitted to the width, wheel zoom about
 the cursor, drag to pan, Esc, the X or a backdrop click to close. Checked in headless Chromium with the m03 check.
+
+### Addendum, 2026-10-30: drafts and Ctrl+S in the documents pages
+
+The web's half of the owner's draft state (m03's addendum of the same date; the store's in `api.md`). A document's
+page shows a **Draft** badge beside its state while `draft` is true, with **Publish** (accent) before *Rename…*; a
+published one offers **Make draft** (ghost) after it. Both open the note dialog and send
+`POST /tracker/docs/{id}/draft` with `{draft, note?}`. A concept's, spec's or milestone's draft-ness is its
+document's. The documents page's rows (concepts, specs, milestones, other documents) carry the badge from the
+record's `draft` (a document's own, or its owner record's when the server sends it). **New concept** gains **Save
+as draft** beside *Create concept* (the editor's `offerDraft`; its `onSave` now takes `asDraft`), creating the
+concept with `draft: true`.
+
+**Ctrl+S (Cmd+S) works anywhere on the editor's page**, not only in its Markdown box (TC-03 had it there): the
+editor registers with `useSaveShortcut` while mounted, and the key does what Save does, or nothing while Save
+cannot be pressed. A dialog over the editor (Rename…, a discard confirm) takes the key, so the editor behind it is
+never saved by it. On New concept it is *Create concept*, not the draft.
+
+The editor's browser-kept text is now called *unsaved* on screen (see m03's addendum); `drafts.ts` keeps its name
+and key.

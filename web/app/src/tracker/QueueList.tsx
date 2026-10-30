@@ -35,6 +35,11 @@ export interface QueueListProps {
   onRemove: (item: Item) => void;
   /** Defer it (rag-t0017): it leaves the drawn queue for Deferred, keeping its place. */
   onDefer: (item: Item) => void;
+  /**
+   * Make it a draft again (2026-10-30): it leaves the drawn queue for Drafts,
+   * keeping its place, and nothing dispatches it. Omitted: no menu entry.
+   */
+  onDraft?: (item: Item) => void;
   /** The owner's approval from the row: the Agent-approved badge, or Approve. */
   onApproval: (item: Item, action: ApprovalAction) => void;
   /** A drag was cancelled because the server's order changed under it. */
@@ -185,6 +190,7 @@ export function QueueList({
   onMove,
   onRemove,
   onDefer,
+  onDraft,
   onApproval,
   onInterrupted,
 }: QueueListProps) {
@@ -385,6 +391,16 @@ export function QueueList({
       icon: 'circle-pause',
       onSelect: () => onDefer(item),
     },
+    ...(onDraft === undefined
+      ? []
+      : [
+          {
+            id: 'draft',
+            label: 'Make draft',
+            icon: 'eye-off',
+            onSelect: () => onDraft(item),
+          },
+        ]),
     {
       id: 'remove',
       label: item.type === 'gate' ? 'Remove gate' : 'Remove',

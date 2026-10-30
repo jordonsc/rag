@@ -4,9 +4,12 @@
  * in the same editor as every other document, pasted images included.
  *
  * A page rather than a dialog, because a concept is where the owner writes at
- * length: it needs the editor's room, its preview and its draft. The title and
- * slug are kept as a draft beside the body's, so a reload half-way through a
- * new concept loses nothing either.
+ * length: it needs the editor's room, its preview and its unsaved text. The
+ * title and slug are kept beside the body's unsaved text, so a reload half-way
+ * through a new concept loses nothing either.
+ *
+ * **Save as draft** (2026-10-30) creates it as a draft: the feed leaves its
+ * changes out until it is published from its page. Ctrl+S is Create concept.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -141,9 +144,10 @@ function NewConcept({ project }: { project: string }) {
         revision={0}
         requireChange={false}
         saveLabel="Create concept"
+        offerDraft
         messageLabel="Note"
         {...(blocked === undefined ? {} : { blocked })}
-        onSave={(body, _base, message, fields) =>
+        onSave={(body, _base, message, fields, asDraft) =>
           createConcept(
             project,
             {
@@ -151,6 +155,7 @@ function NewConcept({ project }: { project: string }) {
               title: meta.title.trim(),
               body,
               ...(message === '' ? {} : { note: message }),
+              ...(asDraft ? { draft: true } : {}),
             },
             fields,
           ).then((concept) => {

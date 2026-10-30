@@ -81,7 +81,7 @@ function setVisibility(state: 'visible' | 'hidden') {
 describe('the item page, live', () => {
   afterEach(() => setVisibility('visible'));
 
-  it('follows its project’s feed: every surface, every kind, as JSON', async () => {
+  it('follows its project’s feed: every surface, every kind, drafts too, as JSON', async () => {
     open();
     await screen.findByRole('heading', { name: 'Next up' });
     await feed();
@@ -90,6 +90,8 @@ describe('the item page, live', () => {
     expect(url.searchParams.get('surface')).toBe('any');
     expect(url.searchParams.get('kinds')).toBe('all');
     expect(url.searchParams.get('format')).toBe('json');
+    // The feed leaves drafts out by default; the owner's page follows them.
+    expect(url.searchParams.get('drafts')).toBe('true');
   });
 
   it('shows an agent’s write to the ticket without a reload', async () => {

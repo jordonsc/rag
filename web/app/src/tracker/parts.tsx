@@ -269,6 +269,22 @@ export function ParallelBadge() {
   );
 }
 
+/** What a Draft badge's tooltip says (2026-10-30). */
+export const DRAFT_HINT =
+  'A draft: not yet published. The feed leaves its changes out, so agents watching it are not woken, and nothing dispatches it.';
+
+/**
+ * The **Draft** badge (2026-10-30): the record is the owner's, not yet
+ * published. Dashed, as the Drafts section's edge is: not final yet.
+ */
+export function DraftBadge() {
+  return (
+    <span className={styles.draftBadge} title={DRAFT_HINT}>
+      <Badge tone="neutral">Draft</Badge>
+    </span>
+  );
+}
+
 /**
  * What an item blocked with reason `dependency` waits on (rag-t0018), each a
  * link to its item page. Nothing when it waits on nothing.

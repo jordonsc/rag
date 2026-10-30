@@ -28,12 +28,16 @@ export const FEED_FALLBACK_MS = 10_000;
 const RECONNECT_FIRST_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 
-/** The feed's address on this origin: every surface, every kind, one JSON frame per event. */
+/**
+ * The feed's address on this origin: every surface, every kind, one JSON frame
+ * per event, drafts included (2026-10-30): the feed leaves a draft's writes
+ * out by default, and the owner's own page must still follow them.
+ */
 export function feedUrl(project: string): string {
   const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return (
     `${scheme}//${window.location.host}/tracker/${encodeURIComponent(project)}/events/ws` +
-    '?surface=any&kinds=all&format=json'
+    '?surface=any&kinds=all&format=json&drafts=true'
   );
 }
 

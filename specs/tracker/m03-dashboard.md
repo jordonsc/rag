@@ -566,3 +566,44 @@ have been sent back as the owner's (the draft's old body differing from the new 
 The Vite dev proxy forwards `/tracker` with `ws: true`. Tests: `trackerItemLive.test.tsx` (9), against a fake
 WebSocket every test now gets (`__tests__/fakeSocket.ts`, assigned in `vitest.setup.ts` so no test reaches a
 server). Checked against the deployed `rag-serve`: the page's query upgrades (101).
+
+### Addendum, 2026-10-30: drafts and Ctrl+S
+
+The owner: a **draft** state for new tickets and documents, whose creation and changes are not sent on the event
+feed by default, so he can write and rework records without a monitoring agent being woken by them; and **Ctrl+S**
+to save a ticket or a document. The store, the feed's `drafts=true` and the routes are `api.md`'s and m01's
+addenda; this is the web's half.
+
+**The dashboard** draws a **Drafts** section (a dashed edge, the neutral grey) between Done and Requests: the
+queue view's `drafts`, tickets of any type, requests included, that are in no other section. Each row carries a
+**Draft** badge (dashed too: not final) and **Publish**. A queue row's menu gains **Make draft**. Both open the
+note dialog (the note optional, as on every write) and send `draft: false` or `draft: true` on
+`POST /tracker/items/{id}`. A draft keeps its list place, so publishing puts it back where it was. The project
+picker's summary counts drafts (`2 drafts`).
+
+**Add ticket, Add gate and Add request** each gain a second button, **Save as draft**, beside the main one; it is
+the same create with `draft: true`. A button rather than a box to tick, because a draft does not land where the
+main button says (*Add to the bottom*, *File the request*): the button pressed says what happens. It is drawn only
+once an identity is set, since its twin already says *Set your email*.
+
+**The ticket page** shows the Draft badge beside the approval, and while a draft a row of its own, first, with
+**Publish** (the accent: the thing to do next); a published queued ticket offers **Make draft** (ghost) beside
+Edit. A history entry written while the ticket was a draft (`event.draft`) carries a dashed *draft* mark, and a
+create or toggle says *Draft: yes* or *Draft: no (published)*. The page's own feed asks for drafts
+(`…&drafts=true`), so it still follows a draft live.
+
+**"Draft" now means only the server state.** The editor's browser-kept text (`drafts.ts`, m04) is called
+*unsaved* on screen: *New concept (unsaved)*, *Edit · unsaved*, *You have unsaved changes to this document*,
+*Close (keeps your unsaved changes)*. Identifiers and the storage key are unchanged, so nothing kept is lost.
+
+**Ctrl+S (Cmd+S)** is `tracker/saveShortcut.ts`'s `useSaveShortcut(active, save, root)`: one window listener for
+every form that registers. The ticket's Edit and the three add dialogs register while open (Ctrl+S is their main
+button, never *Save as draft*). The newest registration wins, so a dialog over a page saves the dialog; a modal
+(`aria-modal`) that does not hold the top form blocks it, so a note or rename dialog over the editor saves nothing.
+`save` is `null` whenever the button could not be pressed (nothing changed, a save in flight, an upload, no
+identity): the key then does nothing, but `preventDefault` still keeps the browser's *Save Page* shut while any
+form is registered. With none registered the key is the browser's. Auto-repeat is ignored.
+
+Tests: `trackerDrafts.test.tsx` (17), `trackerItemLive.test.tsx` (the feed URL's `drafts=true`), and the
+relabelled strings in `trackerDocs.test.tsx`. Web: app 667 and ui 227 tests pass; typecheck and the format check
+are clean.

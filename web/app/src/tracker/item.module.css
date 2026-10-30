@@ -236,6 +236,17 @@
   letter-spacing: 0.04em;
 }
 
+/* A history entry written while the ticket was a draft (2026-10-30). */
+.draftMark {
+  padding: 0 var(--rag-space-1);
+  border: 1px dashed var(--rag-border);
+  border-radius: var(--rag-radius-s);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 /* ---- the edit dialog's links ---- */
 
 .linkEditor {

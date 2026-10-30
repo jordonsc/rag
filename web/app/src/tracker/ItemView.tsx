@@ -10,7 +10,15 @@ import { getItem } from './api';
 import { CopyButton } from './CopyButton';
 import { ItemActions } from './ItemActions';
 import { LinkTitleText, linkKey, useLinkTitles } from './linkTitles';
-import { ApprovalBadge, LabelChips, ParallelBadge, StatusDot, TypeBadge, WaitsOn } from './parts';
+import {
+  ApprovalBadge,
+  DraftBadge,
+  LabelChips,
+  ParallelBadge,
+  StatusDot,
+  TypeBadge,
+  WaitsOn,
+} from './parts';
 import { itemPath, linkHref, projectPath } from './paths';
 import { RETURN_STATE } from './scrollMemory';
 import styles from './item.module.css';
@@ -118,6 +126,10 @@ function EventFields({ event }: { event: TrackerEvent }) {
   }
   if (typeof f.parallel === 'boolean' && (!created || f.parallel)) {
     rows.push(['Parallel', f.parallel ? 'yes' : 'no']);
+  }
+  // Drafts (2026-10-30): published, or made a draft again; a create only when it was one.
+  if (typeof f.draft === 'boolean' && (!created || f.draft)) {
+    rows.push(['Draft', f.draft ? 'yes' : 'no (published)']);
   }
   // Labels (rag-t0027): every change says the whole set; a create only when it had some.
   if (Array.isArray(f.labels) && (!created || f.labels.length > 0)) {
@@ -406,6 +418,7 @@ export function ItemView() {
           )}
           {record.release && <Badge tone="acc">Release</Badge>}
           {record.parallel === true && <ParallelBadge />}
+          {record.draft === true && <DraftBadge />}
         </div>
         <h1 className={styles.title}>{record.title}</h1>
         {itemTypeHint(record.type) !== undefined && (
@@ -567,6 +580,15 @@ export function ItemView() {
                 <div className={timeline.eventHead}>
                   <span className={timeline.kind}>{eventKindLabel(event.kind)}</span>
                   <EventAuthor event={event} self={email} />
+                  {/* Written while a draft (2026-10-30): the feed left it out. */}
+                  {event.draft === true && (
+                    <span
+                      className={styles.draftMark}
+                      title="Written while a draft: left out of the feed"
+                    >
+                      draft
+                    </span>
+                  )}
                   <time className={timeline.when} dateTime={event.ts}>
                     {format.stamp(event.ts)}
                   </time>

@@ -1,6 +1,7 @@
 /**
  * The tracker's write dialogs: one with a note, the owner's approval of an
- * item, the two that add to the queue, and Add request (rag-t0044).
+ * item, the two that add to the queue, Add request (rag-t0044), and Publish
+ * and Make draft (2026-10-30).
  *
  * The ledger's write rules hold here unchanged: the identity gate prompts
  * rather than hides (`useTrackerGate`), nothing is optimistic (the caller
@@ -24,10 +25,11 @@ import {
 import { asApiError, type LedgerApiError } from '../api';
 import writeStyles from '../writes/writes.module.css';
 import { createItem, updateItem } from './api';
+import { useSaveShortcut } from './saveShortcut';
 import { AttachTextarea, useAttachments } from './attach';
 import { TRACKER_IDENTITY_NEEDED, useTrackerGate } from './gate';
 import { LabelEditor, submittedLabels, useProjectLabels } from './LabelEditor';
-import type { Intensity, TrackerAuthor, WorkType } from './types';
+import type { Intensity, Item, TrackerAuthor, WorkType } from './types';
 import { INTENSITIES, WORK_TYPES } from './types';
 import { approvalLabel, gateTitle, intensityLabel, itemTypeHint, itemTypeLabel } from './vocab';
 
@@ -312,9 +314,25 @@ export function startApproval(approved: boolean): { approval?: 'owner' } {
 export const PARALLEL_LABEL = 'Parallel: may start before the gates above it, lands after them';
 
 /**
+ * **Save as draft** (2026-10-30), beside each add dialog's own button: the
+ * same create with `draft: true`. A draft keeps the place it was added at but
+ * sits under Drafts; the feed leaves its changes out and nothing dispatches it
+ * until it is published.
+ */
+export const SAVE_AS_DRAFT = 'Save as draft';
+export const SAVE_AS_DRAFT_HINT =
+  'Keep it to yourself for now: agents watching the feed are not told, and nothing picks it up until you publish it.';
+
+/** What a create sends for **Save as draft**: `draft: true`, or nothing. */
+export function asDraft(draft: boolean): { draft?: true } {
+  return draft ? { draft: true } : {};
+}
+
+/**
  * **Add item**: type, title, body, whether it starts owner-approved, and
  * whether it is parallel (unticked by default: it may then start before the
- * gates above it clear, rag-t0013); it joins the bottom of the queue.
+ * gates above it clear, rag-t0013); it joins the bottom of the queue, or
+ * Drafts with **Save as draft**. Ctrl+S is the main button.
  */
 export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProps) {
   const gate = useTrackerGate();
@@ -331,6 +349,7 @@ export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProp
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<LedgerApiError | null>(null);
   const attacher = useAttachments(project, setBody);
+  const root = useRef<HTMLDivElement>(null);
 
   const reset = () => {
     setType('dev');
@@ -350,7 +369,7 @@ export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProp
     onCancel();
   };
 
-  const submit = () => {
+  const submit = (draft = false) => {
     if (gate.fields === null) {
       gate.prompt();
       return;
@@ -376,6 +395,7 @@ export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProp
         ...startApproval(approved),
         ...(parallel ? { parallel: true } : {}),
         ...(chosen.labels.length > 0 ? { labels: chosen.labels } : {}),
+        ...asDraft(draft),
       },
       gate.fields,
     )
@@ -389,6 +409,11 @@ export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProp
         setError(asApiError(cause));
       });
   };
+  useSaveShortcut(
+    open,
+    gate.ready && !busy && attacher.uploads === 0 ? () => submit() : null,
+    root,
+  );
 
   return (
     <Dialog
@@ -397,18 +422,18 @@ export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProp
       title="Add a ticket"
       width={600}
       footer={
-        <>
-          <Button onClick={close} disabled={busy}>
-            Cancel
-          </Button>
-          <Button variant="primary" loading={busy} disabled={attacher.uploads > 0} onClick={submit}>
-            {gate.ready ? 'Add to the bottom' : 'Set your email'}
-          </Button>
-        </>
+        <AddFooter
+          busy={busy}
+          disabled={attacher.uploads > 0}
+          ready={gate.ready}
+          label="Add to the bottom"
+          onCancel={close}
+          onSubmit={submit}
+        />
       }
     >
       <Form onSubmit={submit}>
-        <div className={writeStyles.dialogBody}>
+        <div className={writeStyles.dialogBody} ref={root}>
           <Field label="Type" help={itemTypeHint(type)}>
             <Segmented
               value={type}
@@ -445,6 +470,43 @@ export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProp
   );
 }
 
+interface AddFooterProps {
+  busy: boolean;
+  disabled: boolean;
+  ready: boolean;
+  /** The main button: what a create does. */
+  label: string;
+  onCancel: () => void;
+  onSubmit: (draft: boolean) => void;
+}
+
+/**
+ * An add dialog's buttons: Cancel, **Save as draft** (2026-10-30) and the
+ * main create. Two buttons rather than a box to tick: a draft does not land
+ * where the main button says (the bottom, Requests), so the button pressed
+ * says what happens.
+ */
+function AddFooter({ busy, disabled, ready, label, onCancel, onSubmit }: AddFooterProps) {
+  return (
+    <>
+      <Button onClick={onCancel} disabled={busy}>
+        Cancel
+      </Button>
+      {ready && (
+        <span title={SAVE_AS_DRAFT_HINT}>
+          <Button disabled={busy || disabled} onClick={() => onSubmit(true)}>
+            <Icon name="eye-off" size={14} />
+            {SAVE_AS_DRAFT}
+          </Button>
+        </span>
+      )}
+      <Button variant="primary" loading={busy} disabled={disabled} onClick={() => onSubmit(false)}>
+        {ready ? label : 'Set your email'}
+      </Button>
+    </>
+  );
+}
+
 /** The labels field's help, on Add item and the item page's Edit (rag-t0027). */
 export const LABELS_HELP =
   'Optional: what it is about, such as Frontend or Docs. The project’s labels are offered.';
@@ -467,6 +529,7 @@ export function AddRequestDialog({ open, project, onCancel, onDone }: AddDialogP
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<LedgerApiError | null>(null);
   const attacher = useAttachments(project, setBody);
+  const root = useRef<HTMLDivElement>(null);
 
   const reset = () => {
     setTitle('');
@@ -482,7 +545,7 @@ export function AddRequestDialog({ open, project, onCancel, onDone }: AddDialogP
     onCancel();
   };
 
-  const submit = () => {
+  const submit = (draft = false) => {
     if (gate.fields === null) {
       gate.prompt();
       return;
@@ -495,7 +558,13 @@ export function AddRequestDialog({ open, project, onCancel, onDone }: AddDialogP
     setError(null);
     createItem(
       project,
-      { type: 'request', title: title.trim(), body, ...startApproval(approved) },
+      {
+        type: 'request',
+        title: title.trim(),
+        body,
+        ...startApproval(approved),
+        ...asDraft(draft),
+      },
       gate.fields,
     )
       .then(() => {
@@ -508,6 +577,11 @@ export function AddRequestDialog({ open, project, onCancel, onDone }: AddDialogP
         setError(asApiError(cause));
       });
   };
+  useSaveShortcut(
+    open,
+    gate.ready && !busy && attacher.uploads === 0 ? () => submit() : null,
+    root,
+  );
 
   return (
     <Dialog
@@ -516,18 +590,18 @@ export function AddRequestDialog({ open, project, onCancel, onDone }: AddDialogP
       title="Add a request"
       width={720}
       footer={
-        <>
-          <Button onClick={close} disabled={busy}>
-            Cancel
-          </Button>
-          <Button variant="primary" loading={busy} disabled={attacher.uploads > 0} onClick={submit}>
-            {gate.ready ? 'File the request' : 'Set your email'}
-          </Button>
-        </>
+        <AddFooter
+          busy={busy}
+          disabled={attacher.uploads > 0}
+          ready={gate.ready}
+          label="File the request"
+          onCancel={close}
+          onSubmit={submit}
+        />
       }
     >
       <Form onSubmit={submit}>
-        <div className={writeStyles.dialogBody}>
+        <div className={writeStyles.dialogBody} ref={root}>
           <Field
             label="Title"
             error={touched && title.trim() === '' ? 'A request needs a title.' : undefined}
@@ -567,6 +641,7 @@ export function AddGateDialog({ open, project, onCancel, onDone }: AddDialogProp
   const [title, setTitle] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<LedgerApiError | null>(null);
+  const root = useRef<HTMLDivElement>(null);
 
   const shown = title ?? gateTitle(intensity, release);
 
@@ -583,7 +658,7 @@ export function AddGateDialog({ open, project, onCancel, onDone }: AddDialogProp
     onCancel();
   };
 
-  const submit = () => {
+  const submit = (draft = false) => {
     if (gate.fields === null) {
       gate.prompt();
       return;
@@ -596,7 +671,14 @@ export function AddGateDialog({ open, project, onCancel, onDone }: AddDialogProp
     const finalTitle = shown.trim() === '' ? gateTitle(intensity, release) : shown.trim();
     createItem(
       project,
-      { type: 'gate', title: finalTitle, intensity, release, ...startApproval(approved) },
+      {
+        type: 'gate',
+        title: finalTitle,
+        intensity,
+        release,
+        ...startApproval(approved),
+        ...asDraft(draft),
+      },
       gate.fields,
     )
       .then(() => {
@@ -609,6 +691,7 @@ export function AddGateDialog({ open, project, onCancel, onDone }: AddDialogProp
         setError(asApiError(cause));
       });
   };
+  useSaveShortcut(open, gate.ready && !busy ? () => submit() : null, root);
 
   return (
     <Dialog
@@ -617,18 +700,18 @@ export function AddGateDialog({ open, project, onCancel, onDone }: AddDialogProp
       title="Add a gate"
       width={480}
       footer={
-        <>
-          <Button onClick={close} disabled={busy}>
-            Cancel
-          </Button>
-          <Button variant="primary" loading={busy} onClick={submit}>
-            {gate.ready ? 'Add to the bottom' : 'Set your email'}
-          </Button>
-        </>
+        <AddFooter
+          busy={busy}
+          disabled={false}
+          ready={gate.ready}
+          label="Add to the bottom"
+          onCancel={close}
+          onSubmit={submit}
+        />
       }
     >
       <Form onSubmit={submit}>
-        <div className={writeStyles.dialogBody}>
+        <div className={writeStyles.dialogBody} ref={root}>
           <Field label="Intensity">
             <Segmented
               value={intensity}
@@ -647,5 +730,71 @@ export function AddGateDialog({ open, project, onCancel, onDone }: AddDialogProp
         </div>
       </Form>
     </Dialog>
+  );
+}
+
+// ---- Publish and Make draft (2026-10-30) --------------------------------------
+
+export interface DraftDialogProps {
+  project: string;
+  /** The ticket it acts on; `null` is closed. */
+  item: Pick<Item, 'id' | 'title' | 'type'> | null;
+  onCancel: () => void;
+  /** The write landed. The caller re-reads. */
+  onDone: () => void;
+}
+
+/**
+ * **Publish** a draft ticket (`draft: false`): it takes its place in the
+ * queue (or Requests), and the feed announces it, so a watching manager hears
+ * of it once, as it now stands.
+ */
+export function PublishDialog({ project, item, onCancel, onDone }: DraftDialogProps) {
+  const what = item?.type === 'gate' ? 'gate' : item?.type === 'request' ? 'request' : 'ticket';
+  return (
+    <NoteDialog
+      project={project}
+      open={item !== null}
+      title={`Publish this ${what}?`}
+      {...(item === null ? {} : { subject: item })}
+      message={
+        <p>
+          It leaves Drafts for{' '}
+          {what === 'request' ? 'Requests' : 'the queue, at the place it kept as a draft'}. Agents
+          watching the feed are told, once, with it as it now stands.
+        </p>
+      }
+      confirmLabel="Publish"
+      onCancel={onCancel}
+      onSubmit={(note, fields) => updateItem(item!.id, { draft: false, note }, fields)}
+      onDone={onDone}
+    />
+  );
+}
+
+/**
+ * **Make draft** (`draft: true`): a published ticket goes back to Drafts,
+ * keeping its place. The feed says so once; its changes after that are left
+ * out until it is published again, and nothing dispatches it meanwhile.
+ */
+export function MakeDraftDialog({ project, item, onCancel, onDone }: DraftDialogProps) {
+  const what = item?.type === 'gate' ? 'gate' : item?.type === 'request' ? 'request' : 'ticket';
+  return (
+    <NoteDialog
+      project={project}
+      open={item !== null}
+      title={`Make this ${what} a draft?`}
+      {...(item === null ? {} : { subject: item })}
+      message={
+        <p>
+          It moves to Drafts and keeps its place. Agents are told once; after that its changes stay
+          out of the feed and nothing picks it up until you publish it.
+        </p>
+      }
+      confirmLabel="Make draft"
+      onCancel={onCancel}
+      onSubmit={(note, fields) => updateItem(item!.id, { draft: true, note }, fields)}
+      onDone={onDone}
+    />
   );
 }

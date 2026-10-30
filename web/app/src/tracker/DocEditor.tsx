@@ -5,7 +5,7 @@
  * Three promises, all in service of one rule: **nothing a person types is
  * lost.**
  *
- * * **Drafts.** Every change is kept in this browser (`drafts.ts`) under the
+ * * **Unsaved text.** Every change is kept in this browser (`drafts.ts`) under the
  *   document and the revision it was written against, and restored on the next
  *   mount, so a reload, a closed tab or a crash costs nothing. Only a
  *   successful save, or the reader's own *Discard*, removes it.
@@ -21,16 +21,16 @@
  *   cursor; a placeholder holds the place while it uploads, and Save waits for
  *   it. The machinery is `attach.tsx`'s, shared with the ticket page's bodies
  *   and note fields (rag-t0053).
+ *
+ * **Ctrl+S** (Cmd+S) is Save wherever the focus is on the page (2026-10-30,
+ * `saveShortcut.ts`), and does nothing while Save cannot be pressed.
+ *
+ * The browser-kept text is called *unsaved* on screen (2026-10-30): "draft"
+ * now means a server record not yet published. The code and storage keys keep
+ * their old `draft` names, so nothing kept before is lost.
  */
 
-import {
-  useCallback,
-  useDeferredValue,
-  useEffect,
-  useRef,
-  useState,
-  type KeyboardEvent,
-} from 'react';
+import { useCallback, useDeferredValue, useEffect, useRef, useState } from 'react';
 import { Button, ConfirmDialog, Field, Icon, Input, useFormat } from '@rag/ui';
 
 import { asApiError, type LedgerApiError } from '../api';
@@ -39,11 +39,13 @@ import { cx } from '../util';
 import { listRevisions, TrackerApiError, type DocConflict } from './api';
 import { AttachButton, AttachFailure, uploadingText, useAttachments } from './attach';
 import { changed, diffLines, withContext } from './diff';
+import { SAVE_AS_DRAFT, SAVE_AS_DRAFT_HINT } from './dialogs';
 import { DocMarkdown, LineDiff } from './docParts';
 import styles from './docs.module.css';
 import frame from './tracker.module.css';
 import { clearDraft, readDraft, writeDraft, type Draft } from './drafts';
 import { TRACKER_IDENTITY_NEEDED, useTrackerGate } from './gate';
+import { useSaveShortcut } from './saveShortcut';
 import type { Revision, TrackerAuthor } from './types';
 import { surfaceLabel } from './vocab';
 
@@ -61,6 +63,11 @@ export interface DocEditorProps {
   docId?: string;
   /** The save button's words. */
   saveLabel?: string;
+  /**
+   * Offer **Save as draft** beside Save (2026-10-30): the same write, with
+   * `asDraft` true. For a create (New concept); Ctrl+S is still Save.
+   */
+  offerDraft?: boolean;
   /** Why Save cannot be pressed yet (fields outside the editor), or nothing. */
   blocked?: string;
   /** A save of an unchanged body is refused by the server; a create is not. */
@@ -71,7 +78,13 @@ export interface DocEditorProps {
    * The write. Resolves when it landed; a rejection with a 409's `conflict`
    * opens the stale-save view, any other is shown as the server said it.
    */
-  onSave: (body: string, base: number, message: string, fields: TrackerAuthor) => Promise<unknown>;
+  onSave: (
+    body: string,
+    base: number,
+    message: string,
+    fields: TrackerAuthor,
+    asDraft: boolean,
+  ) => Promise<unknown>;
   /** The save landed (the draft is already gone). */
   onSaved: () => void;
   /** Leave the editor. The draft stays unless the reader discarded it. */
@@ -86,8 +99,8 @@ export { attachmentMarkdown } from './attach';
 function draftNotice(draft: Draft, revision: number): string {
   const stale = draft.base_revision < revision;
   return stale
-    ? `Your unsaved draft was restored. It was written against revision ${draft.base_revision}; the document is now at revision ${revision}, so saving it will show what changed first.`
-    : 'Your unsaved draft was restored.';
+    ? `Your unsaved changes were restored. They were written against revision ${draft.base_revision}; the document is now at revision ${revision}, so saving them will show what changed first.`
+    : 'Your unsaved changes were restored.';
 }
 
 export function DocEditor({
@@ -98,6 +111,7 @@ export function DocEditor({
   revision,
   docId,
   saveLabel = 'Save',
+  offerDraft = false,
   blocked,
   requireChange = true,
   messageLabel = 'Message',
@@ -129,6 +143,7 @@ export function DocEditor({
 
   const saved = useRef(false);
   const source = useRef<HTMLTextAreaElement>(null);
+  const root = useRef<HTMLDivElement>(null);
   const attacher = useAttachments(project, (change) => {
     saved.current = false;
     setBody(change);
@@ -183,7 +198,7 @@ export function DocEditor({
 
   // ---- saving -------------------------------------------------------------
 
-  const save = (against: number) => {
+  const save = (against: number, asDraft = false) => {
     if (gate.fields === null) {
       gate.prompt();
       return;
@@ -193,7 +208,7 @@ export function DocEditor({
     }
     setBusy(true);
     setError(null);
-    onSave(body, against, message.trim(), gate.fields)
+    onSave(body, against, message.trim(), gate.fields, asDraft)
       .then(() => {
         saved.current = true;
         clearDraft(storageKey);
@@ -246,29 +261,25 @@ export function DocEditor({
 
   // ---- attachments --------------------------------------------------------
 
-  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
-      event.preventDefault();
-      save(base);
-    }
-  };
-
   // ---- drawing ------------------------------------------------------------
 
   const dirty = body !== pristine;
   const unchanged = requireChange && !dirty;
+  // Ctrl+S anywhere on the page is the Save button, and does what it does.
+  const canSave = gate.ready && !busy && !unchanged && uploads === 0 && blocked === undefined;
+  useSaveShortcut(true, canSave ? () => save(base) : null, root);
   const conflictRows = conflict === null ? [] : withContext(diffLines(conflict.current.body, body));
   const conflictDiffers = conflict !== null && changed(diffLines(conflict.current.body, body));
 
   return (
-    <div className={styles.editor}>
+    <div className={styles.editor} ref={root}>
       {notice !== null && (
         <p className={frame.notice} role="status">
           <Icon name="info" size={14} />
           <span>{notice}</span>
           {restored !== null && dirty && (
             <Button size="sm" variant="ghost" onClick={() => setConfirm('discard-draft')}>
-              Discard draft
+              Discard unsaved changes
             </Button>
           )}
         </p>
@@ -338,7 +349,6 @@ export function DocEditor({
             value={body}
             onChange={(event) => edit(event.target.value)}
             {...attacher.handlers}
-            onKeyDown={onKeyDown}
             aria-label="Markdown"
             spellCheck
           />
@@ -365,8 +375,19 @@ export function DocEditor({
         </div>
         <div className={styles.commitButtons}>
           <Button onClick={onClose} disabled={busy}>
-            {dirty ? 'Close (keeps the draft)' : 'Close'}
+            {dirty ? 'Close (keeps your unsaved changes)' : 'Close'}
           </Button>
+          {offerDraft && gate.ready && (
+            <span title={SAVE_AS_DRAFT_HINT}>
+              <Button
+                disabled={busy || unchanged || uploads > 0 || blocked !== undefined}
+                onClick={() => save(base, true)}
+              >
+                <Icon name="eye-off" size={14} />
+                {SAVE_AS_DRAFT}
+              </Button>
+            </span>
+          )}
           <Button
             variant="primary"
             loading={busy}
@@ -388,7 +409,9 @@ export function DocEditor({
       {storageFailed && (
         <p className={writeStyles.failed} role="alert">
           <Icon name="triangle-alert" size={14} />
-          <span>This browser would not keep a draft. Save before leaving the page.</span>
+          <span>
+            This browser would not keep your unsaved changes. Save before leaving the page.
+          </span>
         </p>
       )}
       {!gate.ready && <p className={writeStyles.gate}>{TRACKER_IDENTITY_NEEDED}</p>}
@@ -402,7 +425,7 @@ export function DocEditor({
       <ConfirmDialog
         open={confirm === 'discard-mine'}
         title="Discard your text?"
-        message="Your text is replaced by the newer revision and the draft is deleted. This cannot be undone."
+        message="Your text is replaced by the newer revision and your unsaved changes are deleted. This cannot be undone."
         confirmLabel="Discard mine"
         danger
         onConfirm={discardMine}
@@ -410,9 +433,9 @@ export function DocEditor({
       />
       <ConfirmDialog
         open={confirm === 'discard-draft'}
-        title="Discard the draft?"
+        title="Discard your unsaved changes?"
         message="The unsaved text is deleted and the editor closes. This cannot be undone."
-        confirmLabel="Discard draft"
+        confirmLabel="Discard changes"
         danger
         onConfirm={discardDraft}
         onCancel={() => setConfirm(null)}

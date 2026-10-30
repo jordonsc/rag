@@ -12,6 +12,9 @@
  * * **Other documents**, the free-standing ones (kind `doc`) an agent may have
  *   created, which belong to no spec or concept;
  * * **Attachments** (TC-05).
+ *
+ * A draft (2026-10-30), whose changes the feed leaves out, carries a Draft
+ * badge in any tab.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -45,7 +48,7 @@ import styles from './docs.module.css';
 import { draftKey, hasDraft } from './drafts';
 import { useTrackerGate } from './gate';
 import { planMove, type Direction } from './milestoneOrder';
-import { ApprovalBadge, LinkChips } from './parts';
+import { ApprovalBadge, DraftBadge, LinkChips } from './parts';
 import { docPath, newConceptPath, storeLastProject } from './paths';
 import { ProjectPicker } from './ProjectPicker';
 import { TitleDialog, type TitleTarget } from './RenameDialogs';
@@ -224,6 +227,7 @@ function ConceptsTab({
           </Link>
           <code className={styles.docPath}>{concept.path}</code>
           <span className={styles.docMeta}>
+            {concept.draft === true && <DraftBadge />}
             <ApprovalBadge approval={concept.approval} />
             <LinkChips project={project} links={concept.links} />
             <time dateTime={concept.updated_at}>{format.stamp(concept.updated_at)}</time>
@@ -242,7 +246,7 @@ function ConceptsTab({
         </p>
         <Button size="sm" variant="primary" onClick={onNew}>
           <Icon name="file-plus" size={14} />
-          {pending ? 'New concept (draft)' : 'New concept'}
+          {pending ? 'New concept (unsaved)' : 'New concept'}
         </Button>
       </div>
       {concepts.length === 0 ? (
@@ -432,6 +436,7 @@ function SpecsTab({
             </Link>
             <code className={styles.docPath}>{spec.path}</code>
             <span className={styles.docMeta}>
+              {spec.draft === true && <DraftBadge />}
               <StateBadge state={spec.state} />
               <ApprovalBadge approval={spec.approval} />
             </span>
@@ -454,6 +459,7 @@ function SpecsTab({
                     {milestone.title}
                   </Link>
                   <span className={styles.docMeta}>
+                    {milestone.draft === true && <DraftBadge />}
                     <StateBadge state={milestone.state} />
                     <ApprovalBadge approval={milestone.approval} always />
                   </span>
@@ -531,6 +537,7 @@ function OtherTab({ project, docs }: { project: string; docs: readonly TrackerDo
             </Link>
             <code className={styles.docPath}>{doc.path}</code>
             <span className={styles.docMeta}>
+              {doc.draft === true && <DraftBadge />}
               revision {doc.revision}
               <time dateTime={doc.updated_at}>{format.stamp(doc.updated_at)}</time>
             </span>

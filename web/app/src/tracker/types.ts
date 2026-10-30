@@ -132,6 +132,11 @@ export interface TrackerEvent {
   body: string;
   /** Every field the write set, with its new value. Open: see api.md § Event. */
   fields: Record<string, unknown>;
+  /**
+   * Written while its record was a draft (2026-10-30): the feed leaves it
+   * out unless asked (`drafts=true`). Absent from a server before drafts.
+   */
+  draft?: boolean;
 }
 
 /** The kind of record an event belongs to. */
@@ -190,6 +195,12 @@ export interface Item {
   updated_at: string;
   done_at: string | null;
   acknowledged_at: string | null;
+  /**
+   * A draft (2026-10-30): the owner's, not yet published. Its writes are left
+   * out of the feed by default and it is in no queue section but `drafts`, so
+   * nothing dispatches it. Absent from a server before drafts: read as false.
+   */
+  draft?: boolean;
   /** Present on a record read; absent or empty on list reads. */
   events?: TrackerEvent[];
 }
@@ -207,6 +218,11 @@ export interface ProjectSummary {
   deferred?: number;
   /** In review, blocked or not (rag-t0024). Absent from a server before it. */
   review?: number;
+  /**
+   * Queued drafts (2026-10-30), whatever their type or status; counted under
+   * none of the other buckets. Absent from a server before drafts.
+   */
+  drafts?: number;
   done_unacknowledged: number;
 }
 
@@ -218,6 +234,12 @@ export interface ProjectsResponse {
 export interface QueueView {
   project: string;
   exists: boolean;
+  /**
+   * The owner's drafts (2026-10-30): queued items not yet published, any type
+   * (requests too), in list order. Never in any other section. Absent from a
+   * server before drafts; read as empty.
+   */
+  drafts?: Item[];
   /**
    * The owner's requests waiting to be broken down (rag-t0044), whatever
    * their status, in list order. Never in `queue`. Absent from a server
@@ -286,6 +308,12 @@ export interface TrackerDocument {
   spec: string | null;
   milestone: string | null;
   concept: string | null;
+  /**
+   * A draft (2026-10-30): its writes, and its spec's, milestone's or
+   * concept's, are left out of the feed by default. Absent from a server
+   * before drafts: read as false.
+   */
+  draft?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -335,6 +363,8 @@ export interface Milestone {
   approval: Approval;
   doc_id: string;
   path: string;
+  /** Its document's `draft` (2026-10-30). Absent from a server before drafts. */
+  draft?: boolean;
   created_at: string;
   updated_at: string;
   events?: TrackerEvent[];
@@ -348,6 +378,8 @@ export interface Spec {
   approval: Approval;
   doc_id: string;
   path: string;
+  /** Its master document's `draft` (2026-10-30). Absent from a server before drafts. */
+  draft?: boolean;
   milestones: Milestone[];
   created_at: string;
   updated_at: string;
@@ -368,6 +400,8 @@ export interface Concept {
   links: Link[];
   doc_id: string;
   path: string;
+  /** Its document's `draft` (2026-10-30). Absent from a server before drafts. */
+  draft?: boolean;
   created_at: string;
   updated_at: string;
   events?: TrackerEvent[];
@@ -415,6 +449,8 @@ export interface ItemCreate {
   labels?: string[];
   note?: string;
   place?: Place;
+  /** Create it as a draft (2026-10-30), published later with `draft: false`. */
+  draft?: boolean;
 }
 
 export interface ItemUpdate {
@@ -438,6 +474,8 @@ export interface ItemUpdate {
   parallel?: boolean;
   /** The labels, replacing the set wholesale; `[]` clears them (rag-t0027). */
   labels?: string[];
+  /** `false` publishes a draft; `true` makes a ticket a draft again (2026-10-30). */
+  draft?: boolean;
   note?: string;
 }
 
@@ -446,6 +484,13 @@ export interface DocCreate {
   title: string;
   body?: string;
   message?: string;
+  draft?: boolean;
+}
+
+/** `POST /tracker/docs/{id}/draft` (2026-10-30): publish, or make a draft again. */
+export interface DocDraft {
+  draft: boolean;
+  note?: string;
 }
 
 export interface Replacement {
@@ -485,6 +530,7 @@ export interface MilestoneCreate {
   approval?: Exclude<Approval, 'ratified'>;
   body?: string;
   note?: string;
+  draft?: boolean;
 }
 
 export interface SpecCreate {
@@ -495,6 +541,7 @@ export interface SpecCreate {
   body?: string;
   milestones?: MilestoneCreate[];
   note?: string;
+  draft?: boolean;
 }
 
 export interface SpecUpdate {
@@ -520,6 +567,8 @@ export interface ConceptCreate {
   body?: string;
   links?: Link[];
   note?: string;
+  /** Create its document as a draft (2026-10-30). */
+  draft?: boolean;
 }
 
 export interface ConceptUpdate {
