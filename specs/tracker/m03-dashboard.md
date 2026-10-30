@@ -607,3 +607,14 @@ form is registered. With none registered the key is the browser's. Auto-repeat i
 Tests: `trackerDrafts.test.tsx` (17), `trackerItemLive.test.tsx` (the feed URL's `drafts=true`), and the
 relabelled strings in `trackerDocs.test.tsx`. Web: app 667 and ui 227 tests pass; typecheck and the format check
 are clean.
+
+### Addendum, 2026-10-30: the bar (owner)
+
+The nav reads **Search, Tracker, Archived** (Tracker moved left of Archived), and the id box is back on the
+tracker's pages: it is on every page now, named *Open by id*, and opens a ledger topic (`demo-l0001`, or a legacy
+`demo-0001`), a ticket (`demo-t0001`, straight to its ticket page) or a document (`demo-d0001`: `GET
+/tracker/docs/{id}`, then its page by path; a 404 reads *There is no document demo-d0001.*). Anything else is
+refused before a request, naming the three shapes. The ledger's New topic stays off the tracker's pages. The main
+search is unchanged: its corpus select already offers the tracker (documents and tickets). Tests:
+`openTopic.test.tsx` (ticket, document, missing document), `trackerShell.test.tsx` (the box on a tracker page).
+

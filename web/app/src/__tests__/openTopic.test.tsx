@@ -38,7 +38,7 @@ afterEach(() => {
 });
 
 /** The box in the top bar, which is on screen whatever the route. */
-const bar = () => screen.getByLabelText('Open a topic by id');
+const bar = () => screen.getByLabelText('Open by id');
 
 describe('the id box in the shell', () => {
   /**
@@ -84,14 +84,43 @@ describe('the id box in the shell', () => {
     expect(await screen.findByRole('heading', { name: marked.title })).toBeInTheDocument();
   });
 
-  it('refuses a tracker ticket id, which is not a topic', async () => {
+  // 2026-10-30 (owner): the bar opens tracker ids too.
+  it('opens a tracker ticket id on its ticket page, without asking the server first', async () => {
     const user = userEvent.setup();
     mount(<App />);
 
     await user.type(bar(), 'ubu-t0042{Enter}');
 
-    expect(screen.getByRole('alert')).toHaveTextContent(/not a topic id/i);
-    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(screen.getByTestId('address')).toHaveTextContent('/projects/ubu/ticket/ubu-t0042');
+  });
+
+  it('opens a tracker document id at its path, looked up first', async () => {
+    const user = userEvent.setup();
+    server.on(/\/tracker\/docs\/ubu-d0003/, {
+      id: 'ubu-d0003',
+      project: 'ubu',
+      path: 'concepts/power.md',
+      kind: 'concept',
+    });
+    mount(<App />);
+
+    await user.type(bar(), 'ubu-d0003{Enter}');
+
+    await waitFor(() =>
+      expect(screen.getByTestId('address')).toHaveTextContent(
+        '/projects/ubu/doc/concepts/power.md',
+      ),
+    );
+  });
+
+  it('names a document id that does not exist', async () => {
+    const user = userEvent.setup();
+    server.on(/\/tracker\/docs\/ubu-d0404/, { error: 'no document' }, 404);
+    mount(<App />);
+
+    await user.type(bar(), 'ubu-d0404{Enter}');
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('There is no document ubu-d0404.');
   });
 
   it('trims what was pasted, since a copied id usually brings whitespace', async () => {
@@ -113,7 +142,7 @@ describe('the id box in the shell', () => {
 
     await user.type(bar(), 'demo-1{Enter}');
 
-    expect(screen.getByRole('alert')).toHaveTextContent(/not a topic id/i);
+    expect(screen.getByRole('alert')).toHaveTextContent(/not an id/i);
     expect(screen.getByRole('alert')).toHaveTextContent('demo-0001');
     expect(screen.getByTestId('address')).toHaveTextContent('/');
     expect(globalThis.fetch).not.toHaveBeenCalled();
@@ -135,7 +164,7 @@ describe('the id box in the shell', () => {
     const user = userEvent.setup();
     mount(<App />, { route: '/nowhere' });
 
-    await user.click(screen.getByRole('button', { name: 'Open topic' }));
+    await user.click(screen.getByRole('button', { name: 'Open id' }));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.getByTestId('address')).toHaveTextContent('/nowhere');
   });
@@ -268,7 +297,7 @@ describe('the rescue box on the 404 page', () => {
     mount(<NotFoundView />, { route: '/nowhere' });
 
     await user.type(screen.getByLabelText('Topic id'), 'not-an-id{Enter}');
-    expect(screen.getByRole('alert')).toHaveTextContent(/not a topic id/i);
+    expect(screen.getByRole('alert')).toHaveTextContent(/not an id/i);
     expect(screen.getByTestId('address')).toHaveTextContent('/nowhere');
   });
 

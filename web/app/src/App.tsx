@@ -31,8 +31,8 @@ import {
  */
 const NAV: readonly TopNavItem[] = [
   { id: 'search', icon: 'search', label: 'Search' },
-  { id: 'archived', icon: 'archive', label: 'Archived' },
   { id: 'tracker', icon: 'list-todo', label: 'Tracker' },
+  { id: 'archived', icon: 'archive', label: 'Archived' },
 ];
 
 /**
@@ -129,7 +129,9 @@ export function App() {
                 find by first getting lost. In the bar it is on screen from
                 every view, including the topic page, where the next thing a
                 reader does with an id is usually to follow another one. */}
-            {!tracker && <OpenTopic label="Open a topic by id" actionLabel="Open topic" compact />}
+            {/* On every page, the tracker's too (2026-10-30): it opens a
+                ledger topic, a ticket or a document by id. */}
+            <OpenTopic label="Open by id" actionLabel="Open id" compact />
             <IdentityControl />
           </>
         }

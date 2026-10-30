@@ -168,7 +168,11 @@ prose, and somebody wants to read it. Everything else here — search, the archi
 listing — is a way of finding an id you were _not_ given, so the direct route
 gets the prominent affordance:
 
-- **The top bar carries a topic-id box on every page** (`ledger/OpenTopic.tsx`),
+- **The top bar carries an id box on every page** (`ledger/OpenTopic.tsx`), the
+  tracker's included since 2026-10-30, when it also learned to open a **ticket**
+  (`demo-t0001`, its ticket page) and a **document** (`demo-d0001`, looked up, then
+  opened at its path; a missing one is named). The bar reads Search, Tracker,
+  Archived.
   including the topic page, where the next thing a reader does with an id is
   usually to follow another one. Type or paste, press Enter, arrive. It was
   previously only on the 404 page — an affordance you found by first getting

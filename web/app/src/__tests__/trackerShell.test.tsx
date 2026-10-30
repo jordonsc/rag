@@ -70,14 +70,16 @@ describe('the tracker in the shell', () => {
     expect(await screen.findByRole('heading', { name: 'demo' })).toBeInTheDocument();
   });
 
-  it('names the section in the bar and leaves the ledger’s New topic to the ledger', async () => {
+  it('names the section in the bar, leaves New topic to the ledger and keeps the id box', async () => {
     mount(<App />, { route: '/projects/demo' });
     await screen.findByRole('heading', { name: 'demo' });
     // The brand says Tracker here (and Ledger on the ledger's pages).
     expect(screen.queryByText('Ledger', { selector: 'span' })).toBeNull();
     expect(screen.getAllByText('Tracker', { selector: 'span' }).length).toBeGreaterThan(0);
     expect(screen.queryByRole('button', { name: 'New topic' })).toBeNull();
-    expect(screen.queryByLabelText('Open a topic by id')).toBeNull();
+    // The id box is on the tracker's pages too (2026-10-30): it opens tickets
+    // and documents as well as topics.
+    expect(screen.getByLabelText('Open by id')).toBeInTheDocument();
   });
 
   it('switches project from the picker', async () => {
