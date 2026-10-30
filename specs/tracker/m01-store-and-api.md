@@ -394,3 +394,25 @@ The owner could not defer a ticket in review from its page, and asked for it. `r
 `review` and `review` → `failed` stay refused. The web's `TRANSITIONS` table offers it, so the ticket page shows
 *Defer* beside *Confirm* and *Send back*. Tests: the exhaustive table in `disallowed_transitions_are_refused`,
 `review_keeps_its_place_and_is_confirmed_or_sent_back` (defer and resume in place), and `trackerItem.test.tsx`.
+
+### Addendum, 2026-10-30: drafts (owner)
+
+The owner: create and rework tickets and documents without waking a monitoring agent. Additive columns
+(`ADDED_COLUMNS`, so the live database opens unchanged): `items.draft`, `documents.draft`, `events.draft`, each
+`INTEGER NOT NULL DEFAULT 0`. **The event's flag is computed in `append_event`** (`event_is_draft` in `mod.rs`),
+so every write path, present and future, is covered without saying so: it reads the record's flag in the writing
+transaction, after the change (`record_is_draft`: an item's own, a document's own, a spec's, milestone's or
+concept's from its document), and is true when the record is a draft after the write, except the write that turned
+a published record into one (`fields.draft: true`, `before.draft: false`). Every create inserts the record (and a
+spec's, milestone's or concept's document) before its event, which this relies on. `FeedFilter.drafts` (default
+false) adds `AND e.draft = 0` to the SQL and `matches`; `publish` reads with drafts on, so the channel carries
+everything and each subscriber filters. Writes: `NewItem.draft`, `ItemUpdate.draft` (an `edit`; a publish also
+records the ticket's `type` in `fields`), `draft` on `NewDocument`, `NewSpec` (its milestones inherit it),
+`NewMilestone`, `NewConcept`, and `TrackerStore::set_document_draft` (`POST /tracker/docs/{id}/draft`). Reads:
+`draft` on Item, Document, Event, FeedEvent, and Spec/Milestone/Concept (their document's); `QueueView.drafts`
+(queued drafts of any type, in no other section); `ProjectSummary.drafts` (excluded from the other buckets). The
+feed's `drafts=true` query on both routes. Not done: the search index carries drafts like anything else, and a
+draft ticket created with `from:<request>` still writes the request's (published) `link` event. Tests:
+`a_draft_ticket_stays_out_of_the_feed_and_the_queue_until_published`, `publishing_a_draft_request_says_it_is_a_request`,
+`a_draft_concept_is_quiet_with_its_document_until_published`, `a_draft_spec_makes_its_milestones_drafts`, and over a
+socket `a_draft_reaches_only_a_feed_that_asks_until_it_is_published`.

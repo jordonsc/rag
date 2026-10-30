@@ -213,6 +213,18 @@ Design
   * **No new MCP tool**: `user-claude.md` spells out the `Monitor` call and the re-arm loop. `rag-serve` now stops
     on SIGTERM as well as Ctrl-C (a container stop used to end in SIGKILL), closing each feed with code 1012 and its
     resume id.
+  *Amended 2026-10-30 (owner): **drafts**.* "A new or updated record in draft state is not sent on the websocket
+  by default (but may ask explicitly for it). This helps me create & update records without a monitoring agent
+  concerning themselves with it." A ticket and a document carry a **`draft`** flag (a spec, milestone or concept
+  is a draft while its document is). An event written while its record is a draft is stamped a **draft event**
+  and left out of the feed and the one-shot read unless the client passes `drafts=true` (the web UI's ticket page
+  does). Choices: **a flag, not a status**, since documents have no status and a draft ticket still needs one;
+  **stamped on the event at write time**, not looked up at read, so a replay after publishing still leaves the
+  draft history out; **publishing is announced** (`{draft: yes → no}`, a request's adding `type: request`, so the
+  manager's request routine still fires), and **so is making a published record a draft**, once, so an agent
+  working from it knows to stop; everything after is quiet. A queued draft ticket sits in the queue view's
+  `drafts`, never in the queue `tracker_next` or a gate's batch reads, and keeps its list place. Contract:
+  [`api.md`](api.md) § Event, § Ticket, § The filter.
 * **D12. A `tracker` MCP server**, a third `--server` mode of `rag-mcp` (and `/tracker` on the HTTP gateway), so its
   calls show as their own. Tools:
 

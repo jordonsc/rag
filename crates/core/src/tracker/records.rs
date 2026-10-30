@@ -27,6 +27,9 @@ pub struct Spec {
     /// The master document's id and path.
     pub doc_id: Option<String>,
     pub path: Option<String>,
+    /// Its document is a draft (owner, 2026-10-30), and so, while it is, is
+    /// this record: see [`super::Document::draft`].
+    pub draft: bool,
     /// In order.
     pub milestones: Vec<Milestone>,
     pub created_at: String,
@@ -48,6 +51,9 @@ pub struct Milestone {
     pub approval: Approval,
     pub doc_id: Option<String>,
     pub path: Option<String>,
+    /// Its document is a draft (owner, 2026-10-30), and so, while it is, is
+    /// this record: see [`super::Document::draft`].
+    pub draft: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -64,6 +70,9 @@ pub struct Concept {
     pub links: Vec<Link>,
     pub doc_id: Option<String>,
     pub path: Option<String>,
+    /// Its document is a draft (owner, 2026-10-30), and so, while it is, is
+    /// this record: see [`super::Document::draft`].
+    pub draft: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -104,6 +113,10 @@ pub struct NewSpec {
     pub milestones: Vec<NewMilestone>,
     /// Optional; without one the event says what was created.
     pub note: Option<String>,
+    /// Created as a draft (owner, 2026-10-30): its master document, and with
+    /// it every milestone created here, is a draft (see
+    /// [`super::Document::draft`]). Each is published on its own.
+    pub draft: bool,
 }
 
 /// A milestone to create (with a spec, or alone via [`TrackerStore::create_milestone`]).
@@ -120,6 +133,9 @@ pub struct NewMilestone {
     /// The creation event's note, optional; within [`NewSpec`], a milestone
     /// without one takes the spec's.
     pub note: Option<String>,
+    /// Created as a draft (owner, 2026-10-30): its document is one. Within a
+    /// draft [`NewSpec`] every milestone is.
+    pub draft: bool,
 }
 
 /// Input to [`TrackerStore::create_concept`].
@@ -134,6 +150,9 @@ pub struct NewConcept {
     pub body: String,
     pub links: Vec<Link>,
     pub note: Option<String>,
+    /// Created as a draft (owner, 2026-10-30): its document is one, and while
+    /// it is, so is the concept (see [`super::Document::draft`]).
+    pub draft: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -332,6 +351,7 @@ async fn milestone_from(conn: &mut SqliteConnection, r: MilestoneRow) -> TResult
         state: state.parse()?,
         approval: approval.parse()?,
         doc_id: doc.as_ref().map(|d| d.id.clone()),
+        draft: doc.as_ref().is_some_and(|d| d.draft),
         path: doc.map(|d| d.path),
         created_at,
         updated_at,
@@ -367,6 +387,7 @@ async fn spec_from(conn: &mut SqliteConnection, r: SpecRow) -> TResult<Spec> {
         state: state.parse()?,
         approval: approval.parse()?,
         doc_id: doc.as_ref().map(|d| d.id.clone()),
+        draft: doc.as_ref().is_some_and(|d| d.draft),
         path: doc.map(|d| d.path),
         milestones,
         project,
@@ -421,6 +442,7 @@ async fn concept_from(conn: &mut SqliteConnection, r: ConceptRow) -> TResult<Con
         approval: approval.parse()?,
         links,
         doc_id: doc.as_ref().map(|d| d.id.clone()),
+        draft: doc.as_ref().is_some_and(|d| d.draft),
         path: doc.map(|d| d.path),
         project,
         slug,
@@ -515,6 +537,7 @@ async fn insert_milestone(
         spec: Some(spec),
         milestone: Some(&m.code),
         concept: None,
+        draft: m.draft,
     };
     insert_document(conn, project, &path, &title, &m.body, owner, who, None, now).await?;
     append_event(
@@ -573,6 +596,7 @@ impl TrackerStore {
             spec: Some(&new.slug),
             milestone: None,
             concept: None,
+            draft: new.draft,
         };
         insert_document(
             &mut tx,
@@ -601,11 +625,16 @@ impl TrackerStore {
         )
         .await?;
         for (n, m) in new.milestones.iter().enumerate() {
+            // A draft spec's milestones are drafts with it.
+            let m = NewMilestone {
+                draft: m.draft || new.draft,
+                ..m.clone()
+            };
             insert_milestone(
                 &mut tx,
                 &new.project,
                 &new.slug,
-                m,
+                &m,
                 n as i64 + 1,
                 new.note.as_deref(),
                 &who,
@@ -894,6 +923,7 @@ impl TrackerStore {
             spec: None,
             milestone: None,
             concept: Some(&new.slug),
+            draft: new.draft,
         };
         insert_document(
             &mut tx,

@@ -64,7 +64,9 @@ project defaults to the current git repository over stdio; the HTTP gateway need
 attachments as base64 (at most 10 MB) rather than local paths. Decisions go in the ledger.
 A request is the owner's idea, never dispatched (its feed frame says {type: request}): create its \
 tickets with links from:<request id> (approval defaults to agent), place them as it says (else the \
-bottom), then set it done with a note listing them.";
+bottom), then set it done with a note listing them.
+A draft is the owner's, unfinished: never dispatched and out of the feed; leave it until its \
+publish frame ({draft: yes → no}).";
 
 /// Replace `body_path` with the file's contents in `body`, so the request builders
 /// see an ordinary body. Over the HTTP gateway a path is refused: it cannot read the
@@ -511,6 +513,9 @@ struct CreateItemArgs {
     after: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     top: Option<bool>,
+    /// The owner's draft: out of the feed and the queue until published
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    draft: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     note: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -559,6 +564,9 @@ struct CreateRecordArgs {
     /// doc: the first revision's message
     #[serde(default, skip_serializing_if = "Option::is_none")]
     message: Option<String>,
+    /// The owner's draft: out of the feed and the queue until published
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    draft: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     note: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -621,6 +629,8 @@ struct TrackerCreateArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    draft: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
@@ -647,6 +657,7 @@ impl TryFrom<CreateItemArgs> for TrackerCreateArgs {
             before: a.before,
             after: a.after,
             top: a.top,
+            draft: a.draft,
             note: a.note,
             agent: a.agent,
             ..Default::default()
@@ -678,6 +689,7 @@ impl TryFrom<CreateRecordArgs> for TrackerCreateArgs {
             links: links_of(a.links)?,
             milestones: a.milestones,
             message: a.message,
+            draft: a.draft,
             note: a.note,
             agent: a.agent,
             ..Default::default()
@@ -727,6 +739,9 @@ struct UpdateItemArgs {
     release: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     parallel: Option<bool>,
+    /// false publishes the owner's draft; true makes it one
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    draft: Option<bool>,
     /// Why; alone, a note on the history
     #[serde(default, skip_serializing_if = "Option::is_none")]
     note: Option<String>,
@@ -803,6 +818,8 @@ struct TrackerUpdateArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     order: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    draft: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
 }
 
@@ -840,6 +857,7 @@ impl TryFrom<UpdateItemArgs> for TrackerUpdateArgs {
             release: a.release,
             parallel: a.parallel,
             labels: a.labels,
+            draft: a.draft,
             agent: a.agent,
             ..Default::default()
         })
@@ -1002,6 +1020,7 @@ const ITEM_CREATE: &[&str] = &[
     "after",
     "top",
     "bottom",
+    "draft",
     "note",
 ];
 const SPEC_CREATE: &[&str] = &[
@@ -1011,13 +1030,16 @@ const SPEC_CREATE: &[&str] = &[
     "approval",
     "body",
     "milestones",
+    "draft",
     "note",
 ];
-const MILESTONE_CREATE: &[&str] = &["code", "title", "name", "state", "approval", "body", "note"];
-const CONCEPT_CREATE: &[&str] = &[
-    "slug", "title", "state", "approval", "body", "links", "note",
+const MILESTONE_CREATE: &[&str] = &[
+    "code", "title", "name", "state", "approval", "body", "draft", "note",
 ];
-const DOC_CREATE: &[&str] = &["path", "title", "body", "message"];
+const CONCEPT_CREATE: &[&str] = &[
+    "slug", "title", "state", "approval", "body", "links", "draft", "note",
+];
+const DOC_CREATE: &[&str] = &["path", "title", "body", "message", "draft"];
 
 const ITEM_UPDATE: &[&str] = &[
     "status",
@@ -1034,6 +1056,7 @@ const ITEM_UPDATE: &[&str] = &[
     "release",
     "parallel",
     "labels",
+    "draft",
     "note",
 ];
 const SPEC_UPDATE: &[&str] = &["title", "state", "approval", "note"];
@@ -1583,6 +1606,9 @@ fn labels_text(it: &Value) -> Option<String> {
 
 /// The assignee, labels, approval (when there is one) and links of an item or marker.
 fn item_extras(it: &Value, parts: &mut Vec<String>) {
+    if it.get("draft").and_then(Value::as_bool) == Some(true) {
+        parts.push("draft".into());
+    }
     let assignee = s(it, "assignee");
     if !assignee.is_empty() {
         parts.push(format!("agent: {assignee}"));
@@ -1774,7 +1800,7 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 /// The `Not shown:` footer of `tracker_queue` and `tracker_next`: every item of the
 /// queue view not listed above, counted once each under the first that applies:
 /// blocked, then gate (any status), then its status (pending, in progress, failed),
-/// then the requests (rag-t0044), the deferred items (blocked or not), the items in
+/// then the requests (rag-t0044), the owner's drafts, the deferred items (blocked or not), the items in
 /// review (blocked or not) and the done items not yet acknowledged.
 /// Zero counts are left out.
 fn not_shown(v: &Value, shown: &BTreeSet<&str>) -> String {
@@ -1796,8 +1822,9 @@ fn not_shown(v: &Value, shown: &BTreeSet<&str>) -> String {
             _ => pending += 1,
         }
     }
-    let (requests, blocked, deferred, review, done) = (
+    let (requests, drafts, blocked, deferred, review, done) = (
         hidden("requests").len(),
+        hidden("drafts").len(),
         hidden("blocked").len(),
         hidden("deferred").len(),
         hidden("review").len(),
@@ -1809,6 +1836,7 @@ fn not_shown(v: &Value, shown: &BTreeSet<&str>) -> String {
         (failed, format!("{failed} failed")),
         (gates, plural(gates, "gate", "gates")),
         (requests, plural(requests, "request", "requests")),
+        (drafts, plural(drafts, "draft", "drafts")),
         (blocked, format!("{blocked} blocked")),
         (deferred, format!("{deferred} deferred")),
         (review, format!("{review} in review")),
@@ -2419,7 +2447,12 @@ fn render_list(what: &str, v: &Value) -> String {
                     s(p, "name"),
                     plural(n("requests") as usize, "request", "requests"),
                     n("review"),
-                    n("queued") - n("requests") - n("blocked") - n("deferred") - n("review"),
+                    n("queued")
+                        - n("requests")
+                        - n("drafts")
+                        - n("blocked")
+                        - n("deferred")
+                        - n("review"),
                     n("blocked"),
                     n("deferred"),
                     n("done_unacknowledged")

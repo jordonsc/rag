@@ -90,6 +90,11 @@ pub struct Item {
     /// May start before the gates above it clear, and still lands after them
     /// (rag-t0013). Never set on a gate.
     pub parallel: bool,
+    /// The owner is still writing it (owner, 2026-10-30): its events are left
+    /// out of the feed unless a feed asks for drafts, and a queued draft sits
+    /// in [`QueueView::drafts`], never in the queue `tracker_next` or a gate's
+    /// batch reads. It keeps its list place, so publishing it puts it there.
+    pub draft: bool,
     /// The items it waits on while blocked with reason `dependency`, items of
     /// its own project (rag-t0018). Empty otherwise: cleared when it unblocks.
     pub depends_on: Vec<String>,
@@ -135,6 +140,8 @@ pub struct NewItem {
     pub parallel: bool,
     /// Its labels (rag-t0027); see [`labels::clean_labels`] for the rules.
     pub labels: Vec<String>,
+    /// Created as a draft (owner, 2026-10-30): see [`Item::draft`].
+    pub draft: bool,
     /// Where it joins the queue; normally [`Place::Bottom`].
     pub place: Place,
     /// Optional; without one the event says what was created.
@@ -171,6 +178,9 @@ pub struct ItemUpdate {
     /// The item's labels, replacing the set wholesale (rag-t0027); `Some(vec![])`
     /// clears them. Order and duplicates do not matter.
     pub labels: Option<Vec<String>>,
+    /// `Some(false)` publishes a draft, `Some(true)` makes it a draft again
+    /// (owner, 2026-10-30; see [`Item::draft`]).
+    pub draft: Option<bool>,
     /// Optional with any change (the body is then generated from it); alone, it
     /// is a note and must not be blank.
     pub note: Option<String>,
@@ -187,6 +197,11 @@ pub struct QueueView {
     /// order. Never in `queue`, `review`, `blocked` or `deferred`, so nothing
     /// that reads the queue (`tracker_next`, a gate's batch) sees them.
     pub requests: Vec<Item>,
+    /// The owner's drafts (owner, 2026-10-30): queued items still being
+    /// written, of any type (requests too), in list order. In no other
+    /// section, so nothing that dispatches work sees them; each keeps its
+    /// place in the list, where publishing puts it.
+    pub drafts: Vec<Item>,
     /// Done and not yet acknowledged, in the order they finished: oldest first,
     /// newest last (by `done_at`, then id), so the latest sits just above the
     /// queue, as the queue reads (rag-t0029).
@@ -215,8 +230,11 @@ pub struct ProjectSummary {
     /// Queued requests (rag-t0044), whatever their status or block; counted
     /// under none of the other buckets.
     pub requests: i64,
-    /// Blocked items that are not requests, deferred or in review (each of
-    /// those is counted under its own bucket).
+    /// Queued drafts (owner, 2026-10-30), of any type; counted under none of
+    /// the other buckets.
+    pub drafts: i64,
+    /// Blocked items that are not requests, drafts, deferred or in review
+    /// (each of those is counted under its own bucket).
     pub blocked: i64,
     /// Deferred items, blocked or not, requests excluded.
     pub deferred: i64,
@@ -242,6 +260,7 @@ struct ItemRow {
     intensity: Option<String>,
     release: i64,
     parallel: i64,
+    draft: i64,
     prev_id: Option<String>,
     next_id: Option<String>,
     created_at: String,
@@ -251,7 +270,8 @@ struct ItemRow {
 }
 
 const ITEM_COLS: &str = "id, project, type, title, body, status, blocked, block_reason, \
-    block_note, approval, assignee, intensity, release, parallel, prev_id, next_id, created_at, \
+    block_note, approval, assignee, intensity, release, parallel, draft, prev_id, next_id, \
+    created_at, \
     updated_at, done_at, acknowledged_at FROM items";
 
 impl ItemRow {
@@ -277,6 +297,7 @@ impl ItemRow {
             intensity: self.intensity.map(|i| i.parse()).transpose()?,
             release: self.release != 0,
             parallel: self.parallel != 0,
+            draft: self.draft != 0,
             depends_on,
             queued: queued_status(status),
             prev_id: self.prev_id,
@@ -398,6 +419,8 @@ const DESCRIBED: &[&str] = &[
     "approval",
     "parallel",
     "labels",
+    "draft",
+    "type",
 ];
 
 /// Why a request cannot be parallel (rag-t0044).
@@ -832,8 +855,8 @@ impl TrackerStore {
 
         sqlx::query(
             "INSERT INTO items (id, project, seq, type, title, body, status, approval, assignee, \
-             intensity, release, parallel, created_at, updated_at) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             intensity, release, parallel, draft, created_at, updated_at) \
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(&id)
         .bind(&new.project)
@@ -847,6 +870,7 @@ impl TrackerStore {
         .bind(new.intensity.map(|i| i.as_str()))
         .bind(new.release as i64)
         .bind(new.parallel as i64)
+        .bind(new.draft as i64)
         .bind(&now)
         .bind(&now)
         .execute(&mut *tx)
@@ -878,7 +902,7 @@ impl TrackerStore {
             labels::in_project_casing(&mut tx, &new.project, &id, given_labels).await?;
         labels::set_labels(&mut tx, &new.project, &id, &item_labels).await?;
 
-        let fields = json!({
+        let mut fields = json!({
             "type": new.item_type,
             "title": title,
             "status": ItemStatus::Pending,
@@ -891,9 +915,13 @@ impl TrackerStore {
             "labels": item_labels,
             "place": new.place,
         });
+        if new.draft {
+            fields["draft"] = json!(true);
+        }
         let body = note.unwrap_or_else(|| {
+            let what = if new.draft { "draft " } else { "" };
             let created = super::records::created_body(
-                format!("Created {} ticket.", new.item_type),
+                format!("Created {what}{} ticket.", new.item_type),
                 new.approval,
             );
             if item_labels.is_empty() {
@@ -1274,6 +1302,23 @@ impl TrackerStore {
             kinds.push(EventKind::Edit);
         }
 
+        // ---- draft (owner, 2026-10-30) --------------------------------------
+        if let Some(draft) = upd.draft.filter(|d| *d != item.draft) {
+            sqlx::query("UPDATE items SET draft = ? WHERE id = ?")
+                .bind(draft as i64)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            fields.insert("draft".into(), json!(draft));
+            if !draft {
+                // Publishing is the ticket's arrival for whoever watches the
+                // feed: it says what the ticket is, as its create would have.
+                fields.insert("type".into(), json!(item.item_type));
+            }
+            said.push(if draft { "Made a draft." } else { "Published." }.to_string());
+            kinds.push(EventKind::Edit);
+        }
+
         // ---- labels (rag-t0027) ---------------------------------------------
         if let Some(given) = &upd.labels {
             let cleaned = labels::clean_labels(given)?;
@@ -1484,13 +1529,16 @@ impl TrackerStore {
         .map(|i| (i.id.clone(), i))
         .collect();
         let mut requests = Vec::new();
+        let mut drafts = Vec::new();
         let mut review = Vec::new();
         let mut queue = Vec::new();
         let mut blocked = Vec::new();
         let mut deferred = Vec::new();
         for id in order {
             if let Some(item) = items.remove(&id) {
-                if item.item_type == ItemType::Request {
+                if item.draft {
+                    drafts.push(item);
+                } else if item.item_type == ItemType::Request {
                     requests.push(item);
                 } else if item.status == ItemStatus::Review {
                     review.push(item);
@@ -1517,6 +1565,7 @@ impl TrackerStore {
             project: project.to_string(),
             exists: exists.is_some(),
             requests,
+            drafts,
             done,
             review,
             queue,
@@ -1558,14 +1607,15 @@ impl TrackerStore {
 
     /// Every project the tracker knows, by name, with its counts.
     pub async fn list_projects(&self) -> TResult<Vec<ProjectSummary>> {
-        type Row = (String, String, i64, i64, i64, i64, i64, i64);
+        type Row = (String, String, i64, i64, i64, i64, i64, i64, i64);
         let rows: Vec<Row> = sqlx::query_as(&format!(
             "SELECT p.name, p.created_at, \
                (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.status IN {QUEUED_IN}), \
-               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.type = 'request' AND i.status IN {QUEUED_IN}), \
-               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.type <> 'request' AND i.blocked = 1 AND i.status IN ('pending','in_progress','failed')), \
-               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.type <> 'request' AND i.status = 'deferred'), \
-               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.type <> 'request' AND i.status = 'review'), \
+               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.draft = 0 AND i.type = 'request' AND i.status IN {QUEUED_IN}), \
+               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.draft = 1 AND i.status IN {QUEUED_IN}), \
+               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.draft = 0 AND i.type <> 'request' AND i.blocked = 1 AND i.status IN ('pending','in_progress','failed')), \
+               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.draft = 0 AND i.type <> 'request' AND i.status = 'deferred'), \
+               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.draft = 0 AND i.type <> 'request' AND i.status = 'review'), \
                (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.status = 'done' AND i.acknowledged_at IS NULL) \
              FROM projects p ORDER BY p.name",
         ))
@@ -1579,6 +1629,7 @@ impl TrackerStore {
                     created_at,
                     queued,
                     requests,
+                    drafts,
                     blocked,
                     deferred,
                     review,
@@ -1589,6 +1640,7 @@ impl TrackerStore {
                         created_at,
                         queued,
                         requests,
+                        drafts,
                         blocked,
                         deferred,
                         review,

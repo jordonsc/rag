@@ -118,6 +118,7 @@ Records
   "intensity": "standard",
   "release": true,
   "parallel": false,
+  "draft": false,
   "depends_on": [],
   "queued": true,
   "prev_id": "ubu-t0041",
@@ -140,6 +141,10 @@ Records
 * `type: "request"` (rag-t0044) is the owner's idea with how to prioritise it. It never has gate fields and is
   never `parallel` (both 400); it is queued and keeps its place like any ticket, but the queue view lists it only
   under `requests`, whatever its status or block, so nothing that reads `queue` sees it.
+* **`draft`** (added 2026-10-30, owner): the owner is still writing it. Created with `draft: true`, published with
+  `draft: false` on an update (`true` makes it a draft again). A queued draft is listed only under the queue view's
+  `drafts`, whatever its type, status or block, so nothing that dispatches work sees it; it keeps its list place,
+  so publishing puts it there. Its events are **draft events** (see Event), left out of the feed by default.
 * **`from` and `became` links** (rag-t0044): `{"kind": "from", "target": "<request id>"}` on a ticket names the
   request it was broken out of: a ticket of type `request` in the ticket's own project (else 400: `… names a
   request`, `… own project`, `no ticket …`), never on a request itself (400: `cannot come from another request`).
@@ -179,10 +184,20 @@ Records
   "kind": "status",
   "body": "dispatched to dev-3",
   "fields": {"status": "in_progress", "assignee": "dev-3"},
-  "before": {"status": "pending", "assignee": null}
+  "before": {"status": "pending", "assignee": null},
+  "draft": false
 }
 ```
 `fields` holds every field the write set, with its new value, so replaying the events reconstructs the record.
+
+**`draft`** (added 2026-10-30, owner) marks a **draft event**: written while its record was a draft, so the feed
+leaves it out unless asked (`drafts=true`). It is stamped at write time: the record is a draft after the write,
+except the write that made a published record a draft (`fields.draft: true`, `before.draft: false`), which is
+announced once so whoever worked from it knows to stop. Publishing (`draft: false`) is never a draft event: it is
+the record's arrival, an `edit` whose `fields` carry `draft: false` and, on a ticket, its `type` (so a published
+request's frame says `{draft: yes → no; type: request}`). A ticket and a document hold their own flag; a spec,
+milestone or concept is a draft while **its document** is. A replay after publishing still leaves the draft history
+out. Every event written before drafts existed reads `false`.
 `before` (added 2026-10-27, rag-t0038) holds what those fields were before the write, keyed the same way: the "from"
 of each from → to. It is `null` on a `create` (nothing came before) and on every event written before it was
 recorded (those name their new values only; nothing is back-filled). A key with no prior value to give is absent
@@ -230,7 +245,10 @@ When one write changes several things, its `kind` is the first that applies of `
 }
 ```
 `revision` is always the **current** revision: what an edit names as its `base_revision`. `spec` / `milestone` /
-`concept` name the record that owns it (`null` for a free-standing `doc`).
+`concept` name the record that owns it (`null` for a free-standing `doc`). `draft` (added 2026-10-30, owner) is
+true while the owner is still writing it: its events, and its owning spec's, milestone's or concept's, are draft
+events (see Event). Set it on create (`draft: true` on any create route below) and change it with
+`POST /tracker/docs/{id}/draft`.
 
 The **document view** (every `GET` of one document, and every document write's response) adds:
 ```json
@@ -301,12 +319,13 @@ Routes
 ### Projects and the queue
 
 #### `GET /tracker/projects`
-`{"projects": [{"name": "ubu", "created_at": "…", "queued": 12, "requests": 1, "blocked": 2, "deferred": 1, "review": 1, "done_unacknowledged": 3}]}`,
+`{"projects": [{"name": "ubu", "created_at": "…", "queued": 12, "requests": 1, "drafts": 1, "blocked": 2, "deferred": 1, "review": 1, "done_unacknowledged": 3}]}`,
 by name. `queued` counts requests, review, blocked and deferred tickets too; `requests` counts every queued request
 (rag-t0044), whatever its status or block; `blocked` counts blocked tickets that are neither requests, deferred nor
 in review, `deferred` every deferred ticket and `review` every ticket in review, blocked or not, requests excluded
 (each as the queue view sections them; `deferred` added 2026-10-27, rag-t0017; `review` the same day, rag-t0024;
-`requests` the same day, rag-t0044).
+`requests` the same day, rag-t0044). `drafts` (added 2026-10-30) counts the queued drafts of any type; a draft is
+counted under no other bucket but `queued`.
 
 #### `GET /tracker/{project}` — the queue view (D14, R12)
 ```json
@@ -314,6 +333,7 @@ in review, `deferred` every deferred ticket and `review` every ticket in review,
   "project": "ubu",
   "exists": true,
   "requests": [ Item, … ],
+  "drafts":  [ Item, … ],
   "done":    [ Item, … ],
   "review":  [ Item, … ],
   "queue":   [ Item, … ],
@@ -325,6 +345,10 @@ in review, `deferred` every deferred ticket and `review` every ticket in review,
   block**, in list order. A request is in no other array while queued (done, it is under `done`). The dashboard
   shows them above Review and `tracker_queue` first; `tracker_next` never reads them. A client that predates it
   may read its absence as empty.
+* **`drafts`** (added 2026-10-30, owner): the queued tickets with `draft: true`, **of any type, status or block**
+  (requests too), in list order. A draft is in no other array while queued (done, it is under `done`). The
+  dashboard shows them first; `tracker_queue` and `tracker_next` count them in the footer only. A client that
+  predates it may read its absence as empty.
 * **`done`**: tickets with status `done` and no `acknowledged_at`, **oldest first, newest last** (by `done_at`, then
   id), so the latest finished sits just above the queue, as the queue reads (*changed 2026-10-27, rag-t0029*: it
   was newest first).
@@ -333,7 +357,7 @@ in review, `deferred` every deferred ticket and `review` every ticket in review,
   it back (`review` → `in_progress` or `pending`) leaves it where it was. A client that predates it may read its
   absence as empty.
 * **`queue`**: the linked list in order, head first, **gates included** as ordinary tickets of `type: "gate"` (draw
-  them as markers from `intensity` and `release`), and **without requests, review, blocked or deferred tickets**. Statuses here are
+  them as markers from `intensity` and `release`), and **without requests, drafts, review, blocked or deferred tickets**. Statuses here are
   `pending`, `in_progress` or `failed`.
 * **`blocked`**: the blocked queued tickets that are neither deferred nor in review, in list order. Each keeps its place in the list:
   unblocking puts it back where it was, and `prev_id` / `next_id` still name its true neighbours (which may be
@@ -395,6 +419,7 @@ project name is 400. The web app's label editors read it for their suggestions.
 | `intensity` | gate: required; others: refused | |
 | `release` | optional, gate only | default `false` |
 | `parallel` | optional, any type but gate or request | default `false`; `true` on a gate (rag-t0013) or a request (rag-t0044) is 400 |
+| `draft` | optional | default `false`; `true` creates the owner's draft (2026-10-30): a draft event, body `Created draft dev ticket.`, `fields.draft: true` |
 | `labels` | optional | `[string]`, default `[]` (rag-t0027); the rules under Ticket; a bad label or more than 10 is 400. A create event carrying labels says them in its generated body (`Created dev ticket. Labels: Biomes, Physics.`) and in `fields.labels` |
 | `before` / `after` / `top` / `bottom` | optional, at most one | where it joins: `"before": "<id>"`, `"after": "<id>"`, `"top": true`, `"bottom": true`; default the bottom |
 | `note` | optional | the create event's body |
@@ -415,6 +440,7 @@ Every field optional; absent leaves it alone; a value equal to the current one i
 | `block_reason` | with `blocked: true`, or alone to block or to change the reason |
 | `depends_on` | `[ticket id]`, replacing the list (rag-t0018). Only when the reason after the write is `dependency` (given now or already held), which needs at least one; a non-empty list with any other reason, or none, is 400. Each a ticket of the **same project** (another project's id is 400), not the ticket itself, not forming a cycle (a ticket that already waits, directly or through others, on this one); at least one not yet `done`. Blank entries and repeats are dropped |
 | `parallel` | `true` or `false`; any type but gate (on a gate, either is 400) |
+| `draft` | `false` publishes a draft (`Published.`), `true` makes it a draft again (`Made a draft.`), as an `edit` event (2026-10-30). The same value is not a change |
 | `labels` | `[string]`, **replacing the set wholesale** (rag-t0027); `[]` clears them. The rules under Ticket; a bad label or more than 10 is 400. The same set in another order, or with duplicates, is not a change. A change is an `edit` event with `fields.labels` the whole new set and, without a note, the body `Labels: Biomes, Physics.` (`Labels: none.` when cleared) |
 | `approval` | `ratified` only from `agent` (the owner confirming an agent's approval). An agent may set `owner` when the owner approved in conversation, and its note says so |
 | `assignee` | `""` clears it |
@@ -455,7 +481,7 @@ position number, so it cannot go stale. Response: the Ticket with `events` (a `m
 `{"project", "documents": [Document, …]}` by path, without bodies.
 
 #### `POST /tracker/{project}/docs` — a free-standing document (kind `doc`)
-`{"path", "title", "body" (optional), "message" (optional), author fields}`. Refused (400) when a document holds the
+`{"path", "title", "body" (optional), "message" (optional), "draft" (optional, default false), author fields}`. Refused (400) when a document holds the
 path, or a rename left it as a redirect. Specs', milestones' and concepts' documents are created with their records
 (below), not here. Response: the document view at revision 1.
 
@@ -483,6 +509,12 @@ document. An edit that leaves the body unchanged is 400. Response: the document 
 leaves the old one as a redirect to this document. Refused when another document holds the new path or it is a
 redirect to another document; renaming back onto one of the document's own old paths is allowed (and drops that
 redirect). A rename that changes nothing is 400. Response: the document view (a `rename` event).
+
+#### `POST /tracker/docs/{id}/draft` — make a draft, or publish (2026-10-30)
+`{"draft": true|false, "note" (optional), …author}`. One `edit` event, `fields: {"draft": …}`, body `Published.` or
+`Made a draft.` without a note. Publishing is the document's (and its spec's, milestone's or concept's) arrival on
+the feed; making a published one a draft is announced once. Refused (400) when it is already so. Response: the
+document view. Each document is published on its own, a draft spec's milestones included.
 
 #### `GET /tracker/docs/{id}/revisions`
 `{"doc_id", "revisions": [Revision, …]}`, oldest first.
@@ -518,7 +550,7 @@ Checked against `base_revision` as an edit is (409 when stale). Restoring a body
   "body": "master document markdown",
   "milestones": [
     {"code": "m01", "title": "Sound effects", "name": "sfx", "state": "not_started", "approval": "unapproved", "body": "…", "note": null},
-    {"code": "m02", "title": "Music", "body": "…"}
+    {"code": "m02", "title": "Music", "body": "…", "draft": false}
   ],
   "note": "…",
   …author
@@ -529,6 +561,8 @@ One transaction: the spec, its master at `specs/<slug>/master.md`, and each mile
 `the-store-and-the-http-api`); pass it to keep a repository's existing file name. Milestones are ordered as
 listed. `state` defaults to `draft` (`not_started` for a milestone). A clash on any path, a duplicate code or an
 existing slug creates **nothing** (400). `note` is optional (a milestone without its own `note` uses the spec's).
+`draft` (optional, default false; 2026-10-30) makes the master document a draft, and with it every milestone
+created here; each is published on its own (`POST /tracker/docs/{id}/draft`).
 Response: the Spec with milestones and events.
 
 #### `GET /tracker/{project}/specs/{slug}`
@@ -540,7 +574,7 @@ The Spec with its milestones and events. 404 if unknown.
 `agent`. The master document is edited through the document routes, by its `doc_id`.
 
 #### `POST /tracker/{project}/specs/{slug}/milestones`
-`{"code", "title", "name", "state", "approval", "body", "note", …author}`: adds a milestone after the spec's last.
+`{"code", "title", "name", "state", "approval", "body", "draft", "note", …author}`: adds a milestone after the spec's last.
 404 when the spec does not exist. Response: the Milestone with events.
 
 #### `GET /tracker/{project}/specs/{slug}/milestones/{code}`
@@ -556,7 +590,7 @@ milestones sort by `order`, then code. Milestone states are set by the manager; 
 `{"project", "concepts": [Concept, …]}` by slug, no events.
 
 #### `POST /tracker/{project}/concepts`
-`{"slug", "title", "state" (default open), "approval", "body", "links", "note", …author}`: the concept and its
+`{"slug", "title", "state" (default open), "approval", "body", "links", "draft" (default false), "note", …author}`: the concept and its
 document at `concepts/<slug>.md`, in one transaction. Archiving is `state: "archived"`, not a move.
 
 #### `GET /tracker/{project}/concepts/{slug}`
@@ -607,7 +641,7 @@ another host, forward the port over ssh and use the same `127.0.0.1` URL, or run
 or any small client printing each text frame as a line). The one-shot read has no such limit. Built in `crates/core/src/tracker/feed.rs`
 (the channel) and `crates/serve/src/tracker/feed.rs` (the routes).
 
-**The web UI's ticket page reads it too** (2026-10-29): same origin, `surface=any&kinds=all&format=json`, no
+**The web UI's ticket page reads it too** (2026-10-29): same origin, `surface=any&kinds=all&format=json&drafts=true` (drafts since 2026-10-30, so the owner's own draft follows live), no
 `since` (it re-reads the ticket on every open instead), so a write over MCP shows on an open ticket as it commits.
 See `web/README.md` § *The tracker*.
 
@@ -621,6 +655,7 @@ client keeps the last id it was sent and resumes after it with `since`.
 | `surface` | `web` (default), `mcp`, `any` | `web`: the owner's actions in the web UI |
 | `kinds` | comma list of event kinds, or `all` | default: `create`, `status`, `block`, `unblock`, `approve`, `move`, `note`, `acknowledge`, `assign`, `edit` (left out: `link`, `rename`) |
 | `since` | an event id, `0` or more; exclusive | the events **after** it |
+| `drafts` | `true` or `false` (default) | `true` includes **draft events** (2026-10-30, owner): those written while their ticket or document was a draft (see Event). Left out by default, so the owner's unfinished work wakes nobody |
 
 Label changes are `edit` events (with `labels` in `fields`), which is why `edit` is in the default. Unknown query
 parameters, an unknown surface or kind, and a negative `since` are 400s, as everywhere.
@@ -644,10 +679,13 @@ belongs to the read below), as is a `coalesce` above 0 with `format=json`.
     #13906 rag web create rag-t0044 "Weather" {type: request}: Created request ticket (approval: owner). [Owner]
 
 * `<target>`: a ticket's id; `spec:<slug>`, `milestone:<spec>/<code>`, `concept:<slug>` or `doc:<document id>`.
-* `"<title>"`: the record's **current** title (cut at 100 characters); left out when the record is gone.
+* `"<title>"`: the record's **current** title (cut at 100 characters); left out when the record is gone. A **draft
+  event**, sent only to a feed with `drafts=true` (2026-10-30), is marked after it: `rag-t0060 "Weather" (draft)`;
+  so is a draft record named in a burst frame.
 * `{<changes>}` (from → to since rag-t0038): on a `create`, nothing, but a request's says `{type: request}`
   (rag-t0044: the one create a manager acts on); on any other event each change it made, separated by `; `,
-  in this order: `moved: <from> → <to>` (a move, by the ticket's neighbour: `top` or `after <id>`), `status`, `state`,
+  in this order: `moved: <from> → <to>` (a move, by the ticket's neighbour: `top` or `after <id>`), `draft` (2026-10-30:
+  `draft: yes → no` on a publish, then `type: request` when a request is published), `status`, `state`,
   `approval`, `blocked` (the reason while blocked, `no` while not: `blocked: dependency → no`, `blocked: no →
   review`), `depends_on`, `assignee`, `labels` (what it added and removed: `+Physics −Biomes`), `links`
   (`+item:rag-t0002 −ledger:rag-0033`), `title`, `body: edited`, `intensity`, `release`, `parallel`, `order`,

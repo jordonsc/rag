@@ -136,6 +136,7 @@ fn mcp() -> Actor {
 
 fn new_item(project: &str, title: &str) -> NewItem {
     NewItem {
+        draft: false,
         project: project.into(),
         item_type: ItemType::Dev,
         title: title.into(),
@@ -236,6 +237,7 @@ async fn a_feed_resumed_by_id_loses_and_repeats_nothing_under_concurrent_writes(
                 project: Some("p".into()),
                 surfaces: Some(vec![Surface::Web]),
                 kinds: Some(DEFAULT_FEED_KINDS.to_vec()),
+                drafts: false,
             },
             0,
             None,
@@ -476,6 +478,7 @@ async fn spec_with_milestones(store: &TrackerStore, n: usize) {
     store
         .create_spec(
             NewSpec {
+                draft: false,
                 project: "p".into(),
                 slug: "big".into(),
                 title: "Big".into(),
@@ -484,6 +487,7 @@ async fn spec_with_milestones(store: &TrackerStore, n: usize) {
                 body: String::new(),
                 milestones: (1..=n)
                     .map(|i| NewMilestone {
+                        draft: false,
                         code: format!("m{i:03}"),
                         title: format!("M {i}"),
                         name: None,
@@ -828,4 +832,102 @@ async fn closing_mid_burst_sends_the_burst_then_resumes_after_it() {
     let close = next_close(&mut ws).await;
     assert_eq!(u16::from(close.code), 1012);
     assert!(close.reason.contains("since=2"), "{}", close.reason);
+}
+
+/// The owner's drafts (2026-10-30): a ticket created and edited as a draft
+/// wakes nobody; `drafts=true` sees it; publishing it is its first frame on a
+/// default feed. A concept's document is published over its own route.
+#[tokio::test]
+async fn a_draft_reaches_only_a_feed_that_asks_until_it_is_published() {
+    let s = server().await;
+    let mut ws = connect(&s, "p/events/ws").await;
+    let mut drafts = connect(&s, "p/events/ws?drafts=true").await;
+    let client = reqwest::Client::new();
+    let who = json!({ "author_email": "x@example.com", "surface": "web" });
+    let send = |path: String, mut body: Value| {
+        let client = client.clone();
+        let url = http(&s, &path);
+        let who = who.clone();
+        async move {
+            for (k, v) in who.as_object().unwrap() {
+                body[k] = v.clone();
+            }
+            let r = client.post(url).json(&body).send().await.unwrap();
+            let ok = r.status().is_success();
+            let v: Value = r.json().await.unwrap();
+            assert!(ok, "{v}");
+            v
+        }
+    };
+    let t = send(
+        "p/items".into(),
+        json!({ "type": "dev", "title": "Half written", "draft": true }),
+    )
+    .await;
+    assert_eq!(t["draft"], json!(true));
+    let id = t["id"].as_str().unwrap().to_string();
+    let line = next_text(&mut drafts).await;
+    assert!(line.contains("\"Half written\" (draft)"), "{line}");
+    quiet(&mut ws, 150).await;
+
+    let read: Value = client
+        .get(http(&s, "p/events?since=0"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(read["events"].as_array().unwrap().len(), 0, "{read}");
+    let read: Value = client
+        .get(http(&s, "p/events?since=0&drafts=true"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(read["events"][0]["draft"], json!(true), "{read}");
+    let q: Value = client
+        .get(http(&s, "p"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(q["drafts"][0]["id"], json!(id));
+    assert_eq!(q["queue"], json!([]));
+
+    send(format!("items/{id}"), json!({ "draft": false })).await;
+    let line = next_text(&mut ws).await;
+    assert!(
+        line.contains(" web edit ") && line.contains("{draft: yes → no}"),
+        "{line}"
+    );
+
+    let c = send(
+        "p/concepts".into(),
+        json!({ "slug": "power", "title": "Power", "body": "x\n", "draft": true }),
+    )
+    .await;
+    assert_eq!(c["state"], json!("open"));
+    let doc: Value = client
+        .get(http(&s, "p/doc?path=concepts/power.md"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(doc["draft"], json!(true), "{doc}");
+    quiet(&mut ws, 150).await;
+    let doc_id = doc["id"].as_str().unwrap();
+    let v = send(format!("docs/{doc_id}/draft"), json!({ "draft": false })).await;
+    assert_eq!(v["draft"], json!(false));
+    let line = next_text(&mut ws).await;
+    assert!(
+        line.contains(&format!("doc:{doc_id}")) && line.contains("{draft: yes → no}"),
+        "{line}"
+    );
 }

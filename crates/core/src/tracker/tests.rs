@@ -30,6 +30,7 @@ fn web() -> Actor {
 
 fn new_item(project: &str, title: &str) -> NewItem {
     NewItem {
+        draft: false,
         project: project.into(),
         item_type: ItemType::Dev,
         title: title.into(),
@@ -1881,6 +1882,7 @@ async fn concurrent_writers_keep_the_list_intact() {
 async fn doc(s: &TrackerStore, path: &str, body: &str) -> DocumentView {
     s.create_document(
         NewDocument {
+            draft: false,
             project: "p".into(),
             path: path.into(),
             title: "A doc".into(),
@@ -2021,6 +2023,7 @@ async fn a_rename_leaves_a_redirect_that_a_get_follows() {
     let e = s
         .create_document(
             NewDocument {
+                draft: false,
                 project: "p".into(),
                 path: "concepts/old.md".into(),
                 title: "t".into(),
@@ -2082,6 +2085,7 @@ async fn invalid_paths_are_refused() {
             .store
             .create_document(
                 NewDocument {
+                    draft: false,
                     project: "p".into(),
                     path: bad.into(),
                     title: "t".into(),
@@ -2180,6 +2184,7 @@ async fn documents_list_by_kind_and_prefix() {
 
 fn new_spec(slug: &str, milestones: Vec<NewMilestone>) -> NewSpec {
     NewSpec {
+        draft: false,
         project: "p".into(),
         slug: slug.into(),
         title: "Tracker".into(),
@@ -2193,6 +2198,7 @@ fn new_spec(slug: &str, milestones: Vec<NewMilestone>) -> NewSpec {
 
 fn ms(code: &str, title: &str, name: Option<&str>) -> NewMilestone {
     NewMilestone {
+        draft: false,
         code: code.into(),
         title: title.into(),
         name: name.map(str::to_string),
@@ -2429,6 +2435,7 @@ async fn record_changes_without_a_note_get_a_generated_body() {
 
     s.create_concept(
         NewConcept {
+            draft: false,
             project: "p".into(),
             slug: "power".into(),
             title: "Power".into(),
@@ -2487,6 +2494,7 @@ async fn concepts_are_created_with_their_document_and_link_to_what_they_became()
     let c = s
         .create_concept(
             NewConcept {
+                draft: false,
                 project: "p".into(),
                 slug: "power-generation".into(),
                 title: "Power generation".into(),
@@ -3746,6 +3754,7 @@ async fn a_spec_with_milestones_publishes_every_event_it_wrote_in_id_order() {
     f.store
         .create_spec(
             NewSpec {
+                draft: false,
                 project: "p".into(),
                 slug: "feed".into(),
                 title: "The feed".into(),
@@ -3753,6 +3762,7 @@ async fn a_spec_with_milestones_publishes_every_event_it_wrote_in_id_order() {
                 approval: Approval::Unapproved,
                 body: "# The feed".into(),
                 milestones: vec![NewMilestone {
+                    draft: false,
                     code: "m01".into(),
                     title: "Socket".into(),
                     name: None,
@@ -3905,6 +3915,7 @@ async fn events_after_applies_project_surface_and_kind_filters() {
         project: Some("p".into()),
         surfaces: Some(vec![Surface::Mcp]),
         kinds: None,
+        drafts: false,
     };
     let sql = all(filter.clone()).await;
     let rust: Vec<_> = all(FeedFilter::default())
@@ -3953,6 +3964,7 @@ async fn concurrent_writers_publish_every_event_once_in_id_order() {
 #[test]
 fn a_feed_line_is_one_line_with_the_event_id_first() {
     let e = FeedEvent {
+        draft: false,
         event_id: 13901,
         ts: "2026-10-27T21:49:42Z".into(),
         project: "rag".into(),
@@ -4171,6 +4183,7 @@ fn feed_event(
     before: Option<serde_json::Value>,
 ) -> FeedEvent {
     FeedEvent {
+        draft: false,
         event_id: 7,
         ts: "2026-10-27T21:49:42Z".into(),
         project: "rag".into(),
@@ -4667,6 +4680,7 @@ async fn a_web_write_without_an_agent_is_recorded_as_owner() {
     let d = s
         .create_document(
             NewDocument {
+                draft: false,
                 project: "ubu".into(),
                 path: "notes/x.md".into(),
                 title: "X".into(),
@@ -4693,11 +4707,16 @@ async fn a_web_write_without_an_agent_is_recorded_as_owner() {
 async fn an_older_database_gains_the_prior_values_column_and_its_web_events_read_owner() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("tracker.db");
-    // The schema as it was before rag-t0038: no `fields_before` column.
-    let old_schema = SCHEMA_SQL.replace(
-        "    fields       TEXT NOT NULL DEFAULT '{}',\n    fields_before TEXT\n",
-        "    fields       TEXT NOT NULL DEFAULT '{}'\n",
-    );
+    // The schema as it was before rag-t0038: no `fields_before` column (nor
+    // the draft columns that came after it).
+    let old_schema = SCHEMA_SQL
+        .replace(
+            "    fields       TEXT NOT NULL DEFAULT '{}',\n    fields_before TEXT,\n    \
+             draft        INTEGER NOT NULL DEFAULT 0\n",
+            "    fields       TEXT NOT NULL DEFAULT '{}'\n",
+        )
+        .replace("    draft           INTEGER NOT NULL DEFAULT 0,\n", "")
+        .replace("    draft          INTEGER NOT NULL DEFAULT 0,\n", "");
     assert_ne!(old_schema, SCHEMA_SQL, "the column moved: update this test");
     {
         let opts = sqlx::sqlite::SqliteConnectOptions::new()
@@ -5098,6 +5117,7 @@ async fn request_links_are_refused_where_they_do_not_belong() {
         let e = s
             .create_concept(
                 NewConcept {
+                    draft: false,
                     project: "p".into(),
                     slug: "c".into(),
                     title: "C".into(),
@@ -5176,4 +5196,296 @@ fn a_requests_create_frame_says_request() {
     );
     let dev = json!({ "type": "dev", "title": "x" });
     assert!(describe_changes(EventKind::Create, TargetKind::Item, &dev, None).is_empty());
+}
+
+// ---- Drafts (owner, 2026-10-30) ----------------------------------------------
+
+/// The feed's events after `since`, by default (no drafts) and with drafts.
+async fn feed_ids(s: &TrackerStore, since: i64) -> (Vec<FeedEvent>, Vec<FeedEvent>) {
+    let quiet = s
+        .events_after(&FeedFilter::default(), since, None)
+        .await
+        .unwrap();
+    let all = s
+        .events_after(
+            &FeedFilter {
+                drafts: true,
+                ..FeedFilter::default()
+            },
+            since,
+            None,
+        )
+        .await
+        .unwrap();
+    (quiet, all)
+}
+
+#[tokio::test]
+async fn a_draft_ticket_stays_out_of_the_feed_and_the_queue_until_published() {
+    let f = fixture().await;
+    let s = &f.store;
+    let live = create(s, "p", "live").await;
+    let start = s.latest_event_id().await.unwrap();
+    let mut rx = s.subscribe();
+
+    let d = s
+        .create_item(
+            NewItem {
+                draft: true,
+                ..new_item("p", "half written")
+            },
+            &web(),
+        )
+        .await
+        .unwrap();
+    let id = d.item.id.clone();
+    assert!(d.item.draft);
+    assert!(d.events[0].draft, "its create is a draft event");
+    assert_eq!(d.events[0].body, "Created draft dev ticket.");
+    s.update_item(
+        &id,
+        ItemUpdate {
+            body: Some("more".into()),
+            ..Default::default()
+        },
+        &web(),
+    )
+    .await
+    .unwrap();
+
+    // Neither reaches a default feed or read; both reach one that asks.
+    let (quiet, all) = feed_ids(s, start).await;
+    assert!(quiet.is_empty(), "{quiet:?}");
+    assert_eq!(all.len(), 2);
+    assert!(all.iter().all(|e| e.draft));
+    assert!(
+        all[0].line().contains("\"half written\" (draft)"),
+        "{}",
+        all[0].line()
+    );
+    // The live side publishes every event; a default filter drops the drafts.
+    let sent = drain(&mut rx);
+    assert_eq!(sent.len(), 2);
+    assert!(sent.iter().all(|e| !FeedFilter::default().matches(e)));
+
+    // In the drafts section, not the queue (so tracker_next never sees it),
+    // keeping its place in the list.
+    let v = s.queue_view("p").await.unwrap();
+    assert_eq!(v.drafts.iter().map(|i| &i.id).collect::<Vec<_>>(), [&id]);
+    assert_eq!(v.queue.iter().map(|i| &i.id).collect::<Vec<_>>(), [&live]);
+    assert_eq!(sound(s, "p").await, [live.clone(), id.clone()]);
+    let p = &s.list_projects().await.unwrap()[0];
+    assert_eq!((p.queued, p.drafts, p.requests, p.blocked), (2, 1, 0, 0));
+
+    // Publishing is the ticket's arrival.
+    let mark = s.latest_event_id().await.unwrap();
+    let r = s
+        .update_item(
+            &id,
+            ItemUpdate {
+                draft: Some(false),
+                ..Default::default()
+            },
+            &web(),
+        )
+        .await
+        .unwrap();
+    assert!(!r.item.draft);
+    let (quiet, _) = feed_ids(s, mark).await;
+    assert_eq!(quiet.len(), 1);
+    assert_eq!(quiet[0].kind, EventKind::Edit);
+    assert!(!quiet[0].draft);
+    assert_eq!(quiet[0].body, "Published.");
+    assert_eq!(quiet[0].changes(), ["draft: yes → no"]);
+    let v = s.queue_view("p").await.unwrap();
+    assert!(v.drafts.is_empty());
+    assert_eq!(
+        v.queue.iter().map(|i| &i.id).collect::<Vec<_>>(),
+        [&live, &id]
+    );
+    // A replay still leaves out what was written while it was a draft.
+    let (quiet, all) = feed_ids(s, start).await;
+    assert_eq!((quiet.len(), all.len()), (1, 3));
+
+    // Made a draft again: announced once, then quiet.
+    let mark = s.latest_event_id().await.unwrap();
+    s.update_item(
+        &id,
+        ItemUpdate {
+            draft: Some(true),
+            ..Default::default()
+        },
+        &web(),
+    )
+    .await
+    .unwrap();
+    s.update_item(
+        &id,
+        ItemUpdate {
+            title: Some("reworked".into()),
+            ..Default::default()
+        },
+        &web(),
+    )
+    .await
+    .unwrap();
+    let (quiet, all) = feed_ids(s, mark).await;
+    assert_eq!(quiet.len(), 1, "{quiet:?}");
+    assert_eq!(quiet[0].body, "Made a draft.");
+    assert_eq!(quiet[0].changes(), ["draft: no → yes"]);
+    assert_eq!(all.len(), 2);
+    // Asking for no change is not a change.
+    assert!(s
+        .update_item(
+            &id,
+            ItemUpdate {
+                draft: Some(true),
+                ..Default::default()
+            },
+            &web(),
+        )
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn publishing_a_draft_request_says_it_is_a_request() {
+    let f = fixture().await;
+    let s = &f.store;
+    let r = s
+        .create_item(
+            NewItem {
+                item_type: ItemType::Request,
+                draft: true,
+                ..new_item("p", "Weather")
+            },
+            &web(),
+        )
+        .await
+        .unwrap();
+    // A draft request is a draft first: not in the requests section.
+    let v = s.queue_view("p").await.unwrap();
+    assert!(v.requests.is_empty());
+    assert_eq!(v.drafts.len(), 1);
+    let mark = s.latest_event_id().await.unwrap();
+    s.update_item(
+        &r.item.id,
+        ItemUpdate {
+            draft: Some(false),
+            ..Default::default()
+        },
+        &web(),
+    )
+    .await
+    .unwrap();
+    let (quiet, _) = feed_ids(s, mark).await;
+    assert_eq!(quiet[0].changes(), ["draft: yes → no", "type: request"]);
+    assert!(quiet[0].line().contains("{draft: yes → no; type: request}"));
+    assert_eq!(s.queue_view("p").await.unwrap().requests.len(), 1);
+}
+
+#[tokio::test]
+async fn a_draft_concept_is_quiet_with_its_document_until_published() {
+    let f = fixture().await;
+    let s = &f.store;
+    let start = s.latest_event_id().await.unwrap();
+    let c = s
+        .create_concept(
+            NewConcept {
+                draft: true,
+                project: "p".into(),
+                slug: "power".into(),
+                title: "Power".into(),
+                state: None,
+                approval: Approval::Unapproved,
+                body: "musings\n".into(),
+                links: vec![],
+                note: None,
+            },
+            &web(),
+        )
+        .await
+        .unwrap();
+    let doc = s
+        .get_document_by_path("p", "concepts/power.md", None, false)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(doc.document.draft);
+    s.edit_document(
+        &doc.document.id,
+        1,
+        Edit::Body("more musings\n".into()),
+        None,
+        &web(),
+    )
+    .await
+    .unwrap();
+    s.update_concept(
+        "p",
+        "power",
+        ConceptUpdate {
+            state: Some(ConceptState::Refining),
+            ..Default::default()
+        },
+        &web(),
+    )
+    .await
+    .unwrap();
+    // The document's create and edit, the concept's create and state change.
+    let (quiet, all) = feed_ids(s, start).await;
+    assert!(quiet.is_empty(), "{quiet:?}");
+    assert_eq!(all.len(), 4);
+    assert!(c.events.iter().all(|e| e.draft));
+    assert!(c.concept.draft, "a concept reads its document's flag");
+
+    let mark = s.latest_event_id().await.unwrap();
+    let published = s
+        .set_document_draft(&doc.document.id, false, None, &web())
+        .await
+        .unwrap();
+    assert!(!published.document.draft);
+    s.update_concept(
+        "p",
+        "power",
+        ConceptUpdate {
+            state: Some(ConceptState::Refined),
+            ..Default::default()
+        },
+        &web(),
+    )
+    .await
+    .unwrap();
+    let (quiet, _) = feed_ids(s, mark).await;
+    assert_eq!(quiet.len(), 2);
+    assert_eq!(quiet[0].target_label(), format!("doc:{}", doc.document.id));
+    assert_eq!(quiet[0].changes(), ["draft: yes → no"]);
+    assert_eq!(quiet[1].target_kind, TargetKind::Concept);
+    // Already published: refused.
+    assert!(s
+        .set_document_draft(&doc.document.id, false, None, &web())
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn a_draft_spec_makes_its_milestones_drafts() {
+    let f = fixture().await;
+    let s = &f.store;
+    let start = s.latest_event_id().await.unwrap();
+    s.create_spec(
+        NewSpec {
+            draft: true,
+            ..new_spec("feed", vec![ms("m01", "First", None)])
+        },
+        &web(),
+    )
+    .await
+    .unwrap();
+    let docs = s.list_documents("p", None, None).await.unwrap();
+    assert_eq!(docs.len(), 2);
+    assert!(docs.iter().all(|d| d.draft));
+    let (quiet, all) = feed_ids(s, start).await;
+    assert!(quiet.is_empty(), "{quiet:?}");
+    assert_eq!(all.len(), 4);
 }

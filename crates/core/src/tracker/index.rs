@@ -158,6 +158,7 @@ mod tests {
         let c = s
             .create_concept(
                 NewConcept {
+                    draft: false,
                     project: "ubu".into(),
                     slug: "power".into(),
                     title: "Power".into(),
@@ -178,6 +179,7 @@ mod tests {
         let item = s
             .create_item(
                 NewItem {
+                    draft: false,
                     project: "ubu".into(),
                     item_type: ItemType::Recon,
                     title: "Map the heat code".into(),

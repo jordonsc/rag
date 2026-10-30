@@ -37,6 +37,11 @@ pub struct Document {
     pub milestone: Option<String>,
     /// The concept it belongs to (a concept's document).
     pub concept: Option<String>,
+    /// The owner is still writing it (owner, 2026-10-30): its events, and
+    /// those of the spec, milestone or concept it belongs to, are left out of
+    /// the feed unless a feed asks for drafts. Set on create, changed with
+    /// [`TrackerStore::set_document_draft`].
+    pub draft: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -88,6 +93,8 @@ pub struct NewDocument {
     pub title: String,
     pub body: String,
     pub message: Option<String>,
+    /// Created as a draft (owner, 2026-10-30): see [`Document::draft`].
+    pub draft: bool,
 }
 
 /// One exact-text replacement: `old` must occur exactly once.
@@ -184,6 +191,8 @@ pub(super) struct Owner<'a> {
     pub spec: Option<&'a str>,
     pub milestone: Option<&'a str>,
     pub concept: Option<&'a str>,
+    /// Created as a draft (owner, 2026-10-30).
+    pub draft: bool,
 }
 
 /// Insert a document and its first revision, and append its `create` event.
@@ -212,7 +221,7 @@ pub(super) async fn insert_document(
     let id = format!("{project}-d{seq:04}");
     sqlx::query(
         "INSERT INTO documents (id, project, path, kind, title, revision, spec_slug, milestone_code, \
-         concept_slug, created_at, updated_at) VALUES (?,?,?,?,?,1,?,?,?,?,?)",
+         concept_slug, draft, created_at, updated_at) VALUES (?,?,?,?,?,1,?,?,?,?,?,?)",
     )
     .bind(&id)
     .bind(project)
@@ -222,12 +231,17 @@ pub(super) async fn insert_document(
     .bind(owner.spec)
     .bind(owner.milestone)
     .bind(owner.concept)
+    .bind(owner.draft as i64)
     .bind(now)
     .bind(now)
     .execute(&mut *conn)
     .await?;
     let message = one_line(message, || "Created.".to_string());
     insert_revision(conn, &id, 1, body, who, &message, now).await?;
+    let mut fields = json!({ "path": path, "kind": owner.kind, "title": title, "revision": 1 });
+    if owner.draft {
+        fields["draft"] = json!(true);
+    }
     append_event(
         conn,
         project,
@@ -236,7 +250,7 @@ pub(super) async fn insert_document(
         who,
         EventKind::Create,
         &message,
-        &json!({ "path": path, "kind": owner.kind, "title": title, "revision": 1 }),
+        &fields,
         None,
         now,
     )
@@ -281,12 +295,13 @@ struct DocRow {
     spec_slug: Option<String>,
     milestone_code: Option<String>,
     concept_slug: Option<String>,
+    draft: i64,
     created_at: String,
     updated_at: String,
 }
 
 const DOC_COLS: &str = "id, project, path, kind, title, revision, spec_slug, milestone_code, \
-    concept_slug, created_at, updated_at FROM documents";
+    concept_slug, draft, created_at, updated_at FROM documents";
 
 impl DocRow {
     fn into_doc(self) -> TResult<Document> {
@@ -300,6 +315,7 @@ impl DocRow {
             spec: self.spec_slug,
             milestone: self.milestone_code,
             concept: self.concept_slug,
+            draft: self.draft != 0,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -399,6 +415,7 @@ impl TrackerStore {
             spec: None,
             milestone: None,
             concept: None,
+            draft: new.draft,
         };
         let id = insert_document(
             &mut tx,
@@ -681,6 +698,55 @@ impl TrackerStore {
         self.get_document(id, None, true)
             .await?
             .ok_or_else(|| TrackerError::Internal("document vanished after rename".into()))
+    }
+
+    /// Make a document a draft, or publish it (owner, 2026-10-30; see
+    /// [`Document::draft`]). One `edit` event, `{draft}`. Making a published
+    /// document a draft is announced on the feed once; publishing a draft is
+    /// its arrival there. Refused when it is already so.
+    pub async fn set_document_draft(
+        &self,
+        id: &str,
+        draft: bool,
+        note: Option<&str>,
+        actor: &Actor,
+    ) -> TResult<DocumentView> {
+        let who = actor.validated()?;
+        let now = now_iso();
+        let mut tx = self.write_tx().await?;
+        let doc = must_doc(&mut tx, id).await?;
+        if doc.draft == draft {
+            return refused(format!(
+                "document {id} is already {}",
+                if draft { "a draft" } else { "published" }
+            ));
+        }
+        sqlx::query("UPDATE documents SET draft = ?, updated_at = ? WHERE id = ?")
+            .bind(draft as i64)
+            .bind(&now)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        let body = one_line(note, || {
+            if draft { "Made a draft." } else { "Published." }.to_string()
+        });
+        append_event(
+            &mut tx,
+            &doc.project,
+            TargetKind::Document,
+            id,
+            &who,
+            EventKind::Edit,
+            &body,
+            &json!({ "draft": draft }),
+            Some(&json!({ "draft": doc.draft })),
+            &now,
+        )
+        .await?;
+        self.commit(tx).await?;
+        self.get_document(id, None, true)
+            .await?
+            .ok_or_else(|| TrackerError::Internal("document vanished after a draft change".into()))
     }
 
     /// A document's revisions, oldest first, without their bodies.

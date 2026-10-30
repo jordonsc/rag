@@ -135,6 +135,7 @@ impl Fx {
         self.store
             .create_concept(
                 NewConcept {
+                    draft: false,
                     project: "ubu".into(),
                     slug: slug.into(),
                     title: format!("Concept {slug}"),
@@ -157,6 +158,7 @@ impl Fx {
         self.store
             .create_item(
                 NewItem {
+                    draft: false,
                     project: "ubu".into(),
                     item_type: ItemType::Dev,
                     title: title.into(),
@@ -300,6 +302,7 @@ async fn a_rename_moves_the_points_to_the_new_path() {
         .store
         .create_document(
             NewDocument {
+                draft: false,
                 project: "ubu".into(),
                 path: "specs/old/notes.md".into(),
                 title: "Notes".into(),

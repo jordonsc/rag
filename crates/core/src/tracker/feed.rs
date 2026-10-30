@@ -74,6 +74,9 @@ pub struct FeedEvent {
     /// What those fields held before the write: the "from" (rag-t0038). `null`
     /// on a create and on an event written before it was recorded.
     pub before: Option<serde_json::Value>,
+    /// Written while its record was a draft (owner, 2026-10-30). Only a feed
+    /// that asked for drafts ([`FeedFilter::drafts`]) carries one.
+    pub draft: bool,
 }
 
 /// The longest title and body a text line carries before it is cut with `…`.
@@ -136,6 +139,8 @@ impl FeedEvent {
     }
 
     /// The text frame: one line, the event id first so a client can resume.
+    /// A draft event (sent only to a feed that asked for drafts) says so after
+    /// its title: `rag-t0060 "Weather" (draft) {…}`.
     ///
     /// `#13901 rag web approve rag-t0040 "Event feed" {approval: agent → ratified}: Ship it. [Owner]`
     pub fn line(&self) -> String {
@@ -144,13 +149,14 @@ impl FeedEvent {
             None => String::new(),
         };
         format!(
-            "#{} {} {} {} {}{}{}: {} [{}]",
+            "#{} {} {} {} {}{}{}{}: {} [{}]",
             self.event_id,
             self.project,
             self.surface,
             self.kind,
             self.target_label(),
             title,
+            if self.draft { " (draft)" } else { "" },
             self.changed(),
             note_said(&self.body, self.event_id),
             clip(self.who(), LINE_TITLE_CHARS),
@@ -255,10 +261,13 @@ pub fn burst_line(events: &[FeedEvent]) -> String {
     let more = records.len().saturating_sub(BURST_RECORDS);
     for (label, es) in records.iter().take(BURST_RECORDS) {
         let latest = es[es.len() - 1];
-        let title = match &latest.title {
+        let mut title = match &latest.title {
             Some(t) => format!(" \"{}\"", clip(t, LINE_VALUE_CHARS)),
             None => String::new(),
         };
+        if latest.draft {
+            title.push_str(" (draft)");
+        }
         let what = if let [one] = es.as_slice() {
             let mut w = format!("{}{}", one.kind, one.changed());
             if one.kind == EventKind::Note {
@@ -406,6 +415,18 @@ pub fn describe_changes(
                 Some(from) => format!("moved: {} → {to}", position(from)),
                 None => format!("moved: {to}"),
             });
+        }
+    }
+    // Publishing a draft is the record's arrival (owner, 2026-10-30): its
+    // frame says so first, and a request's says it is one, as its create
+    // would have (`{draft: yes → no; type: request}`).
+    if let Some(to) = after.get("draft") {
+        said.push(from_to("draft", prior("draft"), to));
+        if to.as_bool() == Some(false) && target_kind == TargetKind::Item {
+            let ty = after.get("type").and_then(|t| t.as_str());
+            if let Some(t) = ty.filter(|t| *t == ItemType::Request.as_str()) {
+                said.push(format!("type: {t}"));
+            }
         }
     }
     for key in ["status", "state", "approval"] {
@@ -600,6 +621,10 @@ pub struct FeedFilter {
     pub surfaces: Option<Vec<Surface>>,
     /// The kinds wanted; `None` for every kind.
     pub kinds: Option<Vec<EventKind>>,
+    /// Include draft events (owner, 2026-10-30): those written while their
+    /// record was a draft. Left out by default, so the owner's unfinished
+    /// tickets and documents wake nobody.
+    pub drafts: bool,
 }
 
 impl FeedFilter {
@@ -612,9 +637,13 @@ impl FeedFilter {
                 .as_ref()
                 .is_none_or(|s| s.contains(&e.surface))
             && self.kinds.as_ref().is_none_or(|k| k.contains(&e.kind))
+            && (self.drafts || !e.draft)
     }
 
     fn push_where(&self, q: &mut QueryBuilder<'_, Sqlite>) {
+        if !self.drafts {
+            q.push(" AND e.draft = 0");
+        }
         if let Some(p) = &self.project {
             q.push(" AND e.project = ").push_bind(p.clone());
         }
@@ -670,7 +699,7 @@ impl Feed {
 }
 
 const FEED_SELECT: &str = "SELECT e.event_id, e.ts, e.author_email, e.agent, e.surface, e.kind, \
-     e.body, e.fields, e.fields_before, e.project, e.target_kind, e.target_id, \
+     e.body, e.fields, e.fields_before, e.draft, e.project, e.target_kind, e.target_id, \
      CASE e.target_kind \
        WHEN 'item' THEN (SELECT title FROM items WHERE id = e.target_id) \
        WHEN 'spec' THEN (SELECT title FROM specs WHERE project = e.project AND slug = e.target_id) \
@@ -709,6 +738,7 @@ impl FeedRow {
             body: e.body,
             fields: e.fields,
             before: e.before,
+            draft: e.draft,
         })
     }
 }
@@ -755,7 +785,11 @@ impl TrackerStore {
                 return;
             }
         }
-        match self.events_after(&FeedFilter::default(), *last, None).await {
+        let every = FeedFilter {
+            drafts: true,
+            ..FeedFilter::default()
+        };
+        match self.events_after(&every, *last, None).await {
             Ok(events) => {
                 for e in events {
                     *last = e.event_id;

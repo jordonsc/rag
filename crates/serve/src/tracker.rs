@@ -100,6 +100,7 @@ pub fn router(store: Option<TrackerStore>, reindex_trigger: Option<PathBuf>) -> 
         .route("/tracker/docs/{id}/edit", post(doc_edit))
         .route("/tracker/docs/{id}/write", post(doc_write))
         .route("/tracker/docs/{id}/rename", post(doc_rename))
+        .route("/tracker/docs/{id}/draft", post(doc_draft))
         .route("/tracker/docs/{id}/restore", post(doc_restore))
         .route("/tracker/docs/{id}/revisions", get(doc_revisions))
         .route("/tracker/docs/{id}/diff", get(doc_diff))
@@ -437,6 +438,8 @@ struct ItemCreateBody {
     bottom: bool,
     #[serde(default)]
     note: Option<String>,
+    #[serde(default)]
+    draft: bool,
     author_email: String,
     #[serde(default)]
     agent: Option<String>,
@@ -453,6 +456,7 @@ async fn item_create(State(api): St, Path(project): Path<String>, body: Bytes) -
         .store()?
         .create_item(
             NewItem {
+                draft: b.draft,
                 project,
                 item_type: b.item_type,
                 title: b.title,
@@ -513,6 +517,8 @@ struct ItemUpdateBody {
     labels: Option<Vec<String>>,
     #[serde(default)]
     note: Option<String>,
+    #[serde(default)]
+    draft: Option<bool>,
     author_email: String,
     #[serde(default)]
     agent: Option<String>,
@@ -527,6 +533,7 @@ async fn item_update(State(api): St, Path(id): Path<String>, body: Bytes) -> Api
         .update_item(
             &id,
             ItemUpdate {
+                draft: b.draft,
                 status: b.status,
                 blocked: b.blocked,
                 block_reason: b.block_reason,
@@ -607,6 +614,8 @@ struct DocCreateBody {
     body: String,
     #[serde(default)]
     message: Option<String>,
+    #[serde(default)]
+    draft: bool,
     author_email: String,
     #[serde(default)]
     agent: Option<String>,
@@ -620,6 +629,7 @@ async fn doc_create(State(api): St, Path(project): Path<String>, body: Bytes) ->
         .store()?
         .create_document(
             NewDocument {
+                draft: b.draft,
                 project,
                 path: b.path,
                 title: b.title,
@@ -785,6 +795,30 @@ async fn doc_rename(State(api): St, Path(id): Path<String>, body: Bytes) -> ApiR
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct DocDraftBody {
+    draft: bool,
+    #[serde(default)]
+    note: Option<String>,
+    author_email: String,
+    #[serde(default)]
+    agent: Option<String>,
+    surface: Surface,
+}
+
+/// `POST /tracker/docs/{id}/draft`: make a document a draft, or publish it
+/// (owner, 2026-10-30).
+async fn doc_draft(State(api): St, Path(id): Path<String>, body: Bytes) -> ApiResult {
+    let b: DocDraftBody = parse(&body)?;
+    let actor = Actor::new(b.author_email, b.agent.as_deref(), b.surface);
+    let view = api
+        .store()?
+        .set_document_draft(&id, b.draft, b.note.as_deref(), &actor)
+        .await?;
+    ok(&view)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DocRestoreBody {
     revision: i64,
     base_revision: i64,
@@ -854,11 +888,14 @@ struct MilestoneInput {
     body: String,
     #[serde(default)]
     note: Option<String>,
+    #[serde(default)]
+    draft: bool,
 }
 
 impl From<MilestoneInput> for NewMilestone {
     fn from(m: MilestoneInput) -> Self {
         NewMilestone {
+            draft: m.draft,
             code: m.code,
             title: m.title,
             name: m.name,
@@ -885,6 +922,8 @@ struct SpecCreateBody {
     milestones: Vec<MilestoneInput>,
     #[serde(default)]
     note: Option<String>,
+    #[serde(default)]
+    draft: bool,
     author_email: String,
     #[serde(default)]
     agent: Option<String>,
@@ -898,6 +937,7 @@ async fn spec_create(State(api): St, Path(project): Path<String>, body: Bytes) -
         .store()?
         .create_spec(
             NewSpec {
+                draft: b.draft,
                 project,
                 slug: b.slug,
                 title: b.title,
@@ -980,6 +1020,8 @@ struct MilestoneCreateBody {
     body: String,
     #[serde(default)]
     note: Option<String>,
+    #[serde(default)]
+    draft: bool,
     author_email: String,
     #[serde(default)]
     agent: Option<String>,
@@ -994,6 +1036,7 @@ async fn milestone_create(
     let b: MilestoneCreateBody = parse(&body)?;
     let actor = Actor::new(b.author_email, b.agent.as_deref(), b.surface);
     let new = NewMilestone {
+        draft: b.draft,
         code: b.code,
         title: b.title,
         name: b.name,
@@ -1101,6 +1144,8 @@ struct ConceptCreateBody {
     links: Vec<Link>,
     #[serde(default)]
     note: Option<String>,
+    #[serde(default)]
+    draft: bool,
     author_email: String,
     #[serde(default)]
     agent: Option<String>,
@@ -1114,6 +1159,7 @@ async fn concept_create(State(api): St, Path(project): Path<String>, body: Bytes
         .store()?
         .create_concept(
             NewConcept {
+                draft: b.draft,
                 project,
                 slug: b.slug,
                 title: b.title,

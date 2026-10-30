@@ -70,6 +70,9 @@ const CLOSE_ERROR: u16 = 1011; // Internal Error
 #[serde(deny_unknown_fields)]
 pub(super) struct FeedQuery {
     since: Option<i64>,
+    /// Include draft events (owner, 2026-10-30): `true` to see what the owner
+    /// writes while a ticket or document is a draft. Off by default.
+    drafts: Option<bool>,
     surface: Option<String>,
     kinds: Option<String>,
     format: Option<String>,
@@ -84,8 +87,9 @@ enum Format {
 }
 
 /// The filter a query names: the project from the path (`*` for every
-/// project), the surface (default `web`, the owner's actions; `any` for both)
-/// and the kinds (default [`DEFAULT_FEED_KINDS`]; `all` for every kind).
+/// project), the surface (default `web`, the owner's actions; `any` for both),
+/// the kinds (default [`DEFAULT_FEED_KINDS`]; `all` for every kind) and
+/// whether draft events are wanted (default not).
 fn filter_of(project: &str, q: &FeedQuery) -> Result<FeedFilter, ApiError> {
     let project = if project == "*" {
         None
@@ -126,6 +130,7 @@ fn filter_of(project: &str, q: &FeedQuery) -> Result<FeedFilter, ApiError> {
         project,
         surfaces,
         kinds,
+        drafts: q.drafts.unwrap_or(false),
     })
 }
 

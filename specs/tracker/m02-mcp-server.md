@@ -340,3 +340,14 @@ the `what` values.
 **Measured** as rag-t0039's test measures it: tools **10,456 → 10,458** characters, instructions **1,560 → 1,564**;
 both within budget. `the_tool_list_is_lean_and_says_the_rules_once` now also fails on the word *item* in the
 instructions or in any description but `tracker_list`'s.
+
+### Addendum, 2026-10-30: drafts (owner)
+
+The owner's drafts (m01 addendum of the same date) reach the tools lightly. `draft` is accepted by `tracker_create`,
+`tracker_create_record` and `tracker_update` (`false` publishes), so an agent can file a draft when the owner asks
+for one; there is no tool for a document's draft flag (the web UI's, `POST /tracker/docs/{id}/draft`). A ticket line
+carries `draft` when it is one. Drafts are **never listed** by `tracker_queue` or `tracker_next`, only counted in the
+`Not shown:` footer (`1 draft`), since the queue view keeps them out of every section the tools list, and
+`tracker_list what=projects` leaves them out of its "in the queue" count. The instructions gained one sentence (a
+draft is the owner's: never dispatched, out of the feed, leave it until its publish frame), 1,564 → ~1,690
+characters; the test's ceiling moved from 1,600 to 1,750.

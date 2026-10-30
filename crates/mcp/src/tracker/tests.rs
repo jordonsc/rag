@@ -1664,6 +1664,7 @@ fn the_tool_list_is_lean_and_says_the_rules_once() {
     // instructions from 1,302 to 1,560 characters (the manager's routine).
     // rag-t0050 (the word "ticket" for a queue record): 10,456 → 10,458 and
     // 1,560 → 1,564.
+    // Drafts (owner, 2026-10-30): `draft` on the three create/update tools.
     let size: usize = tools
         .iter()
         .map(|t| serde_json::to_string(t).unwrap().len())
@@ -1700,7 +1701,8 @@ fn the_tool_list_is_lean_and_says_the_rules_once() {
     ] {
         assert!(rules.contains(rule), "the instructions lack {rule:?}");
     }
-    assert!(rules.len() < 1_600, "{}", rules.len());
+    // Drafts (owner, 2026-10-30): one sentence, 1,564 → ~1,680.
+    assert!(rules.len() < 1_750, "{}", rules.len());
     // rag-t0050: the prose says "ticket"; "item" survives only as an API value
     // (`what=items`, the link kind `item:`), never as the word for a record.
     let says_item = |text: &str| {

@@ -484,6 +484,9 @@ pub struct Event {
     /// before it was recorded, which shows its new values only. A field with no
     /// prior value to give (`links_added`, `unblocked_by`) is absent from it.
     pub before: Option<serde_json::Value>,
+    /// Written while its record was a draft (rag, owner 2026-10-30): the feed
+    /// leaves it out unless asked for drafts. See [`event_is_draft`].
+    pub draft: bool,
 }
 
 // ---- Store ------------------------------------------------------------------
@@ -799,10 +802,12 @@ async fn append_event(
     before: Option<&serde_json::Value>,
     now: &str,
 ) -> TResult<i64> {
+    let draft = event_is_draft(conn, project, target_kind, target_id, fields, before).await?;
     let before = before.map(serde_json::to_string).transpose()?;
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO events (project, target_kind, target_id, ts, author_email, agent, surface, \
-         kind, body, fields, fields_before) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING event_id",
+         kind, body, fields, fields_before, draft) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) \
+         RETURNING event_id",
     )
     .bind(project)
     .bind(target_kind.as_str())
@@ -815,9 +820,97 @@ async fn append_event(
     .bind(body)
     .bind(serde_json::to_string(fields)?)
     .bind(before)
+    .bind(draft as i64)
     .fetch_one(&mut *conn)
     .await?;
     Ok(id)
+}
+
+/// Whether an event is a **draft event** (owner, 2026-10-30): one the feed
+/// leaves out unless asked for drafts, so the owner can write and rework a
+/// ticket or a document without waking a monitoring agent.
+///
+/// It is a draft event when its record is a draft **after** the write, except
+/// the write that turned a published record into a draft (`draft: no → yes`),
+/// which is announced so whoever was working from it knows to stop. Publishing
+/// (`draft: yes → no`) is never a draft event: it is the record's arrival.
+///
+/// The record's draft flag is read in the writing transaction, after the
+/// change, so every write path is covered without saying so. An item holds its
+/// own flag; a document holds its own, and a spec, milestone or concept is a
+/// draft while **its document** is (it has exactly one). A record that is gone
+/// or was never a draft reads as published. The flag is stamped on the event
+/// at write time, so a replay after the record is published still leaves its
+/// draft history out.
+pub(crate) async fn event_is_draft(
+    conn: &mut SqliteConnection,
+    project: &str,
+    target_kind: TargetKind,
+    target_id: &str,
+    fields: &serde_json::Value,
+    before: Option<&serde_json::Value>,
+) -> TResult<bool> {
+    let flag = |v: Option<&serde_json::Value>| v.and_then(|v| v.get("draft")?.as_bool());
+    if flag(Some(fields)) == Some(true) && flag(before) == Some(false) {
+        return Ok(false);
+    }
+    record_is_draft(conn, project, target_kind, target_id).await
+}
+
+/// Whether a record is a draft now (see [`event_is_draft`]).
+pub(crate) async fn record_is_draft(
+    conn: &mut SqliteConnection,
+    project: &str,
+    target_kind: TargetKind,
+    target_id: &str,
+) -> TResult<bool> {
+    let draft: Option<i64> =
+        match target_kind {
+            TargetKind::Item => {
+                sqlx::query_scalar("SELECT draft FROM items WHERE id = ?")
+                    .bind(target_id)
+                    .fetch_optional(&mut *conn)
+                    .await?
+            }
+            TargetKind::Document => {
+                sqlx::query_scalar("SELECT draft FROM documents WHERE id = ?")
+                    .bind(target_id)
+                    .fetch_optional(&mut *conn)
+                    .await?
+            }
+            TargetKind::Spec => sqlx::query_scalar(
+                "SELECT draft FROM documents WHERE project = ? AND kind = 'spec' AND spec_slug = ?",
+            )
+            .bind(project)
+            .bind(target_id)
+            .fetch_optional(&mut *conn)
+            .await?,
+            TargetKind::Milestone => {
+                let Some((spec, code)) = target_id.split_once('/') else {
+                    return Ok(false);
+                };
+                sqlx::query_scalar(
+                    "SELECT draft FROM documents WHERE project = ? AND kind = 'milestone' \
+                 AND spec_slug = ? AND milestone_code = ?",
+                )
+                .bind(project)
+                .bind(spec)
+                .bind(code)
+                .fetch_optional(&mut *conn)
+                .await?
+            }
+            TargetKind::Concept => {
+                sqlx::query_scalar(
+                    "SELECT draft FROM documents WHERE project = ? AND kind = 'concept' \
+                 AND concept_slug = ?",
+                )
+                .bind(project)
+                .bind(target_id)
+                .fetch_optional(&mut *conn)
+                .await?
+            }
+        };
+    Ok(draft.unwrap_or(0) != 0)
 }
 
 #[derive(sqlx::FromRow)]
@@ -831,6 +924,7 @@ struct EventRow {
     body: String,
     fields: String,
     fields_before: Option<String>,
+    draft: i64,
 }
 
 impl EventRow {
@@ -848,6 +942,7 @@ impl EventRow {
                 .fields_before
                 .as_deref()
                 .and_then(|b| serde_json::from_str(b).ok()),
+            draft: self.draft != 0,
         })
     }
 }
@@ -860,8 +955,8 @@ async fn events_for(
     target_id: &str,
 ) -> TResult<Vec<Event>> {
     let rows = sqlx::query_as::<_, EventRow>(
-        "SELECT event_id, ts, author_email, agent, surface, kind, body, fields, fields_before \
-         FROM events \
+        "SELECT event_id, ts, author_email, agent, surface, kind, body, fields, fields_before, \
+         draft FROM events \
          WHERE project = ? AND target_kind = ? AND target_id = ? ORDER BY event_id",
     )
     .bind(project)
@@ -989,6 +1084,12 @@ pub(crate) const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
     // rag-t0038: the changed fields' values before the write (JSON); NULL on a
     // create and on every event written before it was recorded.
     ("events", "fields_before", "TEXT"),
+    // Drafts (owner, 2026-10-30): an item or a document the owner is still
+    // writing, and an event written while its record was one (the feed leaves
+    // those out unless asked).
+    ("items", "draft", "INTEGER NOT NULL DEFAULT 0"),
+    ("documents", "draft", "INTEGER NOT NULL DEFAULT 0"),
+    ("events", "draft", "INTEGER NOT NULL DEFAULT 0"),
 ];
 
 pub(crate) const SCHEMA_SQL: &str = "
@@ -1017,6 +1118,7 @@ CREATE TABLE IF NOT EXISTS items (
     intensity       TEXT,
     release         INTEGER NOT NULL DEFAULT 0,
     parallel        INTEGER NOT NULL DEFAULT 0,
+    draft           INTEGER NOT NULL DEFAULT 0,
     prev_id         TEXT,
     next_id         TEXT,
     created_at      TEXT NOT NULL,
@@ -1113,6 +1215,7 @@ CREATE TABLE IF NOT EXISTS documents (
     spec_slug      TEXT,
     milestone_code TEXT,
     concept_slug   TEXT,
+    draft          INTEGER NOT NULL DEFAULT 0,
     created_at     TEXT NOT NULL,
     updated_at     TEXT NOT NULL,
     UNIQUE (project, path)
@@ -1167,7 +1270,8 @@ CREATE TABLE IF NOT EXISTS events (
     kind         TEXT NOT NULL,
     body         TEXT NOT NULL,
     fields       TEXT NOT NULL DEFAULT '{}',
-    fields_before TEXT
+    fields_before TEXT,
+    draft        INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_events_target ON events(project, target_kind, target_id);
 ";
