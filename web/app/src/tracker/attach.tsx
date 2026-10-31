@@ -14,6 +14,11 @@
  * failure removes only the placeholder: **the typed text is kept**, and the
  * box says which file was not attached and why. Without an identity nothing
  * uploads, the identity prompt opens, and the box says why.
+ *
+ * **A drop has room** (owner, 2026-10-31). A `dropZone` takes files on any
+ * element around the box, and says so under it, since a file let go just
+ * outside a drop target is opened by the browser in place of the page. The box
+ * and its bar are always one; Add request's whole form is one too.
  */
 
 import {
@@ -63,6 +68,13 @@ export interface AttachHandlers {
   onDrop: (event: DragEvent<HTMLTextAreaElement>) => void;
 }
 
+/** The same, for an element around a text box. */
+export interface DropZoneHandlers {
+  onDragOver: (event: DragEvent<HTMLElement>) => void;
+  onDragLeave: (event: DragEvent<HTMLElement>) => void;
+  onDrop: (event: DragEvent<HTMLElement>) => void;
+}
+
 export interface Attacher {
   /** Uploads in flight: a write waits while this is above 0. */
   uploads: number;
@@ -77,6 +89,8 @@ export interface Attacher {
    */
   attach: (files: File[], area: HTMLTextAreaElement | null) => void;
   handlers: AttachHandlers;
+  /** Take files dropped anywhere on an element, into the box `target` finds. */
+  dropZone: (target: () => HTMLTextAreaElement | null) => DropZoneHandlers;
 }
 
 // Placeholders are unique across every box on the page, so two uploads of
@@ -172,7 +186,33 @@ export function useAttachments(project: string, update: TextUpdate): Attacher {
     },
   };
 
-  return { uploads, error, dropping, clearError: () => setError(null), attach, handlers };
+  const dropZone = (target: () => HTMLTextAreaElement | null): DropZoneHandlers => ({
+    onDragOver: (event) => {
+      if (Array.from(event.dataTransfer?.types ?? []).includes('Files')) {
+        event.preventDefault();
+        setDropping(true);
+      }
+    },
+    // Crossing into a child of the zone is not leaving it.
+    onDragLeave: (event) => {
+      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+        setDropping(false);
+      }
+    },
+    onDrop: (event) => {
+      setDropping(false);
+      const files = Array.from(event.dataTransfer?.files ?? []);
+      if (files.length === 0) {
+        return;
+      }
+      event.preventDefault();
+      // One upload: a zone inside a zone has the file, the outer one does not.
+      event.stopPropagation();
+      attach(files, target());
+    },
+  });
+
+  return { uploads, error, dropping, clearError: () => setError(null), attach, handlers, dropZone };
 }
 
 /** "Uploading 2 files…", or nothing. */
@@ -240,21 +280,24 @@ export interface AttachTextareaProps extends NativeTextareaProps {
 }
 
 /**
- * The design system's `Textarea` that takes files: paste or drop into it, or
- * press **Attach** under it. A `Field`'s id and descriptions reach the text
- * box itself, so its label still names it.
+ * The design system's `Textarea` that takes files: paste into it, drop on it
+ * or its bar, or press **Attach** under it. A `Field`'s id and descriptions
+ * reach the text box itself, so its label still names it.
  */
 export function AttachTextarea({ attacher, ...rest }: AttachTextareaProps) {
   const wrap = useRef<HTMLDivElement>(null);
   const pending = uploadingText(attacher.uploads);
+  const box = () => wrap.current?.querySelector('textarea') ?? null;
   return (
-    <div ref={wrap} className={cx(styles.field, attacher.dropping && styles.dropping)}>
-      <Textarea {...rest} {...attacher.handlers} />
+    <div
+      ref={wrap}
+      className={cx(styles.field, attacher.dropping && styles.dropping)}
+      {...attacher.dropZone(box)}
+    >
+      <Textarea {...rest} onPaste={attacher.handlers.onPaste} />
       <div className={styles.bar}>
-        <AttachButton
-          attacher={attacher}
-          target={() => wrap.current?.querySelector('textarea') ?? null}
-        />
+        <AttachButton attacher={attacher} target={box} />
+        <span className={styles.hint}>or paste or drop a file</span>
         {pending !== null && (
           <span className={styles.pending} role="status">
             {pending}

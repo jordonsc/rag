@@ -576,7 +576,8 @@ Decisions that are easy to undo by accident:
   (`![name](att:…)`, or `[name](att:…)` for a non-image) written at the cursor
   through a placeholder; Save waits while an upload is in flight. Dropped files
   go to the cursor too, not to the drop point. One implementation,
-  `tracker/attach.tsx` (`useAttachments`, `AttachTextarea`, `AttachButton`;
+  `tracker/attach.tsx` (`useAttachments` with its `dropZone`, so a drop lands on the
+  box's bar too and anywhere on Add request's form, `AttachTextarea`, `AttachButton`;
   rag-t0053), serves the documents editor, a ticket's body (Add ticket, Add
   request, Edit) and every note field (`NoteDialog`: Add note, Send back,
   Confirm, block, defer, ratify, remove…; Edit's note; the documents pages'

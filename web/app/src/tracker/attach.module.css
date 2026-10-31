@@ -27,7 +27,8 @@
   min-width: 0;
 }
 
-.pending {
+.pending,
+.hint {
   color: var(--rag-dim);
   font-size: var(--rag-text-xs);
 }

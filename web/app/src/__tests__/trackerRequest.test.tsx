@@ -6,7 +6,7 @@
  * dialog neither offers it nor removes it, and a request takes no `from`.
  */
 
-import { screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { addableLinkKinds } from '../tracker/ItemActions';
@@ -96,6 +96,54 @@ describe('the dashboard', () => {
     open();
     await screen.findByRole('heading', { name: 'demo' });
     expect(screen.queryByRole('region', { name: 'Requests' })).toBeNull();
+  });
+
+  // 2026-10-31 (owner): the whole form takes a dropped file, once.
+  it.each([
+    ['the request box', (dialog: HTMLElement) => within(dialog).getByLabelText('Request')],
+    [
+      'the hint under it',
+      (dialog: HTMLElement) => within(dialog).getByText(/paste or drop a file/),
+    ],
+    ['the title', (dialog: HTMLElement) => within(dialog).getByLabelText('Title')],
+  ])('takes a file dropped on %s, into the request', async (_where, spot) => {
+    const user = userEvent.setup();
+    const UPLOAD = '/tracker/demo/attachments';
+    server.on(
+      UPLOAD,
+      {
+        body: {
+          id: 1,
+          project: 'demo',
+          sha256: 'a1b2c3d4e5f6',
+          name: 'gate.log',
+          media_type: 'text/plain',
+          size: 3,
+          ref: 'att:a1b2c3d4e5f6',
+          author_email: 'a@example.com',
+          agent: 'Owner',
+          surface: 'web',
+          uploaded_at: '2026-01-01T00:00:00Z',
+        },
+      },
+      'POST',
+    );
+    open();
+    await screen.findByRole('heading', { name: 'demo' });
+    await user.click(screen.getByRole('button', { name: 'Add request' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add a request' });
+    const dataTransfer = {
+      files: [new File(['log'], 'gate.log', { type: 'text/plain' })],
+      types: ['Files'],
+    };
+
+    expect(fireEvent.dragOver(spot(dialog), { dataTransfer })).toBe(false);
+    fireEvent.drop(spot(dialog), { dataTransfer });
+
+    await waitFor(() =>
+      expect(within(dialog).getByLabelText('Request')).toHaveValue('[gate.log](att:a1b2c3d4e5f6)'),
+    );
+    expect(server.matching(UPLOAD, 'POST')).toHaveLength(1);
   });
 
   it('files a request with its title and text, owner-approved by default', async () => {

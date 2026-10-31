@@ -601,7 +601,12 @@ export function AddRequestDialog({ open, project, onCancel, onDone }: AddDialogP
       }
     >
       <Form onSubmit={submit}>
-        <div className={writeStyles.dialogBody} ref={root}>
+        {/* A file dropped anywhere on the form goes into the request. */}
+        <div
+          className={writeStyles.dialogBody}
+          ref={root}
+          {...attacher.dropZone(() => root.current?.querySelector('textarea') ?? null)}
+        >
           <Field
             label="Title"
             error={touched && title.trim() === '' ? 'A request needs a title.' : undefined}

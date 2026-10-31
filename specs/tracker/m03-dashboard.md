@@ -637,3 +637,12 @@ document `<project>-d0003` and `l0077` the topic `<project>-l0077`, any case, th
 a short id is refused, there being no project to assume. A bare number is not a short id: it could be a ticket or a
 legacy ledger topic (`<project>-1630`).
 
+### Addendum, 2026-10-31: a drop has room (owner)
+
+The owner asked to drag a file into the request area. The Request box already took a drop, but only the text box
+itself, and nothing on screen said so. Now `AttachTextarea`'s box **and** the bar under it are one drop zone
+(`attacher.dropZone`), and the bar says *or paste or drop a file*, on every box that takes files (Add ticket, Edit, Add
+request, every note). **Add request's whole form is a zone too**, so a file let go on the title or the checkbox goes
+into the request rather than being opened by the browser. An inner zone stops the drop, so a file uploads once.
+`trackerRequest.test.tsx`; also checked with a real drag in headless Chromium (four spots, one upload each).
+
