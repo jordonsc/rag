@@ -173,3 +173,15 @@ never saved by it. On New concept it is *Create concept*, not the draft.
 
 The editor's browser-kept text is now called *unsaved* on screen (see m03's addendum); `drafts.ts` keeps its name
 and key.
+
+### Addendum, 2026-10-31: Ctrl+S saves on the spot
+
+The owner: Ctrl+S "shouldn't exit edit mode - just save on the spot and allow you to continue working". In the
+editor it now saves and stays: the same element, so the cursor, selection and scroll are untouched, the base
+revision moves to the one returned, the message clears, and *Saved as revision N.* shows until the text moves on.
+The page re-reads the document behind it, so View and History are current. **Only what was sent stops being
+unsaved**: text typed while the save is in flight stays dirty and is kept in the browser against the new base. A
+409 opens the stale-save view as before. The **Save button still saves and closes**, and Overwrite is a button.
+**New concept** has no document to stay on until it exists, so Ctrl+S creates it and opens the document's own
+editor (`?tab=edit`): editing goes on, but that is a new page, so the cursor does not carry over. In
+`trackerDrafts.test.tsx`.

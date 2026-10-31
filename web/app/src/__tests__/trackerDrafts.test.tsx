@@ -17,6 +17,7 @@ import userEvent from '@testing-library/user-event';
 import { Route, Routes } from 'react-router';
 
 import { DocView } from '../tracker/DocView';
+import { draftKey, hasDraft } from '../tracker/drafts';
 import { ItemView } from '../tracker/ItemView';
 import { NewConceptView } from '../tracker/NewConceptView';
 import { summary } from '../tracker/ProjectPicker';
@@ -293,6 +294,50 @@ describe('drafts and Ctrl+S on the ticket page', () => {
     await waitFor(() => expect(server.matching(PATH, 'POST')).toHaveLength(1));
     expect(server.last(PATH, 'POST').body).toEqual({ title: 'A better title', ...AS_OWNER });
   });
+
+  it('Ctrl+S leaves the Edit dialog open, and the next save sends only what changed since', async () => {
+    const user = userEvent.setup();
+    openTicket(false);
+    await screen.findByRole('heading', { name: 'Half-written idea' });
+    server.onceOn(PATH, { body: item(ID, { title: 'A better title' }) }, 'POST');
+    await user.click(screen.getByRole('button', { name: /Edit…/ }));
+    const dialog = screen.getByRole('dialog', { name: `Edit ${ID}` });
+    const title = within(dialog).getByRole('textbox', { name: 'Title' });
+    await user.clear(title);
+    await user.type(title, 'A better title');
+    await user.type(within(dialog).getByRole('textbox', { name: 'Note' }), 'Why');
+
+    pressSave(dialog);
+    await within(dialog).findByText('Saved.');
+    expect(screen.getByRole('dialog', { name: `Edit ${ID}` })).toBe(dialog);
+    expect(title).toHaveValue('A better title');
+    // The note is said once; the cursor stays in it.
+    const noteBox = within(dialog).getByRole('textbox', { name: 'Note' });
+    expect(noteBox).toHaveValue('');
+    expect(noteBox).toHaveFocus();
+    // Saved and untouched: nothing more to send.
+    pressSave(dialog);
+    expect(server.matching(PATH, 'POST')).toHaveLength(1);
+
+    await user.type(within(dialog).getByRole('textbox', { name: 'Assignee' }), 'dev-3');
+    expect(within(dialog).queryByText('Saved.')).not.toBeInTheDocument();
+    pressSave(dialog);
+    await waitFor(() => expect(server.matching(PATH, 'POST')).toHaveLength(2));
+    expect(server.last(PATH, 'POST').body).toEqual({ assignee: 'dev-3', ...AS_OWNER });
+  });
+
+  it('the Edit dialog’s Save button still closes it', async () => {
+    const user = userEvent.setup();
+    openTicket(false);
+    await screen.findByRole('heading', { name: 'Half-written idea' });
+    await user.click(screen.getByRole('button', { name: /Edit…/ }));
+    const dialog = screen.getByRole('dialog', { name: `Edit ${ID}` });
+    await user.type(within(dialog).getByRole('textbox', { name: 'Assignee' }), 'dev-3');
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: `Edit ${ID}` })).not.toBeInTheDocument(),
+    );
+  });
 });
 
 // ---- Documents --------------------------------------------------------------
@@ -403,6 +448,92 @@ describe('drafts and Ctrl+S on a document', () => {
     });
   });
 
+  it('Ctrl+S stays in the editor, cursor and all, and the next save builds on the new revision', async () => {
+    const user = userEvent.setup();
+    openDoc(false, '?tab=edit');
+    const area = await editor();
+    await user.type(area, ' More.');
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Added');
+    await user.click(area);
+
+    server.onceOn(WRITE, { body: doc({ revision: 3 }) }, 'POST');
+    pressSave(area);
+    await screen.findByText('Saved as revision 3.');
+    expect(await editor()).toBe(area);
+    expect(area).toHaveFocus();
+    expect(area).toHaveValue('Notes on power. More.');
+    expect(screen.getByTestId('address')).toHaveTextContent('tab=edit');
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('');
+    // Saved and untouched: nothing more to send.
+    pressSave(area);
+    expect(server.matching(WRITE, 'POST')).toHaveLength(1);
+
+    await user.type(area, ' Again.');
+    expect(screen.queryByText('Saved as revision 3.')).not.toBeInTheDocument();
+    server.onceOn(WRITE, { body: doc({ revision: 4 }) }, 'POST');
+    pressSave(area);
+    await waitFor(() => expect(server.matching(WRITE, 'POST')).toHaveLength(2));
+    expect(server.last(WRITE, 'POST').body).toEqual({
+      base_revision: 3,
+      body: 'Notes on power. More. Again.',
+      ...AS_OWNER,
+    });
+    await screen.findByText('Saved as revision 4.');
+  });
+
+  it('text typed while Ctrl+S is in flight stays unsaved', async () => {
+    const user = userEvent.setup();
+    openDoc(false, '?tab=edit');
+    const area = await editor();
+    await user.type(area, ' More.');
+    // Hold the write open until the typing is done.
+    const answer = globalThis.fetch;
+    let finish: () => void = () => undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+        String(input) === WRITE
+          ? new Promise<Response>((resolve, reject) => {
+              finish = () => void answer(input, init).then(resolve, reject);
+            })
+          : answer(input, init),
+      ),
+    );
+    pressSave(area);
+    await user.type(area, ' Later.');
+    finish();
+
+    await screen.findByRole('button', { name: /Close \(keeps your unsaved changes\)/ });
+    await waitFor(() => expect(server.matching(WRITE, 'POST')).toHaveLength(1));
+    expect(server.last(WRITE, 'POST').body).toMatchObject({
+      base_revision: 2,
+      body: 'Notes on power. More.',
+    });
+    expect(area).toHaveValue('Notes on power. More. Later.');
+    // Saved, but what came after it is not, so it says nothing of having saved.
+    expect(screen.queryByText(/Saved as revision/)).not.toBeInTheDocument();
+    await waitFor(() => expect(hasDraft(draftKey('demo', DOC_ID))).toBe(true));
+    // The next save builds on the revision the first one made.
+    vi.stubGlobal('fetch', answer);
+    pressSave(area);
+    await waitFor(() => expect(server.matching(WRITE, 'POST')).toHaveLength(2));
+    expect(server.last(WRITE, 'POST').body).toMatchObject({
+      base_revision: 3,
+      body: 'Notes on power. More. Later.',
+    });
+  });
+
+  it('the editor’s Save button still closes it', async () => {
+    const user = userEvent.setup();
+    openDoc(false, '?tab=edit');
+    const area = await editor();
+    await user.type(area, ' More.');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('textbox', { name: 'Markdown' })).not.toBeInTheDocument(),
+    );
+  });
+
   it('Ctrl+S does nothing without an identity, but still keeps Save Page shut', async () => {
     openDoc(false, '?tab=edit', null);
     const area = await editor();
@@ -420,6 +551,42 @@ describe('drafts and Ctrl+S on a document', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(pressSave()).toBe(true);
     expect(server.matching(WRITE, 'POST')).toHaveLength(0);
+  });
+
+  it('New concept: Ctrl+S creates it and goes on in its editor', async () => {
+    const user = userEvent.setup();
+    server.on(
+      '/tracker/demo/concepts',
+      {
+        body: {
+          project: 'demo',
+          slug: 'quiet',
+          title: 'Quiet',
+          state: 'open',
+          approval: 'unapproved',
+          links: [],
+          doc_id: DOC_ID,
+          path: 'concepts/quiet.md',
+          created_at: STAMP,
+          updated_at: STAMP,
+        },
+      },
+      'POST',
+    );
+    server.on(/^\/tracker\/demo\/doc\?path=/, { body: doc({ path: 'concepts/quiet.md' }) }, 'GET');
+    server.on(/^\/tracker\/demo\/concepts\/quiet$/, { status: 404, body: {} }, 'GET');
+    server.on(`/tracker/docs/${DOC_ID}/revisions`, { body: { doc_id: DOC_ID, revisions: [] } });
+    mountAt('/projects/:project/docs/new', <NewConceptView />, {
+      route: '/projects/demo/docs/new',
+    });
+    await user.type(screen.getByRole('textbox', { name: 'Title' }), 'Quiet');
+    await user.type(await editor(), 'Hush.');
+    pressSave();
+    await waitFor(() =>
+      expect(screen.getByTestId('address')).toHaveTextContent(
+        '/projects/demo/doc/concepts/quiet.md?tab=edit',
+      ),
+    );
   });
 
   it('New concept: Save as draft creates it a draft', async () => {

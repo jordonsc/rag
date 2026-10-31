@@ -162,10 +162,15 @@ function NewConcept({ project }: { project: string }) {
             created.current = concept;
           })
         }
-        onSaved={() => {
+        onSaved={(stayed) => {
           clearDraft(metaKey);
           const concept = created.current;
-          navigate(concept === null ? docsPath(project) : docPath(project, concept.path));
+          if (concept === null) {
+            navigate(docsPath(project));
+            return;
+          }
+          // Ctrl+S goes on editing, now in the document's own editor.
+          navigate(`${docPath(project, concept.path)}${stayed ? '?tab=edit' : ''}`);
         }}
         onDiscard={() => clearDraft(metaKey)}
         onClose={() => navigate(docsPath(project))}

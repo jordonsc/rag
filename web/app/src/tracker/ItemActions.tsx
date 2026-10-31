@@ -415,7 +415,9 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
         onCancel={close}
         onDone={done}
       />
-      {open === 'edit' && <EditItemDialog item={item} onCancel={close} onDone={done} />}
+      {open === 'edit' && (
+        <EditItemDialog item={item} onCancel={close} onDone={done} onSavedInPlace={onWritten} />
+      )}
     </div>
   );
 }
@@ -499,18 +501,26 @@ interface EditItemDialogProps {
   item: Item;
   onCancel: () => void;
   onDone: () => void;
+  /** Ctrl+S landed and the dialog stays open: the page re-reads the ticket. */
+  onSavedInPlace: () => void;
 }
 
 /**
  * Edit the title, body, assignee, labels (rag-t0027) and links, a gate's
  * intensity and release, and whether any other item is parallel (rag-t0013).
+ *
+ * Save saves and closes; **Ctrl+S saves on the spot and stays** (owner,
+ * 2026-10-31). What is compared against then moves to the ticket as saved, so
+ * the next save sends only what changed after it.
  */
-function EditItemDialog({ item: opened, onCancel, onDone }: EditItemDialogProps) {
+function EditItemDialog({ item: opened, onCancel, onDone, onSavedInPlace }: EditItemDialogProps) {
   const gate = useTrackerGate();
   // The ticket as it was when the dialog opened. The page re-reads it live
   // while the dialog is up; diffing the draft against that newer copy would
-  // send back, as an edit, whatever someone else changed meanwhile.
-  const [item] = useState(opened);
+  // send back, as an edit, whatever someone else changed meanwhile. A save on
+  // the spot (Ctrl+S) moves it to the ticket that save returned.
+  const [item, setItem] = useState(opened);
+  const [savedInPlace, setSavedInPlace] = useState(false);
   const [title, setTitle] = useState(item.title);
   const [body, setBody] = useState(item.body);
   const [assignee, setAssignee] = useState(item.assignee ?? '');
@@ -561,7 +571,7 @@ function EditItemDialog({ item: opened, onCancel, onDone }: EditItemDialogProps)
     setTarget('');
   };
 
-  const submit = () => {
+  const save = (stay: boolean) => {
     if (gate.fields === null) {
       gate.prompt();
       return;
@@ -591,22 +601,39 @@ function EditItemDialog({ item: opened, onCancel, onDone }: EditItemDialogProps)
     setLabels(chosen.labels);
     setBusy(true);
     setError(null);
+    const sentNote = note;
     updateItem(
       item.id,
       { ...sent, ...(note.trim() === '' ? {} : { note: note.trim() }) },
       gate.fields,
     )
-      .then(() => {
+      .then((saved) => {
         setBusy(false);
-        onDone();
+        if (!stay) {
+          onDone();
+          return;
+        }
+        setItem(saved);
+        // The server keeps a project's casing of a label: take it, or the set
+        // would read as changed for ever. Labels changed meanwhile stay.
+        setLabels((now) => (sameLabels(now, chosen.labels) ? (saved.labels ?? []) : now));
+        // A note is said once; one being written meanwhile stays.
+        setNote((now) => (now === sentNote ? '' : now));
+        setSavedInPlace(true);
+        onSavedInPlace();
       })
       .catch((cause: unknown) => {
         setBusy(false);
         setError(asApiError(cause));
       });
   };
-  // Ctrl+S is Save (2026-10-30), and does nothing while Save is disabled.
-  useSaveShortcut(true, gate.ready && !busy && !uploading && !unchanged ? submit : null, root);
+  const submit = () => save(false);
+  // Ctrl+S saves and stays (2026-10-31), and does nothing while Save is disabled.
+  useSaveShortcut(
+    true,
+    gate.ready && !busy && !uploading && !unchanged ? () => save(true) : null,
+    root,
+  );
 
   return (
     <Dialog
@@ -712,6 +739,7 @@ function EditItemDialog({ item: opened, onCancel, onDone }: EditItemDialogProps)
           <Field label="Note" help="Optional: why, kept in the ticket’s history.">
             <AttachTextarea value={note} onChange={setNote} attacher={noteFiles} rows={2} />
           </Field>
+          {savedInPlace && unchanged && <p role="status">Saved.</p>}
           {!gate.ready && <p className={writeStyles.gate}>{TRACKER_IDENTITY_NEEDED}</p>}
           {error !== null && (
             <p className={writeStyles.failed} role="alert">

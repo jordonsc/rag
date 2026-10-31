@@ -22,8 +22,12 @@
  *   it. The machinery is `attach.tsx`'s, shared with the ticket page's bodies
  *   and note fields (rag-t0053).
  *
- * **Ctrl+S** (Cmd+S) is Save wherever the focus is on the page (2026-10-30,
- * `saveShortcut.ts`), and does nothing while Save cannot be pressed.
+ * **Ctrl+S** (Cmd+S) saves wherever the focus is on the page (2026-10-30,
+ * `saveShortcut.ts`), and does nothing while Save cannot be pressed. **It saves
+ * on the spot and the editor stays open** (owner, 2026-10-31): the base moves to
+ * the new revision, and what was typed while the save was in flight stays
+ * unsaved. The Save button still saves and closes. A create has no revision to
+ * stay on, so New concept's `onSaved` hears `stayed` and reopens it in the editor.
  *
  * The browser-kept text is called *unsaved* on screen (2026-10-30): "draft"
  * now means a server record not yet published. The code and storage keys keep
@@ -46,7 +50,7 @@ import frame from './tracker.module.css';
 import { clearDraft, readDraft, writeDraft, type Draft } from './drafts';
 import { TRACKER_IDENTITY_NEEDED, useTrackerGate } from './gate';
 import { useSaveShortcut } from './saveShortcut';
-import type { Revision, TrackerAuthor } from './types';
+import type { DocumentView, Revision, TrackerAuthor } from './types';
 import { surfaceLabel } from './vocab';
 
 export interface DocEditorProps {
@@ -75,8 +79,10 @@ export interface DocEditorProps {
   /** What the message is called: a revision's message, or a create's note. */
   messageLabel?: string;
   /**
-   * The write. Resolves when it landed; a rejection with a 409's `conflict`
-   * opens the stale-save view, any other is shown as the server said it.
+   * The write. Resolves when it landed, with the document when there is one
+   * to go on editing (Ctrl+S then stays here, against its new revision); a
+   * rejection with a 409's `conflict` opens the stale-save view, any other is
+   * shown as the server said it.
    */
   onSave: (
     body: string,
@@ -84,9 +90,14 @@ export interface DocEditorProps {
     message: string,
     fields: TrackerAuthor,
     asDraft: boolean,
-  ) => Promise<unknown>;
-  /** The save landed (the draft is already gone). */
-  onSaved: () => void;
+  ) => Promise<DocumentView | void>;
+  /**
+   * The save landed and the editor is done (the draft is already gone).
+   * `stayed`: it was Ctrl+S, so the reader means to go on editing.
+   */
+  onSaved: (stayed: boolean) => void;
+  /** Ctrl+S landed and the editor stays open, on `saved`'s revision. */
+  onSavedInPlace?: (saved: DocumentView) => void;
   /** Leave the editor. The draft stays unless the reader discarded it. */
   onClose: () => void;
   /** The reader discarded the draft (before `onClose`): forget anything kept beside it. */
@@ -117,6 +128,7 @@ export function DocEditor({
   messageLabel = 'Message',
   onSave,
   onSaved,
+  onSavedInPlace,
   onClose,
   onDiscard,
 }: DocEditorProps) {
@@ -133,6 +145,8 @@ export function DocEditor({
   const [notice, setNotice] = useState<string | null>(
     restored === null ? null : draftNotice(restored, revision),
   );
+  // The revision Ctrl+S last saved, said until the text moves on from it.
+  const [savedRevision, setSavedRevision] = useState<number | null>(null);
   const [storageFailed, setStorageFailed] = useState(false);
   const [conflict, setConflict] = useState<DocConflict | null>(null);
   const [since, setSince] = useState<Revision[] | null>(null);
@@ -198,7 +212,7 @@ export function DocEditor({
 
   // ---- saving -------------------------------------------------------------
 
-  const save = (against: number, asDraft = false) => {
+  const save = (against: number, asDraft = false, stay = false) => {
     if (gate.fields === null) {
       gate.prompt();
       return;
@@ -208,13 +222,31 @@ export function DocEditor({
     }
     setBusy(true);
     setError(null);
+    const sentBody = body;
+    const sentMessage = message;
     onSave(body, against, message.trim(), gate.fields, asDraft)
-      .then(() => {
-        saved.current = true;
-        clearDraft(storageKey);
+      .then((result) => {
         setBusy(false);
         setConflict(null);
-        onSaved();
+        if (stay && result !== undefined && onSavedInPlace !== undefined) {
+          // On the spot: the next save builds on this revision. Only what was
+          // saved stops being unsaved: typing goes on while a save is in
+          // flight, and `persist` keeps that against the new base.
+          setBase(result.revision);
+          setPristine(sentBody);
+          setSavedRevision(result.revision);
+          setNotice(null);
+          setMessage((now) => (now === sentMessage ? '' : now));
+          const now = latest.current;
+          if (now.body === sentBody && now.message === sentMessage) {
+            clearDraft(storageKey);
+          }
+          onSavedInPlace(result);
+          return;
+        }
+        saved.current = true;
+        clearDraft(storageKey);
+        onSaved(stay);
       })
       .catch((cause: unknown) => {
         setBusy(false);
@@ -267,7 +299,7 @@ export function DocEditor({
   const unchanged = requireChange && !dirty;
   // Ctrl+S anywhere on the page is the Save button, and does what it does.
   const canSave = gate.ready && !busy && !unchanged && uploads === 0 && blocked === undefined;
-  useSaveShortcut(true, canSave ? () => save(base) : null, root);
+  useSaveShortcut(true, canSave ? () => save(base, false, true) : null, root);
   const conflictRows = conflict === null ? [] : withContext(diffLines(conflict.current.body, body));
   const conflictDiffers = conflict !== null && changed(diffLines(conflict.current.body, body));
 
@@ -399,6 +431,11 @@ export function DocEditor({
           </Button>
         </div>
       </div>
+      {savedRevision !== null && !dirty && (
+        <p className={styles.status} role="status">
+          Saved as revision {savedRevision}.
+        </p>
+      )}
       {uploads > 0 && (
         <p className={styles.status} role="status">
           {uploadingText(uploads)} Save waits for {uploads === 1 ? 'it' : 'them'}.

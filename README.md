@@ -359,7 +359,8 @@ specs and concepts move out of the project's repository into it, keeping their p
   publishing is the record's first frame (`{draft: yes → no}`). A queued draft ticket sits in
   the queue view's `drafts`, never in the queue `tracker_next` or a gate's batch reads. The web
   UI has **Save as draft**, **Publish** and **Make draft**, and **Ctrl+S / Cmd+S** saves the
-  ticket edit, the document editor, New concept and the add dialogs.
+  ticket edit and the document editor on the spot, staying open, and submits New concept
+  and the add dialogs.
 
 - **MCP tools** (m02): `rag-mcp --server tracker` (stdio) or `/tracker` on the gateway, each
   forwarding to the API (`crates/mcp/src/tracker.rs`): `tracker_queue` (the dashboard as

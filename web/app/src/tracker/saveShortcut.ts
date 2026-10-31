@@ -17,6 +17,12 @@
  *   identity set does nothing at all.
  *
  * With nothing registered the key is left to the browser.
+ *
+ * What a press does is the form's. The document editor and the ticket's Edit
+ * **save on the spot and stay open** (owner, 2026-10-31), where their Save
+ * buttons close; New concept creates and reopens in the document's editor. The
+ * add dialogs submit and close: staying would invite a second press to file
+ * the same ticket twice.
  */
 
 import { useEffect, useRef, type RefObject } from 'react';

@@ -391,6 +391,7 @@ function DocumentPage({ project, path }: { project: string; path: string }) {
             goTo('view');
             refetch();
           }}
+          onSavedInPlace={refetch}
           onClose={() => goTo('view')}
         />
       )}
