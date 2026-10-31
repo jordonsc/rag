@@ -457,7 +457,8 @@
 /*
  * A gate is a line across the list, not a row in it (D6, D14): what is above
  * it ships in that gate. Drawn in `--rag-extra`, the one accent no status
- * uses, so a marker never reads as an item's state.
+ * uses, so a marker never reads as an item's state, until the gate has one
+ * worth reading: done (green) and in progress (blue).
  */
 .marker {
   display: flex;
@@ -478,6 +479,11 @@
  */
 .markerDone {
   --marker-colour: var(--rag-good);
+}
+
+/* A gate being run is in the in-progress status's blue, as a row is (2026-10-31). */
+.markerInProgress {
+  --marker-colour: var(--rag-acc);
 }
 
 /* Done is a flat list with its own separators: the marker brings no second one. */

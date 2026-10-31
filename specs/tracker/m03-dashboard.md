@@ -618,3 +618,22 @@ refused before a request, naming the three shapes. The ledger's New topic stays 
 search is unchanged: its corpus select already offers the tracker (documents and tickets). Tests:
 `openTopic.test.tsx` (ticket, document, missing document), `trackerShell.test.tsx` (the box on a tracker page).
 
+### Addendum, 2026-10-31: Ctrl+S in the ticket's Edit stays open
+
+The owner: Ctrl+S saves on the spot rather than leaving the edit. The ticket's **Edit** dialog stays open with the
+focus where it was and says *Saved.* until something changes; what it diffs against moves to the ticket the save
+returned, so the next save sends only later changes, and the note, said once, clears. The page re-reads the ticket
+behind it. The **Save button still closes**. **Add ticket, Add gate and Add request still submit and close**: a
+create that stayed open would file a second ticket on the next press.
+
+### Addendum, 2026-10-31: an in-progress gate is blue; short ids (owner)
+
+A gate marker in progress is drawn in `--rag-acc`, the in-progress status's blue (`.markerInProgress`), pill and
+rules alike, as a done gate under Done is in green; every other gate keeps `--rag-extra`.
+
+On any page under `/projects/<project>`, the id box takes a **short id**: `t1630` opens `<project>-t1630`, `d3` the
+document `<project>-d0003` and `l0077` the topic `<project>-l0077`, any case, the digits padded to four
+(`expandShortId` in `ledger/OpenTopic.tsx`). A full id still opens whichever project it names. Off a project's pages
+a short id is refused, there being no project to assume. A bare number is not a short id: it could be a ticket or a
+legacy ledger topic (`<project>-1630`).
+

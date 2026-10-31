@@ -1,6 +1,6 @@
 import { useId, useState, type FormEvent } from 'react';
 import { Button, Icon, Input } from '@rag/ui';
-import { useNavigate } from 'react-router';
+import { useMatch, useNavigate } from 'react-router';
 
 import { asApiError } from '../api';
 import { getDoc } from '../tracker/api';
@@ -15,6 +15,20 @@ import styles from './openTopic.module.css';
  */
 export const OPEN_ID_ERROR =
   'That is not an id. A ledger topic looks like demo-l0001 (older ones: demo-0001), a ticket demo-t0001, a document demo-d0001.';
+
+/**
+ * A short id, on a project's pages (owner, 2026-10-31): `t1630` there means
+ * `<project>-t1630`, and likewise `d0003` and `l0077`. The digits pad to the
+ * four an id is minted with, so `t42` is `-t0042`. Anything else, and anything
+ * with no project in hand, comes back as it was typed.
+ */
+export function expandShortId(value: string, project: string | null): string {
+  const short = /^([tdl])([0-9]+)$/i.exec(value);
+  if (short === null || project === null) {
+    return value;
+  }
+  return `${project}-${short[1]!.toLowerCase()}${short[2]!.padStart(4, '0')}`;
+}
 
 /** The project a document id belongs to: everything before the final `-d`. */
 export function docProject(id: string): string | null {
@@ -68,6 +82,8 @@ export function OpenTopic({
   autoFocus = false,
 }: OpenTopicProps) {
   const navigate = useNavigate();
+  // The box sits in the shell, outside the routes, so it reads the address.
+  const project = useMatch('/projects/:project/*')?.params.project ?? null;
   const errorId = useId();
   const [value, setValue] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -75,11 +91,12 @@ export function OpenTopic({
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    const trimmed = value.trim();
-    if (trimmed === '') {
+    const typed = value.trim();
+    if (typed === '') {
       setError(null);
       return;
     }
+    const trimmed = expandShortId(typed, project);
     setError(null);
     // The typed id is kept rather than cleared: the commonest reason to come
     // back to this box is that the last one was a digit out.
@@ -119,7 +136,7 @@ export function OpenTopic({
               setError(null);
             }
           }}
-          placeholder="demo-l0001 · -t0001 · -d0001"
+          placeholder={project === null ? 'demo-l0001 · -t0001 · -d0001' : 't0001 · d0001 · l0001'}
           aria-label={label}
           aria-describedby={error === null ? undefined : errorId}
           invalid={error !== null}

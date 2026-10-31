@@ -119,7 +119,12 @@ export interface GateMarkerProps {
  * menu either side, Done adds nothing.
  */
 export function GateMarker({ project, item, variant = 'queue' }: GateMarkerProps) {
-  const tone = variant === 'done' ? styles.markerDone : undefined;
+  const tone =
+    variant === 'done'
+      ? styles.markerDone
+      : item.status === 'in_progress'
+        ? styles.markerInProgress
+        : undefined;
   return (
     <>
       <span className={cx(styles.rule, tone)} aria-hidden />

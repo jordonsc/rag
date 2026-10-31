@@ -172,7 +172,8 @@ gets the prominent affordance:
   tracker's included since 2026-10-30, when it also learned to open a **ticket**
   (`demo-t0001`, its ticket page) and a **document** (`demo-d0001`, looked up, then
   opened at its path; a missing one is named). The bar reads Search, Tracker,
-  Archived.
+  Archived. On a project's pages it takes a short id too (2026-10-31): `t1630` means
+  that project's `-t1630`, likewise `d0003` and `l0077`.
   including the topic page, where the next thing a reader does with an id is
   usually to follow another one. Type or paste, press Enter, arrive. It was
   previously only on the 404 page — an affordance you found by first getting
@@ -555,10 +556,12 @@ Decisions that are easy to undo by accident:
   keep the old name, so nothing kept before is lost.
 - **Ctrl+S (Cmd+S) saves** (2026-10-30, `saveShortcut.ts`): the document
   editor from anywhere on its page, the ticket's Edit, New concept (Create
-  concept, not the draft) and the add dialogs (their main button). It does
-  exactly what the Save button would, and nothing while that button cannot be
-  pressed (nothing changed, a save in flight, an upload, no identity), but the
-  browser's Save Page is kept shut either way. The most recently opened form
+  concept, not the draft) and the add dialogs (their main button). **In the
+  editor and the ticket's Edit it saves on the spot and stays open** (2026-10-31),
+  where their Save buttons close; New concept creates and goes on in the
+  document's editor; the add dialogs submit and close. It does nothing while the
+  Save button cannot be pressed (nothing changed, a save in flight, an upload, no
+  identity), but the browser's Save Page is kept shut either way. The most recently opened form
   wins; a modal over a form (a rename, a note) takes the key from it.
 - **Nothing typed into a document is lost.** The editor keeps a draft in
   `localStorage` (`rag.tracker.draft:<project>:<doc id>`, guarded: a browser that

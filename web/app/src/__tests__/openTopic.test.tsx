@@ -113,6 +113,51 @@ describe('the id box in the shell', () => {
     );
   });
 
+  // 2026-10-31 (owner): on a project's pages a short id means that project's.
+  it.each([
+    ['t1630', '/projects/ubu', '/projects/ubu/ticket/ubu-t1630'],
+    ['T1630', '/projects/ubu', '/projects/ubu/ticket/ubu-t1630'],
+    ['t42', '/projects/ubu/docs', '/projects/ubu/ticket/ubu-t0042'],
+    ['l0077', '/projects/foo-v2/history', '/topic/foo-v2-l0077'],
+    ['ubu-t0001', '/projects/foo-v2', '/projects/ubu/ticket/ubu-t0001'],
+  ])('opens %s from %s', async (typed, route, landed) => {
+    const user = userEvent.setup();
+    mount(<App />, { route });
+
+    await user.type(bar(), `${typed}{Enter}`);
+
+    expect(screen.getByTestId('address')).toHaveTextContent(landed);
+  });
+
+  it('opens a short document id in the project on screen', async () => {
+    const user = userEvent.setup();
+    server.on(/\/tracker\/docs\/ubu-d0003/, {
+      id: 'ubu-d0003',
+      project: 'ubu',
+      path: 'concepts/power.md',
+      kind: 'concept',
+    });
+    mount(<App />, { route: '/projects/ubu' });
+
+    await user.type(bar(), 'd3{Enter}');
+
+    await waitFor(() =>
+      expect(screen.getByTestId('address')).toHaveTextContent(
+        '/projects/ubu/doc/concepts/power.md',
+      ),
+    );
+  });
+
+  it('refuses a short id away from a project, which has none to assume', async () => {
+    const user = userEvent.setup();
+    mount(<App />);
+
+    await user.type(bar(), 't1630{Enter}');
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/not an id/i);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
   it('names a document id that does not exist', async () => {
     const user = userEvent.setup();
     server.on(/\/tracker\/docs\/ubu-d0404/, { error: 'no document' }, 404);

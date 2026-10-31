@@ -1241,6 +1241,25 @@ describe('the route', () => {
   });
 });
 
+describe('a gate in progress (2026-10-31)', () => {
+  it('is drawn in the in-progress blue; a pending gate keeps the marker’s own colour', async () => {
+    view = queueView({
+      queue: [
+        gateItem('demo-t0003', { status: 'in_progress' }),
+        item('demo-t0004'),
+        gateItem('demo-t0005'),
+      ],
+    });
+    open();
+    await screen.findByRole('heading', { name: 'demo' });
+    const rows = within(screen.getByRole('list', { name: 'Queue' })).getAllByRole('listitem');
+    expect(within(rows[0]!).getByRole('link').className).toMatch(/markerInProgress/);
+    expect(within(rows[2]!).getByRole('link').className).not.toMatch(/markerInProgress/);
+    const css = readFileSync(resolve(__dirname, '../tracker/tracker.module.css'), 'utf8');
+    expect(css).toMatch(/\.markerInProgress\s*\{\s*--marker-colour:\s*var\(--rag-acc\);/);
+  });
+});
+
 describe('a done gate under Done (rag-t0021)', () => {
   const title = 'Gate: heat rods m02–m04';
 
