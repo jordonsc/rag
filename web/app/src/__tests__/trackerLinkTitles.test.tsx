@@ -70,6 +70,44 @@ function row(target: string): HTMLElement {
   return found;
 }
 
+describe('hovering a link to another ticket (2026-11-01)', () => {
+  it('says the title in the Links panel', async () => {
+    withRecord([{ kind: 'item', target: 'demo-t0009' }]);
+    server.install();
+    open();
+    const link = await screen.findByRole('link', { name: 'demo-t0009' });
+    await waitFor(() => expect(link).toHaveAttribute('title', 'The neighbouring ticket'));
+  });
+
+  it('says the title on what a blocked ticket waits on', async () => {
+    server.on(
+      PATH,
+      {
+        body: item(ID, {
+          title: 'Linker',
+          blocked: true,
+          block_reason: 'dependency',
+          depends_on: ['demo-t0009'],
+        } as never),
+      },
+      'GET',
+    );
+    server.install();
+    open();
+    const link = await screen.findByRole('link', { name: 'demo-t0009' });
+    await waitFor(() => expect(link).toHaveAttribute('title', 'The neighbouring ticket'));
+  });
+
+  it('says so when the ticket cannot be found', async () => {
+    server.on(/^\/tracker\/items\/demo-t0404(\?|$)/, { status: 404, body: {} });
+    withRecord([{ kind: 'item', target: 'demo-t0404' }]);
+    server.install();
+    open();
+    const link = await screen.findByRole('link', { name: 'demo-t0404' });
+    await waitFor(() => expect(link).toHaveAttribute('title', 'Not found'));
+  });
+});
+
 describe('the item page’s link titles', () => {
   it('names every kind of target beside its id', async () => {
     withRecord([

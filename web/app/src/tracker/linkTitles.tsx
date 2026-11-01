@@ -122,6 +122,23 @@ export function useLinkTitles(project: string, links: readonly Link[]): Record<s
 }
 
 /**
+ * What hovering a link says (owner, 2026-11-01): its target's title, or why
+ * there is none. Nothing until the read answers.
+ */
+export function linkTooltip(title: LinkTitle | undefined): string | undefined {
+  switch (title?.state) {
+    case 'ready':
+      return title.title;
+    case 'missing':
+      return 'Not found';
+    case 'failed':
+      return 'Title unavailable';
+    default:
+      return undefined;
+  }
+}
+
+/**
  * A link target's title, beside its id (rag-t0046).
  *
  * The span is there from the first paint, holding one line, so a title that

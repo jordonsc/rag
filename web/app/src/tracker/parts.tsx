@@ -9,6 +9,7 @@ import { Badge, Button, Icon } from '@rag/ui';
 import { Link } from 'react-router';
 
 import { cx } from '../util';
+import { linkKey, linkTooltip, useLinkTitles } from './linkTitles';
 import { itemPath, linkHref, projectPath } from './paths';
 import styles from './tracker.module.css';
 import type { Approval, Item, Link as ItemLink } from './types';
@@ -164,6 +165,9 @@ export function ApprovalControl({ id, approval, onRatify, onApprove }: ApprovalC
   return <ApprovalBadge approval={approval} />;
 }
 
+/** The link kinds that name another ticket. */
+const TICKET_LINKS: readonly string[] = ['item', 'from', 'became'];
+
 export interface LinkChipsProps {
   project: string;
   links: readonly ItemLink[];
@@ -175,10 +179,15 @@ export interface LinkChipsProps {
 
 /** A row's links as chips: a ledger id opens its topic, an item its page. */
 export function LinkChips({ project, links, max = 3, resolved = {} }: LinkChipsProps) {
+  const shown = links.slice(0, max);
+  // A chip for another ticket says its title on hover (owner, 2026-11-01).
+  const titles = useLinkTitles(
+    project,
+    shown.filter((link) => TICKET_LINKS.includes(link.kind)),
+  );
   if (links.length === 0) {
     return null;
   }
-  const shown = links.slice(0, max);
   const rest = links.length - shown.length;
   return (
     <span className={styles.chips}>
@@ -190,7 +199,8 @@ export function LinkChips({ project, links, max = 3, resolved = {} }: LinkChipsP
             <span>{link.target}</span>
           </>
         );
-        const title = `${linkKindLabel(link.kind)}: ${link.target}`;
+        const title =
+          linkTooltip(titles[linkKey(link)]) ?? `${linkKindLabel(link.kind)}: ${link.target}`;
         return href === null ? (
           <span key={`${link.kind}:${link.target}`} className={styles.chip} title={title}>
             {content}
@@ -287,9 +297,14 @@ export function DraftBadge() {
 
 /**
  * What an item blocked with reason `dependency` waits on (rag-t0018), each a
- * link to its item page. Nothing when it waits on nothing.
+ * link to its item page, its title the tooltip (owner, 2026-11-01). Nothing
+ * when it waits on nothing.
  */
 export function WaitsOn({ project, ids }: { project: string; ids: readonly string[] }) {
+  const titles = useLinkTitles(
+    project,
+    ids.map((target) => ({ kind: 'item' as const, target })),
+  );
   if (ids.length === 0) {
     return null;
   }
@@ -297,7 +312,12 @@ export function WaitsOn({ project, ids }: { project: string; ids: readonly strin
     <span className={styles.waitsOn}>
       <span>waits on</span>
       {ids.map((id) => (
-        <Link key={id} to={itemPath(project, id)} className={cx(styles.chip, styles.chipLink)}>
+        <Link
+          key={id}
+          to={itemPath(project, id)}
+          className={cx(styles.chip, styles.chipLink)}
+          title={linkTooltip(titles[linkKey({ kind: 'item', target: id })])}
+        >
           <Icon name={linkKindIcon('item')} size={12} />
           <span>{id}</span>
         </Link>

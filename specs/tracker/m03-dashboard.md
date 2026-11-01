@@ -646,3 +646,11 @@ request, every note). **Add request's whole form is a zone too**, so a file let 
 into the request rather than being opened by the browser. An inner zone stops the drop, so a file uploads once.
 `trackerRequest.test.tsx`; also checked with a real drag in headless Chromium (four spots, one upload each).
 
+### Addendum, 2026-11-01: a link to a ticket says its title on hover (owner)
+
+Hovering a link's id on the ticket page's **Links** panel, a *waits on* chip (the ticket page and a blocked row on the
+dashboard), *From request*, *Became* or a concept's ticket chip shows the target's title as the tooltip (`linkTooltip`
+in `tracker/linkTitles.tsx`, on the titles `useLinkTitles` already reads; *Not found* or *Title unavailable* when it
+cannot be read). `WaitsOn` and `LinkChips` read their ticket targets when drawn, one `GET /tracker/items/{id}` per
+distinct target, keyed on the links so a re-read of the queue does not repeat them. Tests: `trackerLinkTitles.test.tsx`.
+

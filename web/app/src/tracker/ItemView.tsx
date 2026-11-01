@@ -9,7 +9,7 @@ import timeline from '../views/topic.module.css';
 import { getItem } from './api';
 import { CopyButton } from './CopyButton';
 import { ItemActions } from './ItemActions';
-import { LinkTitleText, linkKey, useLinkTitles } from './linkTitles';
+import { LinkTitleText, linkKey, linkTooltip, useLinkTitles } from './linkTitles';
 import {
   ApprovalBadge,
   DraftBadge,
@@ -233,7 +233,7 @@ function BecameList({
       {rows.map(({ id, item }) => (
         <li key={id} className={styles.becameRow}>
           {item !== null && <StatusDot state={dotState(item)} compact />}
-          <Link to={itemPath(project, id)}>
+          <Link to={itemPath(project, id)} title={item?.title}>
             <code>{id}</code>
           </Link>
           {item !== null && (
@@ -439,7 +439,10 @@ export function ItemView() {
               <dd className={styles.neighbours}>
                 {fromRequests.map((link) => (
                   <span key={link.target} className={styles.fromRequest}>
-                    <Link to={itemPath(project, link.target)}>
+                    <Link
+                      to={itemPath(project, link.target)}
+                      title={linkTooltip(titles[linkKey(link)])}
+                    >
                       <code>{link.target}</code>
                     </Link>
                     <LinkTitleText title={titles[linkKey(link)]} />
@@ -553,9 +556,13 @@ export function ItemView() {
                   <Icon name={linkKindIcon(link.kind)} size={14} />
                   <span className={styles.linkKind}>{linkKindLabel(link.kind)}</span>
                   {href === null ? (
-                    <code>{link.target}</code>
+                    <code title={linkTooltip(titles[linkKey(link)])}>{link.target}</code>
                   ) : (
-                    <Link to={href} className={styles.linkTarget}>
+                    <Link
+                      to={href}
+                      className={styles.linkTarget}
+                      title={linkTooltip(titles[linkKey(link)])}
+                    >
                       {link.target}
                     </Link>
                   )}
