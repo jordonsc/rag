@@ -213,6 +213,9 @@ Design
   * **No new MCP tool**: `user-claude.md` spells out the `Monitor` call and the re-arm loop. `rag-serve` now stops
     on SIGTERM as well as Ctrl-C (a container stop used to end in SIGKILL), closing each feed with code 1012 and its
     resume id.
+  *Amended 2026-11-01 (owner): **acknowledging done tickets wakes nobody**.* `acknowledge` left the feed's default
+  kinds: clearing the done list is the owner's housekeeping and asks nothing of a manager. A client that names it
+  (`kinds=acknowledge`, or `all`) still gets it, and the web UI's ticket page, which reads `all`, is unchanged.
   *Amended 2026-10-30 (owner): **drafts**.* "A new or updated record in draft state is not sent on the websocket
   by default (but may ask explicitly for it). This helps me create & update records without a monitoring agent
   concerning themselves with it." A ticket and a document carry a **`draft`** flag (a concept is a draft while

@@ -929,3 +929,35 @@ async fn a_draft_reaches_only_a_feed_that_asks_until_it_is_published() {
         "{line}"
     );
 }
+
+/// Acknowledging done tickets wakes nobody (owner, 2026-11-01), though a feed
+/// that names the kind still hears it.
+#[tokio::test]
+async fn acknowledging_done_tickets_is_left_out_of_the_default_feed() {
+    let s = server().await;
+    let id = s
+        .store
+        .create_item(new_item("p", "Finished"), &mcp())
+        .await
+        .unwrap()
+        .item
+        .id;
+    s.store
+        .update_item(
+            &id,
+            ItemUpdate {
+                status: Some(rag_core::tracker::ItemStatus::Done),
+                ..Default::default()
+            },
+            &mcp(),
+        )
+        .await
+        .unwrap();
+    let since = s.store.latest_event_id().await.unwrap();
+    let mut ws = connect(&s, "p/events/ws").await;
+    let mut named = connect(&s, &format!("p/events/ws?since={since}&kinds=acknowledge")).await;
+    assert_eq!(s.store.acknowledge_done("p", &web()).await.unwrap(), [id]);
+
+    assert!(next_text(&mut named).await.contains(" web acknowledge "));
+    quiet(&mut ws, 150).await;
+}

@@ -37,9 +37,10 @@ use super::{EventKind, EventRow, ItemType, Surface, TResult, TargetKind, Tracker
 pub const FEED_CAPACITY: usize = 1024;
 
 /// The event kinds a feed sends when the caller names none: the owner's
-/// decisions and the queue's movements. `link` and `rename` are housekeeping
-/// and left out; `edit` is in, as label changes and the owner's corrections to
-/// an item or a document are edits.
+/// decisions and the queue's movements. `link`, `rename` and `acknowledge` are
+/// housekeeping and left out (`acknowledge`: owner, 2026-11-01, clearing done
+/// tickets asks nothing of a manager); `edit` is in, as label changes and the
+/// owner's corrections to an item or a document are edits.
 pub const DEFAULT_FEED_KINDS: &[EventKind] = &[
     EventKind::Create,
     EventKind::Status,
@@ -48,7 +49,6 @@ pub const DEFAULT_FEED_KINDS: &[EventKind] = &[
     EventKind::Approve,
     EventKind::Move,
     EventKind::Note,
-    EventKind::Acknowledge,
     EventKind::Assign,
     EventKind::Edit,
 ];

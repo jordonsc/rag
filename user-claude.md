@@ -237,8 +237,8 @@ characters is cut, saying how much more there is and which event holds it (`… 
 rest with `tracker_get` (`history: N`), or `curl -s "…/events?since=13949&limit=1&surface=any&kinds=all"`.
 By default it carries only the owner's web actions (`surface=web`), not your own or your sub-agents' writes, and
 every kind of them that matters to a manager: creates, status changes, blocks and unblocks, approvals, **moves**,
-notes, acknowledgements, assignments and **edits** (title, body, gate fields and **label changes** are `edit`
-events). Only link changes and document renames are left out. **The owner's drafts are left out too**: a ticket
+notes, assignments and **edits** (title, body, gate fields and **label changes** are `edit`
+events). Link changes, document renames and acknowledgements of done tickets are left out. **The owner's drafts are left out too**: a ticket
 or document the owner is still writing (`draft`, shown as `draft` in a ticket line and counted, never listed, in
 `tracker_queue`'s footer) wakes nobody until it is published. Its first frame is then the publish,
 `{draft: yes → no}` (a request's adds `type: request`: break it down as above); a published ticket made a draft
@@ -271,7 +271,7 @@ publish a draft unless the owner asks.
    (`#13906 rag web create rag-t0044 "Weather" {type: request}: …`) is work to break down at once, as above.
 
 `?surface=any` adds the agents' writes, `kinds=approve,status` narrows the events (`all` for every kind; the
-default leaves out `link` and `rename`), `coalesce=<seconds>` sets the burst window (0 to 60; `0` for a frame per
+default leaves out `link`, `rename` and `acknowledge`), `coalesce=<seconds>` sets the burst window (0 to 60; `0` for a frame per
 event), `format=json` sends the whole event, one frame each, never coalesced (`fields` the new values, `before`
 the old ones), `drafts=true` includes the owner's draft events (marked `(draft)`), and the project `*` watches
 every project. Keep it narrow: a monitor that floods is stopped.

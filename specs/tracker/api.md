@@ -652,7 +652,7 @@ client keeps the last id it was sent and resumes after it with `since`.
 |---|---|---|
 | `{project}` (path) | a project, or **`*`** for every project | `*` cannot be a project name |
 | `surface` | `web` (default), `mcp`, `any` | `web`: the owner's actions in the web UI |
-| `kinds` | comma list of event kinds, or `all` | default: `create`, `status`, `block`, `unblock`, `approve`, `move`, `note`, `acknowledge`, `assign`, `edit` (left out: `link`, `rename`) |
+| `kinds` | comma list of event kinds, or `all` | default: `create`, `status`, `block`, `unblock`, `approve`, `move`, `note`, `assign`, `edit` (left out: `link`, `rename` and, since 2026-11-01, `acknowledge`) |
 | `since` | an event id, `0` or more; exclusive | the events **after** it |
 | `drafts` | `true` or `false` (default) | `true` includes **draft events** (2026-10-30, owner): those written while their ticket or document was a draft (see Event). Left out by default, so the owner's unfinished work wakes nobody |
 
