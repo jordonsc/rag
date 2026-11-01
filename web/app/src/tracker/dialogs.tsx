@@ -28,6 +28,7 @@ import { createItem, updateItem } from './api';
 import { useSaveShortcut } from './saveShortcut';
 import { AttachTextarea, useAttachments } from './attach';
 import { TRACKER_IDENTITY_NEEDED, useTrackerGate } from './gate';
+import { keptKey, useKeptText } from './keptText';
 import { LabelEditor, submittedLabels, useProjectLabels } from './LabelEditor';
 import type { Intensity, Item, TrackerAuthor, WorkType } from './types';
 import { INTENSITIES, WORK_TYPES } from './types';
@@ -103,6 +104,9 @@ export interface NoteDialogProps {
  * left blank is **not sent** either: the form says so and stays open. The
  * server would refuse it anyway, but a round trip to be told what the form
  * already knew is a worse answer than the form's.
+ *
+ * A click away, Esc or the X keeps the note for the next time the same action
+ * is opened on the same record; **Cancel** discards it (`keptText.ts`).
  */
 export function NoteDialog({
   open,
@@ -122,20 +126,25 @@ export function NoteDialog({
   onDone,
 }: NoteDialogProps) {
   const gate = useTrackerGate();
-  const [note, setNote] = useState('');
+  const kept = useKeptText(open ? keptKey(project, subject?.id ?? title, confirmLabel) : null);
+  const note = kept.text;
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<LedgerApiError | null>(null);
-  const attacher = useAttachments(project, setNote);
+  const attacher = useAttachments(project, kept.update);
 
   const missing = noteRequired && note.trim() === '';
 
-  const close = () => {
-    setNote('');
+  const dismiss = () => {
     setTouched(false);
     setError(null);
     attacher.clearError();
     onCancel();
+  };
+
+  const discard = () => {
+    kept.set('');
+    dismiss();
   };
 
   const submit = () => {
@@ -152,7 +161,7 @@ export function NoteDialog({
     onSubmit(note.trim(), gate.fields)
       .then(() => {
         setBusy(false);
-        setNote('');
+        kept.set('');
         setTouched(false);
         attacher.clearError();
         onDone();
@@ -166,12 +175,12 @@ export function NoteDialog({
   return (
     <Dialog
       open={open}
-      onClose={close}
+      onClose={dismiss}
       title={title}
       width={520}
       footer={
         <>
-          <Button onClick={close} disabled={busy}>
+          <Button onClick={discard} disabled={busy}>
             Cancel
           </Button>
           <Button
@@ -206,7 +215,7 @@ export function NoteDialog({
           >
             <AttachTextarea
               value={note}
-              onChange={setNote}
+              onChange={kept.set}
               attacher={attacher}
               rows={noteRows}
               invalid={touched && missing}
@@ -337,8 +346,10 @@ export function asDraft(draft: boolean): { draft?: true } {
 export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProps) {
   const gate = useTrackerGate();
   const [type, setType] = useState<WorkType>('dev');
-  const [title, setTitle] = useState('');
-  const [body, setBody] = useState('');
+  const keptTitle = useKeptText(open ? keptKey(project, 'new-item', 'title') : null);
+  const keptBody = useKeptText(open ? keptKey(project, 'new-item', 'body') : null);
+  const title = keptTitle.text;
+  const body = keptBody.text;
   const [approved, setApproved] = useState(true);
   const [parallel, setParallel] = useState(false);
   const [labels, setLabels] = useState<string[]>([]);
@@ -348,13 +359,13 @@ export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProp
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<LedgerApiError | null>(null);
-  const attacher = useAttachments(project, setBody);
+  const attacher = useAttachments(project, keptBody.update);
   const root = useRef<HTMLDivElement>(null);
 
   const reset = () => {
     setType('dev');
-    setTitle('');
-    setBody('');
+    keptTitle.set('');
+    keptBody.set('');
     setApproved(true);
     setParallel(false);
     setLabels([]);
@@ -366,6 +377,15 @@ export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProp
 
   const close = () => {
     reset();
+    onCancel();
+  };
+
+  // A click away, Esc or the X keeps what was written, for the next time this
+  // is opened; Cancel (above) discards it.
+  const dismiss = () => {
+    setTouched(false);
+    setError(null);
+    attacher.clearError();
     onCancel();
   };
 
@@ -418,7 +438,7 @@ export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProp
   return (
     <Dialog
       open={open}
-      onClose={close}
+      onClose={dismiss}
       title="Add a ticket"
       width={600}
       footer={
@@ -446,10 +466,10 @@ export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProp
             label="Title"
             error={touched && title.trim() === '' ? 'A ticket needs a title.' : undefined}
           >
-            <Input value={title} onChange={setTitle} invalid={touched && title.trim() === ''} />
+            <Input value={title} onChange={keptTitle.set} invalid={touched && title.trim() === ''} />
           </Field>
           <Field label="Body" help="Markdown: the brief, the scope, the acceptance. Optional.">
-            <AttachTextarea value={body} onChange={setBody} attacher={attacher} rows={8} />
+            <AttachTextarea value={body} onChange={keptBody.set} attacher={attacher} rows={8} />
           </Field>
           <Field label="Labels" help={LABELS_HELP} error={labelProblem}>
             <LabelEditor
@@ -522,18 +542,20 @@ export const LABELS_HELP =
  */
 export function AddRequestDialog({ open, project, onCancel, onDone }: AddDialogProps) {
   const gate = useTrackerGate();
-  const [title, setTitle] = useState('');
-  const [body, setBody] = useState('');
+  const keptTitle = useKeptText(open ? keptKey(project, 'new-request', 'title') : null);
+  const keptBody = useKeptText(open ? keptKey(project, 'new-request', 'body') : null);
+  const title = keptTitle.text;
+  const body = keptBody.text;
   const [approved, setApproved] = useState(true);
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<LedgerApiError | null>(null);
-  const attacher = useAttachments(project, setBody);
+  const attacher = useAttachments(project, keptBody.update);
   const root = useRef<HTMLDivElement>(null);
 
   const reset = () => {
-    setTitle('');
-    setBody('');
+    keptTitle.set('');
+    keptBody.set('');
     setApproved(true);
     setTouched(false);
     setError(null);
@@ -542,6 +564,15 @@ export function AddRequestDialog({ open, project, onCancel, onDone }: AddDialogP
 
   const close = () => {
     reset();
+    onCancel();
+  };
+
+  // A click away, Esc or the X keeps what was written, for the next time this
+  // is opened; Cancel (above) discards it.
+  const dismiss = () => {
+    setTouched(false);
+    setError(null);
+    attacher.clearError();
     onCancel();
   };
 
@@ -586,7 +617,7 @@ export function AddRequestDialog({ open, project, onCancel, onDone }: AddDialogP
   return (
     <Dialog
       open={open}
-      onClose={close}
+      onClose={dismiss}
       title="Add a request"
       width={720}
       footer={
@@ -611,13 +642,13 @@ export function AddRequestDialog({ open, project, onCancel, onDone }: AddDialogP
             label="Title"
             error={touched && title.trim() === '' ? 'A request needs a title.' : undefined}
           >
-            <Input value={title} onChange={setTitle} invalid={touched && title.trim() === ''} />
+            <Input value={title} onChange={keptTitle.set} invalid={touched && title.trim() === ''} />
           </Field>
           <Field
             label="Request"
             help="Markdown: the idea, and how to prioritise it (at the top, before a ticket, after a gate). The manager breaks it into tickets."
           >
-            <AttachTextarea value={body} onChange={setBody} attacher={attacher} rows={16} />
+            <AttachTextarea value={body} onChange={keptBody.set} attacher={attacher} rows={16} />
           </Field>
           <Checkbox checked={approved} onChange={setApproved} label={START_APPROVED_LABEL} />
           {!gate.ready && <p className={writeStyles.gate}>{TRACKER_IDENTITY_NEEDED}</p>}

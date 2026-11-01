@@ -654,3 +654,12 @@ in `tracker/linkTitles.tsx`, on the titles `useLinkTitles` already reads; *Not f
 cannot be read). `WaitsOn` and `LinkChips` read their ticket targets when drawn, one `GET /tracker/items/{id}` per
 distinct target, keyed on the links so a re-read of the queue does not repeat them. Tests: `trackerLinkTitles.test.tsx`.
 
+## Addendum 2026-11-01: text in a dialogue outlives a click away
+
+A click outside a dialogue, Esc and its X close it without deciding anything, so a note written in any `NoteDialog`
+stays in this browser's `localStorage`, under the project, the record and the action, and comes back when that action is
+next opened on that record, from either page and after a reload. Add ticket and Add request keep their title and body
+the same way. Only **Cancel** or a successful send removes it (`web/app/src/tracker/keptText.ts`).
+
+Edit is deliberately not covered: it diffs against the ticket as it opens, so kept text reopened later would write back
+over whatever changed since. Doing that safely needs a base revision, as the document editor has.

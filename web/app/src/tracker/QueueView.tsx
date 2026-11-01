@@ -757,6 +757,7 @@ function Dashboard({ project }: { project: string }) {
       )}
 
       <AddItemDialog
+        key={`item:${project}`}
         open={adding === 'item'}
         project={project}
         onCancel={() => setAdding(null)}
@@ -766,6 +767,7 @@ function Dashboard({ project }: { project: string }) {
         }}
       />
       <AddRequestDialog
+        key={`request:${project}`}
         open={adding === 'request'}
         project={project}
         onCancel={() => setAdding(null)}

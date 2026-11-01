@@ -155,6 +155,27 @@ describe('drafts on the dashboard', () => {
     expect(server.last(ITEMS, 'POST').body).not.toHaveProperty('draft');
   });
 
+  it('Add request keeps its title and body through a click away, until Cancel', async () => {
+    const user = userEvent.setup();
+    openQueue();
+    await user.click(await screen.findByRole('button', { name: 'Add request' }));
+    let dialog = screen.getByRole('dialog', { name: 'Add a request' });
+    await user.type(within(dialog).getByLabelText('Title'), 'An idea');
+    await user.type(within(dialog).getByLabelText(/^(Request|Body)/), 'The long version');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Add a request' })).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Add request' }));
+    dialog = screen.getByRole('dialog', { name: 'Add a request' });
+    expect(within(dialog).getByLabelText('Title')).toHaveValue('An idea');
+    expect(within(dialog).getByLabelText(/^(Request|Body)/)).toHaveValue('The long version');
+
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await user.click(screen.getByRole('button', { name: 'Add request' }));
+    dialog = screen.getByRole('dialog', { name: 'Add a request' });
+    expect(within(dialog).getByLabelText('Title')).toHaveValue('');
+  });
+
   it('Save as draft on Add request and Add gate sends draft true', async () => {
     const user = userEvent.setup();
     server.on(ITEMS, { body: item('demo-t0030') }, 'POST');
