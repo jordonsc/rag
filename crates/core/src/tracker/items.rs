@@ -8,11 +8,12 @@ use serde_json::{json, Map, Value};
 use sqlx::SqliteConnection;
 
 use super::labels;
-use super::list::{self, Place};
+use super::list::{self, Owner, Place};
+use super::phases::{self, PhaseChange};
 use super::{
     append_event, ensure_project, events_for, given_note, now_iso, refused, require_title,
     validate_link, Actor, Approval, BlockReason, Event, EventKind, Intensity, ItemStatus, ItemType,
-    Link, LinkKind, TResult, TargetKind, TrackerError, TrackerStore, Who,
+    Link, LinkKind, PhaseState, TResult, TargetKind, TrackerError, TrackerStore, Who,
 };
 
 /// Whether an item with this status is in the queue (the linked list).
@@ -95,11 +96,19 @@ pub struct Item {
     /// in [`QueueView::drafts`], never in the queue `tracker_next` or a gate's
     /// batch reads. It keeps its list place, so publishing it puts it there.
     pub draft: bool,
+    /// The phase it belongs to (spec:roadmap D2), kept for life: a released
+    /// ticket still names where it came from.
+    #[serde(rename = "phase")]
+    pub phase_id: Option<String>,
+    /// Held out of the queue in a planned phase (spec:roadmap R6, D2): its
+    /// `prev_id` and `next_id` link it in that phase's list, and only `pending`
+    /// tickets are ever frozen (D4).
+    pub frozen: bool,
     /// The items it waits on while blocked with reason `dependency`, items of
     /// its own project (rag-t0018). Empty otherwise: cleared when it unblocks.
     pub depends_on: Vec<String>,
-    /// Whether the item is in the queue (status `pending`, `in_progress`,
-    /// `failed` or `deferred`).
+    /// Whether the item is in the queue: status `pending`, `in_progress`,
+    /// `failed`, `deferred` or `review`, and not frozen (spec:roadmap D2).
     pub queued: bool,
     pub prev_id: Option<String>,
     pub next_id: Option<String>,
@@ -218,6 +227,9 @@ pub struct QueueView {
     /// Deferred items, in list order, blocked or not (rag-t0017). Each keeps
     /// its place in the list.
     pub deferred: Vec<Item>,
+    /// How many of the project's tickets are frozen in a phase (spec:roadmap
+    /// D20), drafts included. They are in no section above.
+    pub frozen: i64,
 }
 
 /// One row of [`TrackerStore::list_projects`].
@@ -241,6 +253,9 @@ pub struct ProjectSummary {
     /// Items in review, blocked or not (rag-t0024), requests excluded.
     pub review: i64,
     pub done_unacknowledged: i64,
+    /// Tickets frozen in a phase (spec:roadmap D20), drafts included; counted
+    /// under none of the other buckets.
+    pub frozen: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -261,6 +276,8 @@ struct ItemRow {
     release: i64,
     parallel: i64,
     draft: i64,
+    phase_id: Option<String>,
+    frozen: i64,
     prev_id: Option<String>,
     next_id: Option<String>,
     created_at: String,
@@ -270,7 +287,8 @@ struct ItemRow {
 }
 
 const ITEM_COLS: &str = "id, project, type, title, body, status, blocked, block_reason, \
-    block_note, approval, assignee, intensity, release, parallel, draft, prev_id, next_id, \
+    block_note, approval, assignee, intensity, release, parallel, draft, phase_id, frozen, \
+    prev_id, next_id, \
     created_at, \
     updated_at, done_at, acknowledged_at FROM items";
 
@@ -298,8 +316,10 @@ impl ItemRow {
             release: self.release != 0,
             parallel: self.parallel != 0,
             draft: self.draft != 0,
+            phase_id: self.phase_id,
+            frozen: self.frozen != 0,
             depends_on,
-            queued: queued_status(status),
+            queued: queued_status(status) && self.frozen == 0,
             prev_id: self.prev_id,
             next_id: self.next_id,
             links,
@@ -309,6 +329,17 @@ impl ItemRow {
             done_at: self.done_at,
             acknowledged_at: self.acknowledged_at,
         })
+    }
+}
+
+impl Item {
+    /// The list holding this ticket's links: its phase's while it is frozen, else
+    /// the queue (spec:roadmap D2).
+    pub(super) fn owner(&self) -> Owner<'_> {
+        match (self.frozen, self.phase_id.as_deref()) {
+            (true, Some(phase)) => Owner::Phase(phase),
+            _ => Owner::Queue(&self.project),
+        }
     }
 }
 
@@ -359,17 +390,21 @@ async fn must_item(conn: &mut SqliteConnection, id: &str) -> TResult<Item> {
         .ok_or_else(|| TrackerError::NotFound(format!("no ticket {id:?}")))
 }
 
-/// Load many items by id with their links, in one query each.
-async fn load_items(
+/// Load many items by id with their links, in one query each. `where_sql` may
+/// hold one further `?`, bound to `arg`: a caller's value (a phase id) reaches SQL
+/// by a bind, never by `format!`.
+pub(super) async fn load_items(
     conn: &mut SqliteConnection,
     project: &str,
     where_sql: &str,
+    arg: Option<&str>,
 ) -> TResult<Vec<Item>> {
-    let rows =
-        sqlx::query_as::<_, ItemRow>(&format!("SELECT {ITEM_COLS} WHERE project = ? {where_sql}"))
-            .bind(project)
-            .fetch_all(&mut *conn)
-            .await?;
+    let sql = format!("SELECT {ITEM_COLS} WHERE project = ? {where_sql}");
+    let mut q = sqlx::query_as::<_, ItemRow>(&sql).bind(project);
+    if let Some(arg) = arg {
+        q = q.bind(arg);
+    }
+    let rows = q.fetch_all(&mut *conn).await?;
     let link_rows: Vec<(String, String, String)> = sqlx::query_as(
         "SELECT l.item_id, l.kind, l.target FROM item_links l JOIN items i ON i.id = l.item_id \
          WHERE i.project = ? ORDER BY l.kind, l.target",
@@ -420,6 +455,7 @@ const DESCRIBED: &[&str] = &[
     "parallel",
     "labels",
     "draft",
+    "frozen",
     "type",
 ];
 
@@ -545,6 +581,46 @@ pub(super) async fn request_link_problems(
         ));
     }
     Ok(problems)
+}
+
+/// Why a request cannot have a phase (spec:roadmap D4).
+const REQUEST_NO_PHASE: &str =
+    "a request cannot have a phase: it is the owner's idea, never dispatched";
+
+/// Refuse to freeze a ticket that is not `pending` (spec:roadmap D4).
+fn freezable(item: &Item) -> TResult<()> {
+    match item.status {
+        ItemStatus::Pending => Ok(()),
+        ItemStatus::Deferred => refused(format!(
+            "{} is deferred: only a pending ticket can be frozen: resume it first",
+            item.id
+        )),
+        status => refused(format!(
+            "{} is {status}: only a pending ticket can be frozen",
+            item.id
+        )),
+    }
+}
+
+/// What a [`TrackerStore::set_item_phase`] does to a ticket.
+enum PhaseWrite {
+    /// Into this planned phase's list, from the queue or another phase's.
+    Freeze(String),
+    /// To the queue's tail, unfrozen, linked to this phase or to none.
+    Thaw(Option<String>),
+    /// Only the link: the ticket stays where it is.
+    Link(Option<String>),
+}
+
+/// Keep the items carrying `label` (matched case-insensitively, rag-t0027; a
+/// blank one is no filter).
+pub(super) fn retain_label(items: &mut Vec<Item>, label: Option<&str>) {
+    let wanted = label
+        .map(|l| labels::label_key(&l.split_whitespace().collect::<Vec<_>>().join(" ")))
+        .filter(|k| !k.is_empty());
+    if let Some(key) = wanted {
+        items.retain(|i| i.labels.iter().any(|l| labels::label_key(l) == key));
+    }
 }
 
 /// Why a gate cannot be parallel (rag-t0013).
@@ -800,6 +876,28 @@ impl TrackerStore {
     /// Create an item (D3). It joins the queue at `place` (normally the bottom);
     /// its id is `<project>-t<seq:04>`, the sequence per project and never reused.
     pub async fn create_item(&self, new: NewItem, actor: &Actor) -> TResult<ItemRecord> {
+        self.create(new, None, actor).await
+    }
+
+    /// Create a ticket in a phase (spec:roadmap D7, D16). In a planned phase it is
+    /// frozen, and `new.place` names a place in that phase's list; in a released
+    /// one it joins the queue at `new.place` as a normal ticket, linked; in an
+    /// archived one, or as a request, it is refused. It may be a draft either way.
+    pub async fn create_item_in_phase(
+        &self,
+        new: NewItem,
+        phase_id: &str,
+        actor: &Actor,
+    ) -> TResult<ItemRecord> {
+        self.create(new, Some(phase_id), actor).await
+    }
+
+    async fn create(
+        &self,
+        new: NewItem,
+        phase: Option<&str>,
+        actor: &Actor,
+    ) -> TResult<ItemRecord> {
         let who = actor.validated()?;
         let title = require_title(&new.title)?;
         match new.item_type {
@@ -845,6 +943,28 @@ impl TrackerStore {
         let now = now_iso();
         let mut tx = self.write_tx().await?;
         ensure_project(&mut tx, &new.project, &now).await?;
+        let mut frozen = false;
+        if let Some(p) = phase {
+            let found = phases::must_phase(&mut tx, p).await?;
+            if found.project != new.project {
+                return refused(format!(
+                    "phase {p} belongs to project {}, not {}",
+                    found.project, new.project
+                ));
+            }
+            if new.item_type == ItemType::Request {
+                return refused(REQUEST_NO_PHASE);
+            }
+            match found.state {
+                PhaseState::Planned => frozen = true,
+                PhaseState::Released => {}
+                PhaseState::Archived => {
+                    return refused(format!(
+                        "phase {p} is archived: unarchive it to add a ticket"
+                    ))
+                }
+            }
+        }
         let seq: i64 = sqlx::query_scalar(
             "UPDATE projects SET item_seq = item_seq + 1 WHERE name = ? RETURNING item_seq",
         )
@@ -855,8 +975,8 @@ impl TrackerStore {
 
         sqlx::query(
             "INSERT INTO items (id, project, seq, type, title, body, status, approval, assignee, \
-             intensity, release, parallel, draft, created_at, updated_at) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             intensity, release, parallel, draft, phase_id, frozen, created_at, updated_at) \
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(&id)
         .bind(&new.project)
@@ -871,6 +991,8 @@ impl TrackerStore {
         .bind(new.release as i64)
         .bind(new.parallel as i64)
         .bind(new.draft as i64)
+        .bind(phase)
+        .bind(frozen as i64)
         .bind(&now)
         .bind(&now)
         .execute(&mut *tx)
@@ -896,7 +1018,11 @@ impl TrackerStore {
                 .await?;
         }
 
-        list::link_at(&mut tx, &new.project, &id, &new.place).await?;
+        let owner = match phase.filter(|_| frozen) {
+            Some(p) => Owner::Phase(p),
+            None => Owner::Queue(&new.project),
+        };
+        list::link_at(&mut tx, &owner, &id, &new.place).await?;
 
         let item_labels =
             labels::in_project_casing(&mut tx, &new.project, &id, given_labels).await?;
@@ -917,6 +1043,12 @@ impl TrackerStore {
         });
         if new.draft {
             fields["draft"] = json!(true);
+        }
+        if let Some(p) = phase {
+            fields["phase"] = json!(p);
+        }
+        if frozen {
+            fields["frozen"] = json!(true);
         }
         let body = note.unwrap_or_else(|| {
             let what = if new.draft { "draft " } else { "" };
@@ -997,6 +1129,15 @@ impl TrackerStore {
         let mut blocked = item.blocked;
         let mut status_unblocked = false;
         if let Some(to) = upd.status.filter(|s| *s != item.status) {
+            // Spec:roadmap D5: a frozen ticket is out of the queue, so no status
+            // but the two that close it is open to it.
+            if item.frozen && !matches!(to, ItemStatus::Done | ItemStatus::Cancelled) {
+                return refused(format!(
+                    "{id} is frozen in phase {} and can only go to done or cancelled: pull it to \
+                     the queue first",
+                    item.phase_id.as_deref().unwrap_or("(none)")
+                ));
+            }
             if !transition_allowed(item.status, to) {
                 return refused(format!(
                     "{id} cannot go from {} to {to} (allowed: pending <-> in_progress, pending|in_progress -> done|failed, \
@@ -1009,7 +1150,16 @@ impl TrackerStore {
             let was_queued = queued_status(item.status);
             let now_queued = queued_status(to);
             if was_queued && !now_queued {
-                list::unlink(&mut tx, &project, id).await?;
+                list::unlink(&mut tx, &item.owner(), id).await?;
+                if item.frozen {
+                    // It leaves the phase's list and keeps its link; the event
+                    // says it thawed, so it is stamped (spec:roadmap D5, D17).
+                    sqlx::query("UPDATE items SET frozen = 0 WHERE id = ?")
+                        .bind(id)
+                        .execute(&mut *tx)
+                        .await?;
+                    fields.insert("frozen".into(), json!(false));
+                }
                 if item.blocked {
                     // Work that has left the queue is no longer waiting on anything.
                     sqlx::query("UPDATE items SET blocked = 0, block_reason = NULL, block_note = NULL WHERE id = ?")
@@ -1023,7 +1173,7 @@ impl TrackerStore {
             } else if !was_queued && now_queued {
                 // A reopen: back into the queue at the top, where reopened work
                 // usually belongs (D5). The owner moves it from there.
-                list::link_at(&mut tx, &project, id, &Place::Top).await?;
+                list::link_at(&mut tx, &Owner::Queue(&project), id, &Place::Top).await?;
             }
             let done_at = match to {
                 ItemStatus::Done => Some(now.clone()),
@@ -1403,8 +1553,181 @@ impl TrackerStore {
             .ok_or_else(|| TrackerError::Internal("item vanished after update".into()))
     }
 
+    /// Set, clear, freeze or thaw a ticket's phase (spec:roadmap D8, D9), in one
+    /// transaction with one event: `move` when a list changed, `link` when only the
+    /// link did, and stamped as a roadmap change either way (D17). A note is
+    /// optional; a change to what already stands is refused.
+    ///
+    /// * Into a planned phase: only a `pending` ticket (D4), or one frozen in
+    ///   another phase; it joins the phase's tail, frozen.
+    /// * Into a released phase: only the link is written, whatever the status, so
+    ///   the ticket keeps its place; one frozen elsewhere joins the queue's tail.
+    /// * Into an archived phase: refused, as is any change to a request.
+    /// * [`PhaseChange::Clear`]: a frozen ticket joins the queue's tail; an unfrozen
+    ///   one stays where it is.
+    /// * [`PhaseChange::Frozen`]: `false` pulls a frozen ticket to the queue's tail,
+    ///   keeping its link; `true` re-freezes a `pending` one whose own phase is
+    ///   planned.
+    pub async fn set_item_phase(
+        &self,
+        id: &str,
+        change: PhaseChange,
+        note: Option<&str>,
+        actor: &Actor,
+    ) -> TResult<ItemRecord> {
+        let who = actor.validated()?;
+        let now = now_iso();
+        let mut tx = self.write_tx().await?;
+        let item = must_item(&mut tx, id).await?;
+        if item.item_type == ItemType::Request {
+            return refused(REQUEST_NO_PHASE);
+        }
+        let nothing = format!("nothing to update on {id}: its phase already stands so");
+        let write = match change {
+            PhaseChange::Set(p) => {
+                let phase = phases::must_phase(&mut tx, &p).await?;
+                if phase.project != item.project {
+                    return refused(format!(
+                        "phase {p} belongs to project {}, not {}",
+                        phase.project, item.project
+                    ));
+                }
+                let same = item.phase_id.as_deref() == Some(p.as_str());
+                match phase.state {
+                    PhaseState::Archived => {
+                        return refused(format!(
+                            "phase {p} is archived: unarchive it to add a ticket"
+                        ))
+                    }
+                    PhaseState::Planned if item.frozen && same => return refused(nothing),
+                    PhaseState::Planned => {
+                        if !item.frozen {
+                            freezable(&item)?;
+                        }
+                        PhaseWrite::Freeze(p)
+                    }
+                    PhaseState::Released if item.frozen => PhaseWrite::Thaw(Some(p)),
+                    PhaseState::Released if same => return refused(nothing),
+                    PhaseState::Released => PhaseWrite::Link(Some(p)),
+                }
+            }
+            PhaseChange::Clear if item.frozen => PhaseWrite::Thaw(None),
+            PhaseChange::Clear if item.phase_id.is_none() => return refused(nothing),
+            PhaseChange::Clear => PhaseWrite::Link(None),
+            PhaseChange::Frozen(false) if item.frozen => PhaseWrite::Thaw(item.phase_id.clone()),
+            PhaseChange::Frozen(false) => return refused(nothing),
+            PhaseChange::Frozen(true) if item.frozen => return refused(nothing),
+            PhaseChange::Frozen(true) => {
+                freezable(&item)?;
+                let Some(own) = item.phase_id.clone() else {
+                    return refused(format!("{id} has no phase to freeze in"));
+                };
+                let phase = phases::must_phase(&mut tx, &own).await?;
+                if phase.state != PhaseState::Planned {
+                    return refused(format!(
+                        "phase {own} is {}: only a planned phase holds frozen tickets",
+                        phase.state
+                    ));
+                }
+                PhaseWrite::Freeze(own)
+            }
+        };
+
+        // Unlink, relink and update the row before the event, which reads the
+        // row for its stamp and its spans.
+        let (linked, frozen, listed) = match &write {
+            PhaseWrite::Freeze(p) => {
+                list::unlink(&mut tx, &item.owner(), id).await?;
+                sqlx::query("UPDATE items SET phase_id = ?, frozen = 1 WHERE id = ?")
+                    .bind(p)
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
+                list::link_at(&mut tx, &Owner::Phase(p), id, &Place::Bottom).await?;
+                (Some(p.clone()), true, true)
+            }
+            PhaseWrite::Thaw(p) => {
+                list::unlink(&mut tx, &item.owner(), id).await?;
+                sqlx::query("UPDATE items SET phase_id = ?, frozen = 0 WHERE id = ?")
+                    .bind(p)
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
+                list::link_at(&mut tx, &Owner::Queue(&item.project), id, &Place::Bottom).await?;
+                (p.clone(), false, true)
+            }
+            PhaseWrite::Link(p) => {
+                sqlx::query("UPDATE items SET phase_id = ? WHERE id = ?")
+                    .bind(p)
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
+                (p.clone(), false, false)
+            }
+        };
+        let mut fields = Map::new();
+        if linked != item.phase_id {
+            fields.insert("phase".into(), opt_str(&linked));
+        }
+        if frozen != item.frozen {
+            fields.insert("frozen".into(), json!(frozen));
+        }
+        if listed {
+            let prev_id: Option<String> =
+                sqlx::query_scalar("SELECT prev_id FROM items WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            fields.insert("prev_id".into(), opt_str(&prev_id));
+        }
+        let old = item.phase_id.as_deref().unwrap_or("(none)");
+        let said = match (&write, &linked) {
+            (PhaseWrite::Freeze(p), _) if item.frozen => format!("Moved to phase {p}."),
+            (PhaseWrite::Freeze(p), _) => format!("Frozen in {p}."),
+            (PhaseWrite::Thaw(_), None) | (PhaseWrite::Link(_), None) => {
+                format!("Removed from {old}.")
+            }
+            (PhaseWrite::Thaw(_), Some(_)) if linked == item.phase_id => {
+                "Pulled to the queue.".to_string()
+            }
+            (PhaseWrite::Thaw(_), Some(p)) => format!("Moved to phase {p}."),
+            (PhaseWrite::Link(_), Some(p)) => format!("Linked to phase {p}."),
+        };
+        let body = given_note(note).unwrap_or(said);
+        let kind = if listed {
+            EventKind::Move
+        } else {
+            EventKind::Link
+        };
+        let before = Value::Object(prior_values(&item, &fields));
+        let fields = Value::Object(fields);
+        sqlx::query("UPDATE items SET updated_at = ? WHERE id = ?")
+            .bind(&now)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        append_event(
+            &mut tx,
+            &item.project,
+            TargetKind::Item,
+            id,
+            &who,
+            kind,
+            &body,
+            &fields,
+            Some(&before),
+            &now,
+        )
+        .await?;
+        self.commit(tx).await?;
+        self.get_item(id, true)
+            .await?
+            .ok_or_else(|| TrackerError::Internal("item vanished after a phase write".into()))
+    }
+
     /// Move a queued item (D5): `before` or `after` another queued item of the
-    /// same project, or to the `top` or `bottom`. One transaction, one event.
+    /// same project, or to the `top` or `bottom`; or a frozen ticket, likewise
+    /// within its phase (spec:roadmap D10). One transaction, one event.
     pub async fn move_item(
         &self,
         id: &str,
@@ -1416,7 +1739,7 @@ impl TrackerStore {
         let now = now_iso();
         let mut tx = self.write_tx().await?;
         let item = must_item(&mut tx, id).await?;
-        if !item.queued {
+        if !item.queued && !item.frozen {
             return refused(format!(
                 "{id} is {} and not in the queue; only a queued ticket moves",
                 item.status
@@ -1428,8 +1751,9 @@ impl TrackerStore {
                 return refused(format!("cannot move {id} relative to itself"));
             }
         }
-        list::unlink(&mut tx, &item.project, id).await?;
-        list::link_at(&mut tx, &item.project, id, &place).await?;
+        let owner = item.owner();
+        list::unlink(&mut tx, &owner, id).await?;
+        list::link_at(&mut tx, &owner, id, &place).await?;
         // Where it now sits, by its new neighbour (rag-t0038): `null` is the top.
         let prev_id: Option<String> = sqlx::query_scalar("SELECT prev_id FROM items WHERE id = ?")
             .bind(id)
@@ -1516,13 +1840,15 @@ impl TrackerStore {
             .bind(project)
             .fetch_optional(&mut *conn)
             .await?;
-        let order = list::walk(&mut conn, project).await?;
+        let order = list::walk(&mut conn, &Owner::Queue(project)).await?;
         let mut items: HashMap<String, Item> = load_items(
             &mut conn,
             project,
             &format!(
-                "AND (status IN {QUEUED_IN} OR (status = 'done' AND acknowledged_at IS NULL))"
+                "AND frozen = 0 AND (status IN {QUEUED_IN} \
+                 OR (status = 'done' AND acknowledged_at IS NULL))"
             ),
+            None,
         )
         .await?
         .into_iter()
@@ -1561,6 +1887,11 @@ impl TrackerStore {
                 .cmp(&b.done_at)
                 .then_with(|| item_seq(&a.id).cmp(&item_seq(&b.id)))
         });
+        let frozen: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM items WHERE project = ? AND frozen = 1")
+                .bind(project)
+                .fetch_one(&mut *conn)
+                .await?;
         Ok(QueueView {
             project: project.to_string(),
             exists: exists.is_some(),
@@ -1571,12 +1902,14 @@ impl TrackerStore {
             queue,
             blocked,
             deferred,
+            frozen,
         })
     }
 
-    /// Every item of `project`, optionally only those with `status` and only
-    /// those carrying `label` (matched case-insensitively, rag-t0027; a blank one
-    /// is no filter), oldest first.
+    /// Every item of `project` that is not frozen (spec:roadmap D20; a phase's are
+    /// read with [`TrackerStore::list_phase_items`]), optionally only those with
+    /// `status` and only those carrying `label` (matched case-insensitively,
+    /// rag-t0027; a blank one is no filter), oldest first.
     pub async fn list_items(
         &self,
         project: &str,
@@ -1589,34 +1922,32 @@ impl TrackerStore {
                 load_items(
                     &mut conn,
                     project,
-                    &format!("AND status = '{}'", s.as_str()),
+                    &format!("AND frozen = 0 AND status = '{}'", s.as_str()),
+                    None,
                 )
                 .await?
             }
-            None => load_items(&mut conn, project, "").await?,
+            None => load_items(&mut conn, project, "AND frozen = 0", None).await?,
         };
-        let wanted = label
-            .map(|l| labels::label_key(&l.split_whitespace().collect::<Vec<_>>().join(" ")))
-            .filter(|k| !k.is_empty());
-        if let Some(key) = wanted {
-            items.retain(|i| i.labels.iter().any(|l| labels::label_key(l) == key));
-        }
+        retain_label(&mut items, label);
         items.sort_by_key(|i| item_seq(&i.id));
         Ok(items)
     }
 
-    /// Every project the tracker knows, by name, with its counts.
+    /// Every project the tracker knows, by name, with its counts. A frozen ticket
+    /// is in none of the queue's buckets (spec:roadmap D20), only in `frozen`.
     pub async fn list_projects(&self) -> TResult<Vec<ProjectSummary>> {
-        type Row = (String, String, i64, i64, i64, i64, i64, i64, i64);
+        type Row = (String, String, i64, i64, i64, i64, i64, i64, i64, i64);
         let rows: Vec<Row> = sqlx::query_as(&format!(
             "SELECT p.name, p.created_at, \
-               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.status IN {QUEUED_IN}), \
-               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.draft = 0 AND i.type = 'request' AND i.status IN {QUEUED_IN}), \
-               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.draft = 1 AND i.status IN {QUEUED_IN}), \
-               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.draft = 0 AND i.type <> 'request' AND i.blocked = 1 AND i.status IN ('pending','in_progress','failed')), \
-               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.draft = 0 AND i.type <> 'request' AND i.status = 'deferred'), \
-               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.draft = 0 AND i.type <> 'request' AND i.status = 'review'), \
-               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.status = 'done' AND i.acknowledged_at IS NULL) \
+               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.frozen = 0 AND i.status IN {QUEUED_IN}), \
+               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.frozen = 0 AND i.draft = 0 AND i.type = 'request' AND i.status IN {QUEUED_IN}), \
+               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.frozen = 0 AND i.draft = 1 AND i.status IN {QUEUED_IN}), \
+               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.frozen = 0 AND i.draft = 0 AND i.type <> 'request' AND i.blocked = 1 AND i.status IN ('pending','in_progress','failed')), \
+               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.frozen = 0 AND i.draft = 0 AND i.type <> 'request' AND i.status = 'deferred'), \
+               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.frozen = 0 AND i.draft = 0 AND i.type <> 'request' AND i.status = 'review'), \
+               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.status = 'done' AND i.acknowledged_at IS NULL), \
+               (SELECT COUNT(*) FROM items i WHERE i.project = p.name AND i.frozen = 1) \
              FROM projects p ORDER BY p.name",
         ))
         .fetch_all(&self.pool)
@@ -1634,6 +1965,7 @@ impl TrackerStore {
                     deferred,
                     review,
                     done_unacknowledged,
+                    frozen,
                 )| {
                     ProjectSummary {
                         name,
@@ -1645,6 +1977,7 @@ impl TrackerStore {
                         deferred,
                         review,
                         done_unacknowledged,
+                        frozen,
                     }
                 },
             )
@@ -1653,7 +1986,7 @@ impl TrackerStore {
 }
 
 /// The sequence number in an item id (`ubu-t0042` → 42), for stable ordering.
-fn item_seq(id: &str) -> i64 {
+pub(super) fn item_seq(id: &str) -> i64 {
     id.rsplit_once("-t")
         .and_then(|(_, n)| n.parse().ok())
         .unwrap_or(0)

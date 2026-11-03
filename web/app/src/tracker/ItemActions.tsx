@@ -17,12 +17,13 @@ import {
 
 import { asApiError, isAbort, type LedgerApiError } from '../api';
 import writeStyles from '../writes/writes.module.css';
-import { listItems, updateItem } from './api';
+import { listItems, setItemPhase, updateItem } from './api';
 import { AttachTextarea, useAttachments } from './attach';
 import {
   ApprovalDialog,
   LABELS_HELP,
   MakeDraftDialog,
+  MovePhaseDialog,
   NoteDialog,
   PARALLEL_LABEL,
   PublishDialog,
@@ -50,7 +51,7 @@ import {
   blockReasonLabel,
   intensityLabel,
   linkKindLabel,
-  nextStatuses,
+  offeredStatuses,
   transitionLabel,
 } from './vocab';
 
@@ -68,6 +69,9 @@ type Open =
   | 'withdraw'
   | 'publish'
   | 'makeDraft'
+  | 'pull'
+  | 'removePhase'
+  | 'movePhase'
   | 'edit';
 
 export interface ItemActionsProps {
@@ -91,11 +95,18 @@ const REASON_OPTIONS = BLOCK_REASONS.map((value) => ({ value, label: blockReason
  * the web an approval is the **owner's** (`owner`), or the owner's
  * **ratification** of an agent's (`agent` → `ratified`), D10. Nothing is
  * hidden when no identity is set: pressing opens the prompt.
+ *
+ * **A frozen ticket** (spec:roadmap RM-48) has `queued` false, so what reads
+ * `queued` here reads `frozen` beside it: its block and its draft are its own
+ * (D6, D16), while its status goes only to done or cancelled (D5), which takes
+ * Defer with it. A ticket that is not a request can **Move to phase**; one with
+ * a phase, **Remove from phase**; a frozen one, **Pull to queue**.
  */
 export function ItemActions({ item, onWritten }: ItemActionsProps) {
   const gate = useTrackerGate();
   const [open, setOpen] = useState<Open | null>(null);
-  const statuses = nextStatuses(item.status);
+  const statuses = offeredStatuses(item);
+  const frozen = item.frozen === true;
   const [status, setStatus] = useState<ItemStatus | ''>('');
   const [reason, setReason] = useState<BlockReason>('review');
   // Block with reason dependency (rag-t0018): the items it waits on, chosen
@@ -108,8 +119,24 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
       return undefined;
     }
     const controller = new AbortController();
-    listItems(item.project, undefined, controller.signal)
-      .then((response) => setCandidates(dependencyCandidates(item, response.items)))
+    // `GET /items` leaves frozen tickets out, and a phase's own are the common
+    // dependency (D6), so a ticket with a phase reads them too. Their failure
+    // leaves the rest on offer.
+    const phase = item.phase ?? '';
+    Promise.all([
+      listItems(item.project, undefined, controller.signal),
+      phase === ''
+        ? { items: [] }
+        : listItems(item.project, { phase }, controller.signal).catch((error: unknown) => {
+            if (isAbort(error)) {
+              throw error;
+            }
+            return { items: [] };
+          }),
+    ])
+      .then(([listed, ofPhase]) =>
+        setCandidates(dependencyCandidates(item, mergeById(listed.items, ofPhase.items))),
+      )
       .catch((error: unknown) => {
         if (!isAbort(error)) {
           // Without the list the picker offers nothing; the server still
@@ -164,7 +191,7 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
             Status…
           </Button>
         )}
-        {item.queued &&
+        {(item.queued || frozen) &&
           (item.blocked ? (
             <Button size="sm" variant="caution" onClick={show('unblock')}>
               <Icon name="lock-open" size={14} />
@@ -206,7 +233,7 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
             Withdraw approval
           </Button>
         )}
-        {item.draft !== true && item.queued && (
+        {item.draft !== true && (item.queued || frozen) && (
           <Button size="sm" variant="ghost" onClick={show('makeDraft')}>
             <Icon name="eye-off" size={14} />
             Make draft
@@ -218,6 +245,27 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
         </Button>
         {!gate.ready && <span className={writeStyles.gate}>{TRACKER_IDENTITY_NEEDED}</span>}
       </div>
+      {/* A request can never have a phase (D4): it is the owner's idea. */}
+      {item.type !== 'request' && (
+        <div className={writeStyles.actions} role="group" aria-label="Phase">
+          {frozen && (
+            <Button size="sm" onClick={show('pull')}>
+              <Icon name="list-todo" size={14} />
+              Pull to queue
+            </Button>
+          )}
+          <Button size="sm" onClick={show('movePhase')}>
+            <Icon name="map" size={14} />
+            Move to phase…
+          </Button>
+          {item.phase !== undefined && item.phase !== null && item.phase !== '' && (
+            <Button size="sm" variant="ghost" onClick={show('removePhase')}>
+              <Icon name="x" size={14} />
+              Remove from phase
+            </Button>
+          )}
+        </div>
+      )}
       {/* The owner's verdict on work in review, on a row of its own under the
           rest: Confirm in the done green, Send back in the blocked amber
           (rag-t0041). */}
@@ -257,7 +305,14 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
         }
         onDone={done}
       >
-        <Field label="New status">
+        <Field
+          label="New status"
+          help={
+            frozen
+              ? 'While it is frozen, only these: pull it to the queue first for any other.'
+              : undefined
+          }
+        >
           <Select
             value={status}
             onChange={(value) => setStatus(value as ItemStatus)}
@@ -271,10 +326,14 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
         title="Block this ticket"
         subject={subject}
         message={
-          <p>
-            It moves to Blocked on the dashboard and keeps its place in the queue, so unblocking
-            puts it back where it was.
-          </p>
+          frozen ? (
+            <p>It stays frozen and keeps its place in the phase; the block goes with it.</p>
+          ) : (
+            <p>
+              It moves to Blocked on the dashboard and keeps its place in the queue, so unblocking
+              puts it back where it was.
+            </p>
+          )
         }
         confirmLabel="Block"
         onCancel={close}
@@ -326,7 +385,13 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
         open={open === 'unblock'}
         title="Unblock this ticket?"
         subject={subject}
-        message={<p>It goes back into the queue at the place it kept while blocked.</p>}
+        message={
+          frozen ? (
+            <p>It stays frozen, in its place in the phase.</p>
+          ) : (
+            <p>It goes back into the queue at the place it kept while blocked.</p>
+          )
+        }
         confirmLabel="Unblock"
         onCancel={close}
         onSubmit={send({ blocked: false })}
@@ -415,6 +480,40 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
         onCancel={close}
         onDone={done}
       />
+      <NoteDialog
+        project={item.project}
+        open={open === 'pull'}
+        title="Pull this ticket to the queue?"
+        subject={subject}
+        message={
+          <p>
+            It joins the bottom of the queue, unfrozen, and keeps its link to the phase. Agents find
+            it on their next look at the queue; no notice is sent.
+          </p>
+        }
+        confirmLabel="Pull to queue"
+        onCancel={close}
+        onSubmit={(note, fields) => setItemPhase(item.id, { frozen: false, note }, fields)}
+        onDone={done}
+      />
+      <NoteDialog
+        project={item.project}
+        open={open === 'removePhase'}
+        title="Remove this ticket from its phase?"
+        subject={subject}
+        message={
+          frozen ? (
+            <p>It joins the bottom of the queue, unfrozen, and no longer names the phase.</p>
+          ) : (
+            <p>It stays where it is and no longer names the phase.</p>
+          )
+        }
+        confirmLabel="Remove from phase"
+        onCancel={close}
+        onSubmit={(note, fields) => setItemPhase(item.id, { phase: '', note }, fields)}
+        onDone={done}
+      />
+      {open === 'movePhase' && <MovePhaseDialog item={item} onCancel={close} onDone={done} />}
       {open === 'edit' && (
         <EditItemDialog item={item} onCancel={close} onDone={done} onSavedInPlace={onWritten} />
       )}
@@ -490,11 +589,20 @@ export function editBody(
 
 /**
  * What a dependency block may wait on (rag-t0018): the project's other
- * queued items, in id order. Done and cancelled items are left out: there is
+ * queued items, in id order, and frozen ones (spec:roadmap D6: a dependency
+ * works across the boundary). Done and cancelled items are left out: there is
  * nothing to wait for in either.
  */
 export function dependencyCandidates(item: Item, items: readonly Item[]): Item[] {
-  return items.filter((candidate) => candidate.id !== item.id && candidate.queued);
+  return items.filter(
+    (candidate) => candidate.id !== item.id && (candidate.queued || candidate.frozen === true),
+  );
+}
+
+/** Two lists as one: each ticket once, the first list's order first. */
+function mergeById(first: readonly Item[], second: readonly Item[]): Item[] {
+  const seen = new Set(first.map((item) => item.id));
+  return [...first, ...second.filter((item) => !seen.has(item.id))];
 }
 
 interface EditItemDialogProps {

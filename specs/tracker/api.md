@@ -42,9 +42,10 @@ Conventions
 * **One write, one event.** Every write appends exactly one event to the record it changes (creating a spec with
   milestones appends one `create` event to each record it creates: the spec, each milestone, each document).
   An update that changes nothing is refused unless it carries a non-blank note, which is then recorded as a `note`
-  event (**Add note**: the one write a note is required for).
+  event (**Add note**: the one write a note is required for). A phase's **release** and **recall** append one event
+  to each ticket they move and then one to the phase, in one transaction (see *Phases and the roadmap*).
 * **Timestamps** are RFC 3339 UTC to the second (`2026-10-27T06:25:33Z`).
-* **History.** Record reads (`GET` a ticket, document, spec, milestone or concept) include `events`, oldest first.
+* **History.** Record reads (`GET` a ticket, document, spec, milestone, concept or phase) include `events`, oldest first.
   `?history=false` returns the record with `"events": []`. The MCP `tracker_get` sends `history=false` unless the agent asks for the
   history (`history: true`, or `history: N` for the last N, trimmed on the MCP side; rag-t0039).
 
@@ -54,7 +55,7 @@ Every error is JSON: `{"error": "<message for a person>"}`.
 | Status | When |
 |---|---|
 | 400 | Refused: a malformed body or query, an unknown field, a bad enum value, a disallowed transition, an update with nothing to change and no note, a taken path, a bad link target. The message says which |
-| 404 | The record does not exist (ticket, document, revision, spec, milestone, concept, attachment) |
+| 404 | The record does not exist (ticket, document, revision, spec, milestone, concept, attachment, phase; a phase named under another project does not exist there) |
 | 409 | A document edit, write or restore named a `base_revision` that is no longer current. Body: `{"error", "current_revision": <int>, "current": <Document view, events omitted>}` so a client can show the newer text without another request. Nothing was written |
 | 503 | The tracker store did not open on this server (`/info` reports `"tracker_ready": false`) |
 | 500 | Storage failure |
@@ -71,7 +72,9 @@ An unmatched path under `/tracker/` is a 404.
 | `intensity` (gates) | `quick`, `standard`, `full` |
 | `approval` | `unapproved`, `agent`, `ratified`, `owner` |
 | `surface` | `web`, `mcp` |
-| event `kind` | `note`, `create`, `status`, `block`, `unblock`, `approve`, `move`, `edit`, `link`, `assign`, `acknowledge`, `rename` |
+| event `kind` | `note`, `create`, `status`, `block`, `unblock`, `approve`, `move`, `edit`, `link`, `assign`, `acknowledge`, `rename`, `release`, `recall` (spec:roadmap D18: a phase's, each the one frame its write sends) |
+| event target kind (`target_kind` on the feed) | `item`, `spec`, `milestone`, `concept`, `document`, `phase` |
+| phase `state` | `planned` (on the roadmap, its tickets frozen), `released` (its tickets have joined the queue, and keep their link), `archived` (out of the roadmap). `complete` is derived, never a state (D15) |
 | spec `state` | `draft`, `ready`, `in_development`, `done`, `superseded` |
 | milestone `state` | `not_started`, `in_progress`, `done` |
 | concept `state` | `open`, `refining`, `refined`, `archived` |
@@ -84,6 +87,7 @@ An unmatched path under `/tracker/` is a 404.
   reading an unknown project returns empty lists.
 * **Ticket id**: `<project>-t<seq:04>` (`ubu-t0042`), minted by the server, never reused.
 * **Document id**: `<project>-d<seq:04>` (`ubu-d0007`).
+* **Phase id**: `<project>-p<seq:04>` (`ubu-p0001`), minted by the server, never reused.
 * **Slugs** (spec, concept) and **milestone codes**: lowercase letters, digits and `-`, starting with a letter or
   digit (`tracker`, `power-generation`, `m03`).
 * **Document path**: relative, `/`-separated segments of letters, digits, `.`, `_`, `-` (no `.` or `..`), ending in
@@ -120,6 +124,8 @@ Records
   "parallel": false,
   "draft": false,
   "depends_on": [],
+  "phase": null,
+  "frozen": false,
   "queued": true,
   "prev_id": "ubu-t0041",
   "next_id": null,
@@ -132,8 +138,20 @@ Records
   "events": [ Event, … ]
 }
 ```
-* `queued` is true for `pending`, `in_progress`, `failed`, `deferred` and `review`: the ticket is in the linked list
-  and `prev_id` / `next_id` are its neighbours (`null` at an end). Done and cancelled tickets have both `null`.
+* `queued` means **in the queue's list**: true for `pending`, `in_progress`, `failed`, `deferred` and `review`, unless
+  it is frozen, and `prev_id` / `next_id` are then its neighbours (`null` at an end). **False while frozen**, with
+  `prev_id` / `next_id` its neighbours in the phase's list. Done and cancelled tickets have both `null`.
+* **`phase`** (spec:roadmap R4, D2): the id of the phase it belongs to, `null` for none. **Kept for life**: a released
+  ticket still names its phase, and so does a frozen one taken to done or cancelled. It is cleared only by a write
+  that says so (`phase: ""`). A request never has one (D4).
+* **`frozen`** (spec:roadmap R6, D4–D6): held out of the queue in a planned phase, and in **no queue figure**
+  (D20): not in the queue view's lists, `tracker_next`, a gate's batch, the counts, a label's `queued`, or
+  `GET …/items` without `?phase=`. Its events are **roadmap events** (see Event). Only a `pending` ticket can be frozen,
+  blocked or not (D4; a deferred one is resumed first). **Its status moves only to `done` or `cancelled`**, which
+  clears `frozen` and takes it off the phase's list, keeping `phase`; any other status is 400, naming "pull it to the
+  queue first" (D5). Reopened, it joins the top of the queue, unfrozen. Its **block, draft, labels, links, body and
+  assignee** are independent and editable while frozen (D6): a `dependency` block works across the boundary either
+  way, and an automatic unblock fires as usual. A frozen ticket may be a draft (D16).
 * `deferred` (rag-t0017) is work put aside on purpose. It is independent of `blocked`: a ticket can be both, and is
   then shown as deferred.
 * `review` (rag-t0024) is work waiting on the owner to confirm or review it. It is independent of `blocked` too, and
@@ -185,7 +203,8 @@ Records
   "body": "dispatched to dev-3",
   "fields": {"status": "in_progress", "assignee": "dev-3"},
   "before": {"status": "pending", "assignee": null},
-  "draft": false
+  "draft": false,
+  "roadmap": false
 }
 ```
 `fields` holds every field the write set, with its new value, so replaying the events reconstructs the record.
@@ -199,6 +218,23 @@ request's frame says `{draft: yes → no; type: request}`). A ticket and a docum
 is a draft while **its document** is. **Specs and milestones are never drafts** (owner, 2026-10-30): a spec has
 its own `draft` state and is the agents' work, so every change to one is sent. A replay after publishing still leaves the draft history
 out. Every event written before drafts existed reads `false`.
+
+**`roadmap`** (spec:roadmap D17, R8) marks a **roadmap event**: the feed leaves it out unless asked (`roadmap=true`), so
+planning wakes no monitor. It is stamped at write time, as `draft` is, and it is true on:
+
+* every event of a **phase**, except its `release` and `recall`, which are its one frame each (D18);
+* every event of a **ticket frozen after the write** (read from the row), or **frozen before it** (`before.frozen` is
+  true: every write that thaws a ticket records `frozen` in `fields` and `before`, which is a release, a pull, a
+  removal from its phase, and a frozen ticket's done or cancel);
+* every event **but a create** whose `fields` name `phase`: a link-only write on an unfrozen ticket is a roadmap change
+  too.
+
+It is false on a **create in a released phase** (a queue ticket arriving), on the **automatic unblock** of an unfrozen
+ticket by a frozen one's done (that ticket is in the queue), and on a request's **`link`** event for a `from` on a
+frozen ticket (the event is on the request, and `link` is out of the default kinds anyway). Unlike a draft's flip,
+nothing is announced on the way in or out. A frozen draft's events carry both flags, and a feed needs `drafts=true`
+**and** `roadmap=true` to see them. Every event written before the roadmap existed reads `false`.
+
 `before` (added 2026-10-27, rag-t0038) holds what those fields were before the write, keyed the same way: the "from"
 of each from → to. It is `null` on a `create` (nothing came before) and on every event written before it was
 recorded (those name their new values only; nothing is back-filled). A key with no prior value to give is absent
@@ -215,7 +251,11 @@ write with no agent is still `"Unknown"`.
 Ticket keys: `type`, `title`, `body`, `status`, `done_at`, `acknowledged_at`, `blocked`, `block_reason`,
 `depends_on`, `unblocked_by`, `approval`, `assignee`, `intensity`, `release`, `parallel`, `labels` (the whole set,
 on create and on every change: rag-t0027), `links` (on create),
-`links_added`, `links_removed`, `place` (create and move: `"top"`, `"bottom"`, `{"before": id}`, `{"after": id}`).
+`links_added`, `links_removed`, `place` (create and move: `"top"`, `"bottom"`, `{"before": id}`, `{"after": id}`),
+`phase`, `frozen`.
+Phase keys: `title`, `body`, `state`, `released_at`, `tickets` (a release's or recall's count of the tickets it moved),
+`placed` (a release's place, in words: `bottom`, `top`, `before <id>`, `after <id>`), `place` (create and move, as on a
+ticket), `prev_id` (a move: the phase's new neighbour on the roadmap, `null` for the top, with the old one in `before`).
 
 **The automatic unblock** (rag-t0018) is an `unblock` event on the waiting ticket, written in the same transaction as
 the write that finished its last dependency and **by that write's author** (its `author_email`, `agent` and
@@ -227,7 +267,8 @@ rag-t0010, rag-t0012.` with several), and its fields are `{"blocked": false, "de
 `state`, `approval`, `order`, `path`, `milestones`, `links`, `links_added`, `links_removed`.
 
 When one write changes several things, its `kind` is the first that applies of `status`, `block`, `unblock`,
-`approve`, `assign`, `link`, `edit` (and `note` when only a note was given).
+`approve`, `assign`, `link`, `edit` (and `note` when only a note was given). A `phase` or `frozen` write is a `move`
+when a list changed (with the ticket's new `prev_id`) and a `link` when only the link did.
 
 ### Document
 ```json
@@ -320,13 +361,14 @@ Routes
 ### Projects and the queue
 
 #### `GET /tracker/projects`
-`{"projects": [{"name": "ubu", "created_at": "…", "queued": 12, "requests": 1, "drafts": 1, "blocked": 2, "deferred": 1, "review": 1, "done_unacknowledged": 3}]}`,
+`{"projects": [{"name": "ubu", "created_at": "…", "queued": 12, "requests": 1, "drafts": 1, "blocked": 2, "deferred": 1, "review": 1, "done_unacknowledged": 3, "frozen": 45}]}`,
 by name. `queued` counts requests, review, blocked and deferred tickets too; `requests` counts every queued request
 (rag-t0044), whatever its status or block; `blocked` counts blocked tickets that are neither requests, deferred nor
 in review, `deferred` every deferred ticket and `review` every ticket in review, blocked or not, requests excluded
 (each as the queue view sections them; `deferred` added 2026-10-27, rag-t0017; `review` the same day, rag-t0024;
 `requests` the same day, rag-t0044). `drafts` (added 2026-10-30) counts the queued drafts of any type; a draft is
-counted under no other bucket but `queued`.
+counted under no other bucket but `queued`. **`frozen`** (spec:roadmap D20) counts the tickets frozen in a phase, drafts
+included; a frozen ticket is in **no other bucket**, `queued` and `drafts` among them.
 
 #### `GET /tracker/{project}` — the queue view (D14, R12)
 ```json
@@ -339,9 +381,13 @@ counted under no other bucket but `queued`.
   "review":  [ Item, … ],
   "queue":   [ Item, … ],
   "blocked": [ Item, … ],
-  "deferred": [ Item, … ]
+  "deferred": [ Item, … ],
+  "frozen": 45
 }
 ```
+* **`frozen`** (spec:roadmap D20): how many of the project's tickets are frozen in a phase, drafts included. **Every
+  list leaves them out**, so the view is the same with or without a planned phase but for this count. Read them with
+  `GET …/phases/{id}?tickets=true` or `GET …/items?phase=<id>`.
 * **`requests`** (added 2026-10-27, rag-t0044): the queued tickets of type `request`, **whatever their status or
   block**, in list order. A request is in no other array while queued (done, it is under `done`). The dashboard
   shows them above Review and `tracker_queue` first; `tracker_next` never reads them. A client that predates it
@@ -381,11 +427,19 @@ To reorder relative to what the dashboard shows, use the neighbours in `queue`: 
 disturbed. A deferred or review ticket is a valid anchor and can itself be moved.
 
 #### `GET /tracker/{project}/check` — the integrity check (D5)
-`{"project", "ok": true, "queued": 5, "order": [ids, head first], "problems": []}`. `problems` lists each fault in
+`{"project", "ok": true, "queued": 5, "frozen": 45, "order": [ids, head first], "problems": []}`. `queued` and `order`
+are the queue's list only; `frozen` counts the tickets frozen in a phase. `problems` lists each fault in
 words (a broken link, a cycle, a queued ticket the walk misses, a stale head or tail; since rag-t0018 also a
 `depends_on` on a ticket not blocked with `dependency`, one naming no ticket or another project's, a ticket blocked with
 `dependency` on nothing, or one whose dependencies are all done); `ok` is `problems` being empty.
 Always 200.
+
+**The roadmap's problems** (spec:roadmap D3): a frozen ticket that is not `pending`, has no phase, or is in a phase not
+planned; a ticket naming a phase of another project, or one that does not exist; a request with a phase; a planned
+phase whose walk does not cover exactly its frozen tickets (a cycle, a stale head or tail, a ticket it reaches that is
+not frozen in it, one it misses); a released or archived phase holding a head, a tail or a roadmap link; and a roadmap
+whose walk, either way, does not cover exactly the planned phases (a cycle, a stale end, a phase it reaches that is not
+planned or not of this project, one it misses, or two directions that disagree).
 
 #### `GET /tracker/{project}/velocity` — how fast its tickets get done (spec:velocity D26)
 ```json
@@ -471,19 +525,24 @@ each). Response: `{"project": "ubu", "acknowledged": ["ubu-t0040", "ubu-t0041"]}
 
 ### Tickets
 
-#### `GET /tracker/{project}/items?status=<status>&label=<label>`
-`{"project", "items": [Item, …]}`, oldest first, no events. Every ticket of the project, done and cancelled included;
+#### `GET /tracker/{project}/items?status=<status>&label=<label>&phase=<phase id>`
+`{"project", "items": [Item, …]}`, oldest first, no events. Every ticket of the project **that is not frozen**, done and
+cancelled included;
 `status` filters (any ticket status, `deferred` and `review` included; `blocked` is a flag, not a status, and is 400).
 `label` (rag-t0027) keeps the tickets carrying it, matched case-insensitively after the same trimming a write gets; a
 blank one is no filter. Both may be given.
+
+**`phase`** (spec:roadmap D20) lists that phase's linked tickets instead, **frozen ones included**, in the order a phase
+read gives them: frozen in the phase's order, then unfrozen queued in the queue's order, then the rest by age. `status`
+and `label` filter them as above. A phase that does not exist in this project is 404, a blank `phase=` included.
 
 #### `GET /tracker/{project}/labels` — the label vocabulary (rag-t0027)
 ```json
 {"project": "ubu", "labels": [{"label": "Biomes", "count": 3, "queued": 1}, {"label": "Physics", "count": 7, "queued": 4}]}
 ```
 Every label the project's tickets carry now, once each in the project's casing, sorted case-insensitively. `count` is
-the tickets carrying it, whatever their status; `queued` how many of those are in the queue (pending, in progress,
-failed, deferred, review). A label no ticket carries any more is not listed. An unknown project has `[]`; an invalid
+the tickets carrying it, whatever their status, frozen ones included; `queued` how many of those are in the queue
+(pending, in progress, failed, deferred, review, and not frozen). A label no ticket carries any more is not listed. An unknown project has `[]`; an invalid
 project name is 400. The web app's label editors read it for their suggestions.
 
 #### `POST /tracker/{project}/items` — create
@@ -500,11 +559,23 @@ project name is 400. The web app's label editors read it for their suggestions.
 | `parallel` | optional, any type but gate or request | default `false`; `true` on a gate (rag-t0013) or a request (rag-t0044) is 400 |
 | `draft` | optional | default `false`; `true` creates the owner's draft (2026-10-30): a draft event, body `Created draft dev ticket.`, `fields.draft: true` |
 | `labels` | optional | `[string]`, default `[]` (rag-t0027); the rules under Ticket; a bad label or more than 10 is 400. A create event carrying labels says them in its generated body (`Created dev ticket. Labels: Biomes, Physics.`) and in `fields.labels` |
-| `before` / `after` / `top` / `bottom` | optional, at most one | where it joins: `"before": "<id>"`, `"after": "<id>"`, `"top": true`, `"bottom": true`; default the bottom |
+| `phase` | optional | a phase id, trimmed; **blank is 400** (`phase is a phase id`). Created in it (spec:roadmap D7), below |
+| `before` / `after` / `top` / `bottom` | optional, at most one | where it joins: `"before": "<id>"`, `"after": "<id>"`, `"top": true`, `"bottom": true`; default the bottom. An anchor must be queued and not frozen, or, in a planned `phase`, frozen in that phase |
 | `note` | optional | the create event's body |
 | author fields | required | |
 
 Response: the Ticket with its `create` event. The new ticket is `pending`.
+
+**With `phase`** (D7, D16), by the phase's state:
+
+| Phase | The ticket | Its place | Its event |
+|---|---|---|---|
+| `planned` | `frozen: true`, `queued: false` | in the phase's list | stamped `roadmap` |
+| `released` | `frozen: false`, `queued: true`, linked | in the queue, as any ticket, so a phase grows naturally | not stamped: a queue ticket arriving |
+| `archived` | 400: `phase <id> is archived: unarchive it to add a ticket` | | |
+
+A request with a `phase` is 400 (`a request cannot have a phase: …`). An unknown phase is 404; another project's is 400
+(`phase <id> belongs to project …`). It may be a draft either way. `default_approval` is as without one.
 
 #### `GET /tracker/items/{id}`
 The Ticket with `events`. 404 if unknown.
@@ -526,8 +597,30 @@ Every field optional; absent leaves it alone; a value equal to the current one i
 | `title`, `body` | `title` non-blank |
 | `add_links`, `remove_links` | `[Link]`; removing a link the ticket does not have is refused |
 | `intensity`, `release` | gates only |
+| `phase` | a phase id, or `""` (trimmed) to remove the link. **Single-purpose**, below |
+| `frozen` | `false` pulls a frozen ticket to the queue, `true` freezes it again. **Single-purpose**, below |
 | `note` | optional (the body is then generated from the change); alone, it is recorded as a `note` event and must not be blank |
 | author fields | required |
+
+**`phase` and `frozen` are single-purpose writes** (spec:roadmap D8, D9): beside anything but a `note` and the author
+fields, or beside each other, they are 400, `phase and frozen are written alone, with at most a note`, so a stamped
+event can never hide a status change from the feed. (An empty `add_links` or `remove_links` is no field: it says
+nothing.) One event, a `move` when a list changed and a `link` when only the link did, stamped `roadmap`, its generated
+body saying which (`Frozen in ubu-p0001.`, `Pulled to the queue.`, `Moved to phase ubu-p0002.`, `Linked to phase
+ubu-p0001.`, `Removed from ubu-p0001.`).
+
+| Write | The ticket | |
+|---|---|---|
+| `phase: <planned>` | unlinked from the queue, or from another phase's list, and **frozen at this phase's tail**; so a ticket pulled from this phase freezes again | only a `pending` ticket (D4; `… only a pending ticket can be frozen`, and a deferred one says to resume it first), or one already frozen elsewhere |
+| `phase: <released>` | **only the link is written**: it keeps its place in the queue, whatever its status. One frozen in another phase joins the queue's tail, unfrozen | |
+| `phase: <archived>` | 400 (`phase <id> is archived: …`) | |
+| `phase: ""` | a frozen ticket joins the queue's tail; an unfrozen one stays where it is | |
+| `frozen: false` | a pull (D9): a frozen ticket joins the queue's tail, unfrozen, **keeping its link**. One event and **no frame**: it simply appears at the tail for the manager's next `tracker_next` (D18) | |
+| `frozen: true` | a re-freeze: joins the tail of its own phase | a `pending`, unfrozen ticket whose phase is planned; else 400 |
+
+Any change on a request is 400 (D4). A write that changes nothing (the phase it already has, `frozen` as it already
+stands) is 400: `nothing to update on <id>: its phase already stands so`. An unknown phase or ticket is 404; another
+project's phase is 400.
 
 **Status transitions** (anything else is 400):
 
@@ -547,12 +640,173 @@ and clear any block. Only a queued ticket can be blocked; a deferred ticket can 
 `deferred` (rag-t0017) never moves the ticket in the list; `deferred` → `failed` is refused (resume it first).
 `review` (rag-t0024) never moves the ticket either; `review` → `failed` is refused (send it back first), and so is
 `deferred` → `review`. `review` → `deferred` was refused too until the owner allowed it on 2026-10-28. A review ticket can be blocked, and keeps its block when sent back.
+**A frozen ticket** (spec:roadmap D5) goes only to `done` or `cancelled`, unfrozen and off the phase's list, keeping its
+link; any other status is 400, `<id> is frozen in phase <phase> and can only go to done or cancelled: pull it to the
+queue first`, checked before the table above. Done this way is no completion (D22).
 Response: the updated Ticket with `events`.
 
 #### `POST /tracker/items/{id}/move`
 Exactly one of `"before": "<id>"`, `"after": "<id>"`, `"top": true`, `"bottom": true`; optional `note`; author
 fields. The ticket and the anchor must both be queued (deferred counts), in the same project, and different. A move never takes a
 position number, so it cannot go stale. Response: the Ticket with `events` (a `move` event).
+
+**Reorder within its own list** (spec:roadmap D10): a frozen ticket moves only within its phase, `top` and `bottom`
+being the phase's (an anchor elsewhere is 400: `<anchor> is not in phase <id>: a frozen ticket moves only within its
+phase`), and an unfrozen one only within the queue (a frozen anchor is 400: `<anchor> is frozen in phase <id>: place
+<ticket> relative to a queued ticket`). A frozen ticket's move is stamped `roadmap`.
+
+### Phases and the roadmap
+A project's **roadmap** is an ordered list of **phases**: planned work, written up, ordered and reviewed out of the queue
+and the default feed. A phase's tickets are **frozen** (see Ticket) until it is **released** into the queue; **recall**
+undoes a release. The design is spec:roadmap in the tracker (R1–R8, D1–D29), built in
+`crates/core/src/tracker/{phases,roadmap}.rs`.
+
+Conventions, beside those at the head of this document:
+
+* **Every write is a `POST`.** There is no `PATCH`: the reconcile trigger fires on a `POST` only, so a phase's search
+  record would never refresh on anything else, and the MCP client has no other verb. `PATCH` on `/phases/{id}` is 405.
+* `{project}` is validated (an invalid name is 400). **A phase whose project is not the path's is a 404, in every route
+  below, a `GET` included**: `no phase "ubu-p0001" in project rag`. There is no list of phases but the roadmap read
+  (`GET …/phases` is 405), and no delete: a phase is archived.
+* Each write's reply carries `events`, so a client finds the event's id and kind in the last of them.
+
+#### A phase
+```json
+{"id": "ubu-p0001", "project": "ubu", "title": "Creatures", "body": "…", "state": "planned",
+ "prev_id": null, "next_id": "ubu-p0002", "head_id": "ubu-t0100", "tail_id": "ubu-t0139",
+ "released_at": null, "created_at": "…", "updated_at": "…",
+ "size": {"frozen": 40, "open": 0, "done": 0, "cancelled": 0, "drafts": 1, "blocked": 2, "total": 41, "complete": false},
+ "events": [ Event, … ], "tickets": [ Ticket, … ], "would_wait": [{"ticket": "ubu-t0090", "on": "ubu-t0101"}]}
+```
+* `body` is markdown, and `state` as under Enumerations.
+* `prev_id` / `next_id`: its neighbours on the roadmap, **planned phases only** (`null` otherwise and at an end).
+* `head_id` / `tail_id`: the ends of its list of frozen tickets, **planned phases only** (`null` when it holds none).
+* `released_at` is **always present**, `null` while it is not released; a client tells a phase from a ticket by it.
+  A recall clears it. An archived phase keeps it, which is how unarchiving knows where to return.
+* **`size`** (D25) is from its linked tickets now: `frozen`, `open` (unfrozen, not done or cancelled), `done` and
+  `cancelled`, **each leaving drafts out**; `drafts` (every linked draft, whatever its status); `blocked` (of `frozen`
+  and `open`); `total` (every linked ticket). `complete` (D15) is derived and not stored: a **released** phase whose
+  linked tickets, at least one, are all `done` or `cancelled`, by status alone, so a pending draft is open and
+  reopening a ticket makes it incomplete again. Show a released phase as `done of total`.
+* **`tickets`** and **`would_wait`** are present **only with `tickets=true`**. `tickets` are its linked tickets in full,
+  with no events: frozen in the phase's order, then unfrozen queued in the queue's order, then the rest by age.
+  `would_wait` is below.
+
+#### `GET /tracker/{project}/phases/{id}?history=<bool>&tickets=<bool>`
+The phase. `history` defaults to true, `tickets` to false; any other query parameter is 400.
+
+#### `POST /tracker/{project}/phases` — create
+| Field | | |
+|---|---|---|
+| `title` | required | non-blank |
+| `body` | optional | markdown, default `""` |
+| `before` / `after` / `top` / `bottom` | optional, at most one | where it joins the roadmap, default the bottom; an anchor names a **planned phase of this project** |
+| `note` | optional | the `create` event's body, else `Created phase.` |
+| author fields | required | |
+
+Response: the phase, `planned`, with its `create` event (`fields`: `title`, `state`, `place`). The project is created by
+this write if it is new. Refused: a blank title, more than one place, an anchor that is unknown, of another project or
+not planned. A refused create takes no id.
+
+#### `POST /tracker/{project}/phases/{id}` — title and body
+`title`, `body`, `note`, each optional, and the author fields, **in any state**. One `edit` event, or a `note` event when
+only a note was given. A call that changes nothing and says nothing is 400 (`nothing to update on <id>: …`). A blank
+`title` is 400; `state` is not a field here (400), and goes by the routes below. Response: the phase.
+
+#### `POST /tracker/{project}/phases/{id}/move`
+Exactly one of `before`, `after`, `top`, `bottom`, as a ticket's move; optional `note`; author fields. One `move` event
+(`fields`: `place`, `prev_id`). Refused: a phase not planned (`… only a planned phase moves on the roadmap`, D10), no
+place or more than one, an anchor that is the phase itself, unknown, of another project or not planned. Response: the
+phase.
+
+#### `POST /tracker/{project}/phases/{id}/release`
+| Field | | |
+|---|---|---|
+| `before` / `after` / `top` / `bottom` | optional, at most one | where its tickets join the queue, default the bottom; an anchor names a **queued, unfrozen ticket of this project** |
+| `note` | optional | follows `Phase released.` in the event's body, and never replaces it |
+| author fields | required | |
+
+In one transaction (D11): its list joins the queue, in order, at that place; `frozen` clears on its tickets; state
+`released`, `released_at` now; it leaves the roadmap; its head and tail empty. A phase with no frozen tickets may be
+released, and is marked so. A draft moves too, still a draft, so it is undispatched and under the queue view's `drafts`
+(D16). Refused, with nothing changed: a phase not planned (`… only a planned phase can be released`), more than one
+place, an anchor that is unknown, of another project, not queued or **frozen**.
+
+Each moved ticket gets its own `move` event, stamped `roadmap` (`fields: {"frozen": false}`, `before: {"frozen":
+true}`, body `Released with phase ubu-p0001.`), so its history explains its state. The phase's `release` event is written
+**last**, so it holds the write's last id, and is the **one frame** a monitor sees (see *The event feed*).
+
+Response:
+```json
+{ …the phase…, "moved": 40, "placed": "bottom", "waiting": [{"ticket": "ubu-t0090", "on": "ubu-t0101"}] }
+```
+
+#### `POST /tracker/{project}/phases/{id}/recall`
+`note` (following `Phase recalled.`) and the author fields. In one transaction (D12): every linked ticket of status
+`pending`, **blocked or a draft or neither**, freezes and returns to the phase's list **in its current queue order**;
+state `planned`, `released_at` cleared; the phase joins the **top** of the roadmap, as it is next. Tickets of any other
+status (in progress, in review, failed, deferred, done, cancelled) **stay where they are, keeping the link**; a later
+release adds only the frozen tickets, at the tail unless placed. Refused: a phase not released (`… only a released phase
+can be recalled`). Events as a release's (`Recalled with phase ubu-p0001.`, and `recall` last). A ticket's old place in
+the queue is not kept. Response: as a release's, with `"placed": null`.
+
+**`moved`, `placed`, `waiting`.** `moved` is how many tickets the write moved. `placed` is a release's place in words:
+`bottom`, `top`, `before <id>` or `after <id>`. **`waiting`** (D13) names each ticket left waiting across the boundary
+**after the write**, sorted by ticket then target: each unfrozen queued ticket with a `depends_on` on a frozen ticket,
+where **either is linked to this phase** (a ticket outside the frozen set blocked on a frozen one, or a released ticket
+waiting on a ticket of a phase still planned). It never refuses. **`would_wait`** on a read with `tickets=true` is the same
+list for what the phase's **next** release (a planned phase) or recall (a released one) would leave, so a confirmation
+can state it first; `[]` on an archived phase.
+
+#### `POST /tracker/{project}/phases/{id}/archive`
+`note` and the author fields. A **released** phase, or a **planned one with no open ticket**, becomes `archived`, and is
+off the roadmap (D14). A planned phase with an open ticket is 400 (`… is planned and has 3 open tickets: cancel, move or
+release them first`); so is one already archived. One `edit` event, `fields: {"state": "archived"}`, body `Phase
+archived.` unless a note is given. Response: the phase.
+
+#### `POST /tracker/{project}/phases/{id}/unarchive`
+`note` and the author fields. It returns to `released` if it has a `released_at`, else to the **roadmap's bottom** as
+`planned`. A phase not archived is 400 (`… only an archived phase can be unarchived`). One `edit` event, body `Phase
+unarchived.` unless a note is given. Response: the phase.
+
+#### `GET /tracker/{project}/roadmap?window=24h|7d` — the forward look (D24)
+```json
+{"project": "ubu", "window": "7d", "now": "…", "velocity_per_day": 8.0,
+ "queue": {"remaining": 48, "eta_days": 6.0}, "frozen": 45, "planned_out_days": 11.6,
+ "released": [Figures, …], "planned": [Figures, …], "complete": [Figures, …], "archived": [Figures, …]}
+```
+where Figures is, without a body as this reads many phases:
+```json
+{"id": "ubu-p0001", "project": "ubu", "title": "Creatures", "state": "planned", "released_at": null,
+ "created_at": "…", "updated_at": "…", "size": { "…": "as above" }, "ahead": 88, "eta_days": 11.0}
+```
+**These are durations of active work, never dates (D24, R7), and nothing here is stored**: every figure is computed on
+request from live velocity and live counts, so the queue and the phases change size and the ETAs follow. `Cache-Control:
+no-store` and no `ETag`, as the velocity read and the report. Read-only, no author fields.
+
+* `window` is `24h` or `7d`, **`7d` when absent**; any other value, and any other query parameter, is 400.
+* `velocity_per_day` is the window's, exactly as `GET …/velocity` gives it. `queue.remaining` is its `remaining`, and
+  `queue.eta_days` its `eta_days` for the window (fractional days, `0` with nothing remaining, `null` when unknown).
+* `frozen` is the project's frozen tickets, drafts included.
+* `planned_out_days` is how far out development is planned: the last planned phase's `eta_days`, or the queue's with
+  none planned.
+* A ticket is **counted** by the velocity rules: no requests and no drafts. **`ahead` is an ETA's numerator**, and
+  `eta_days` is `ahead ÷ velocity_per_day` in fractional days, **`null` when unknown** (work ahead and a velocity of 0):
+  * a **released, incomplete** phase: the counted tickets of status `pending`, `in_progress`, `failed` or `review`,
+    blocked or not, not deferred, from the head of the queue down to and including the phase's last such ticket. With no
+    such ticket (all drafts or deferred) `ahead` is 0 and `eta_days` is `null`, there being nothing to project;
+  * a **planned** phase: `queue.remaining` plus the counted frozen tickets of this and every earlier planned phase
+    (`eta_days` 0 with nothing ahead);
+  * a **complete** or **archived** phase: `ahead` 0, `eta_days` `null`.
+
+| List | Holds | In the order |
+|---|---|---|
+| `released` | released and incomplete | soonest first: by `ahead`, then `released_at`, then id, so it holds with a velocity of 0 |
+| `planned` | planned | the roadmap's |
+| `complete` | released and complete | newest release first |
+| `archived` | archived | newest change first |
+
+An unknown project answers the same shape, empty (and `eta_days` 0), not a 404; an invalid project name is 400.
 
 ### Documents
 
@@ -724,7 +978,8 @@ slow; the design is `specs/velocity/master.md` (D1–D10, D16–D27), built in `
   and done again there, and **still counted if reopened since** (a past figure does not change). `cancelled` and
   `failed` are not completions.
 * **Active time** in a window: the project's events in it, oldest first, of every kind of record and both
-  surfaces, **draft events left out**. Each gap between consecutive events of **at most 2 hours** is active; a
+  surfaces, **draft events and roadmap events left out** (spec:roadmap D23: planning a roadmap while the fleet is idle
+  does not read as a slow fleet; a release's or recall's own event counts). Each gap between consecutive events of **at most 2 hours** is active; a
   longer gap is idle and adds nothing. The window's start and `now` count as the ends of the first and last gap,
   so the minutes since the last write count while they are under 2 hours. A ticket left in progress overnight
   adds nothing: activity comes from writes, not from tickets in progress.
@@ -747,6 +1002,13 @@ slow; the design is `specs/velocity/master.md` (D1–D10, D16–D27), built in `
   from the publication, and not at all if it ended under that draft; a stretch as a draft in the middle of one is
   taken out of its length, as far as the last 7 days' spans show it. Which of two writes in the same second came
   first is the events' order, never the timestamps'.
+* **Frozen tickets** (spec:roadmap D20–D22). A frozen ticket is in **no count**: not `pending`, not `remaining`. Its
+  `status` span reads `frozen` (a span state, never an item status), so a freeze closes its `pending` span and a release
+  opens a new one, and neither `states` nor `remaining` holds that time, recall included. A ticket is **added** at its
+  first entry into a counted state, so a ticket created frozen is `added` at its first release or pull, not at its
+  creation, and not again if recalled and released; a recall lowers `remaining` with no `done`, which is correct. **A
+  ticket taken straight from frozen to done is no completion**: it is in no `done` figure and not in `mttc`. Reopened, it
+  is added then, and its next done counts.
 
 
 The event feed (rag-t0036)
@@ -760,7 +1022,7 @@ another host, forward the port over ssh and use the same `127.0.0.1` URL, or run
 or any small client printing each text frame as a line). The one-shot read has no such limit. Built in `crates/core/src/tracker/feed.rs`
 (the channel) and `crates/serve/src/tracker/feed.rs` (the routes).
 
-**The web UI's ticket page reads it too** (2026-10-29): same origin, `surface=any&kinds=all&format=json&drafts=true` (drafts since 2026-10-30, so the owner's own draft follows live), no
+**The web UI's ticket page reads it too** (2026-10-29): same origin, `surface=any&kinds=all&format=json&drafts=true&roadmap=true` (drafts since 2026-10-30, so the owner's own draft follows live; roadmap from spec:roadmap m04, D19, so a frozen ticket's page follows its own edits and the roadmap and phase pages read it too), no
 `since` (it re-reads the ticket on every open instead), so a write over MCP shows on an open ticket as it commits.
 See `web/README.md` § *The tracker*.
 
@@ -772,12 +1034,15 @@ client keeps the last id it was sent and resumes after it with `since`.
 |---|---|---|
 | `{project}` (path) | a project, or **`*`** for every project | `*` cannot be a project name |
 | `surface` | `web` (default), `mcp`, `any` | `web`: the owner's actions in the web UI |
-| `kinds` | comma list of event kinds, or `all` | default: `create`, `status`, `block`, `unblock`, `approve`, `move`, `note`, `assign`, `edit` (left out: `link`, `rename` and, since 2026-11-01, `acknowledge`) |
+| `kinds` | comma list of event kinds, or `all` | default: `create`, `status`, `block`, `unblock`, `approve`, `move`, `note`, `assign`, `edit`, `release`, `recall` (left out: `link`, `rename` and, since 2026-11-01, `acknowledge`) |
 | `since` | an event id, `0` or more; exclusive | the events **after** it |
 | `drafts` | `true` or `false` (default) | `true` includes **draft events** (2026-10-30, owner): those written while their ticket or document was a draft (see Event). Left out by default, so the owner's unfinished work wakes nobody |
+| `roadmap` | `true` or `false` (default) | `true` includes **roadmap events** (spec:roadmap D17, R8): a phase's changes and a frozen ticket's (see Event). Left out by default, so planning wakes nobody. A frozen draft's events need `drafts=true` as well. A phase's `release` and `recall` are not among them: they reach every feed their kind and surface pass |
 
 Label changes are `edit` events (with `labels` in `fields`), which is why `edit` is in the default. Unknown query
-parameters, an unknown surface or kind, and a negative `since` are 400s, as everywhere.
+parameters, an unknown surface or kind, and a negative `since` are 400s, as everywhere. The filter is applied before
+everything else, in the store's SQL and the live matcher alike: events left out do not count against the 500 of a
+replay, and never join a burst.
 
 #### `GET /tracker/{project}/events/ws` — the feed (WebSocket)
 Upgrades to a WebSocket on the service's own port (17793). Nothing sits between the client and `rag-serve`: the
@@ -796,17 +1061,21 @@ belongs to the read below), as is a `coalesce` above 0 with `format=json`.
     #13904 rag web move rag-t0041 "Gas weight" {moved: after rag-t0010 → after rag-t0012}: Moved before rag-t0013. [Owner]
     #13905 rag web create spec:feed "The feed": Created spec feed (approval: owner). [Owner]
     #13906 rag web create rag-t0044 "Weather" {type: request}: Created request ticket (approval: owner). [Owner]
+    #13907 ubu web release phase:ubu-p0001 "Creatures" {state: planned → released; tickets: 40; placed: bottom}: Phase released. [Owner]
 
-* `<target>`: a ticket's id; `spec:<slug>`, `milestone:<spec>/<code>`, `concept:<slug>` or `doc:<document id>`.
+* `<target>`: a ticket's id; `spec:<slug>`, `milestone:<spec>/<code>`, `concept:<slug>`, `doc:<document id>` or
+  `phase:<phase id>`.
 * `"<title>"`: the record's **current** title (cut at 100 characters); left out when the record is gone. A **draft
   event**, sent only to a feed with `drafts=true` (2026-10-30), is marked after it: `rag-t0060 "Weather" (draft)`;
-  so is a draft record named in a burst frame.
+  so is a draft record named in a burst frame. A **roadmap event**, sent only to a feed with `roadmap=true`, likewise:
+  `ubu-t0100 "Wolf" (roadmap)`, and after the draft mark when it is both (`(draft) (roadmap)`).
 * `{<changes>}` (from → to since rag-t0038): on a `create`, nothing, but a request's says `{type: request}`
   (rag-t0044: the one create a manager acts on); on any other event each change it made, separated by `; `,
   in this order: `moved: <from> → <to>` (a move, by the ticket's neighbour: `top` or `after <id>`), `draft` (2026-10-30:
   `draft: yes → no` on a publish, then `type: request` when a request is published), `status`, `state`,
-  `approval`, `blocked` (the reason while blocked, `no` while not: `blocked: dependency → no`, `blocked: no →
-  review`), `depends_on`, `assignee`, `labels` (what it added and removed: `+Physics −Biomes`), `links`
+  `approval`, `frozen` (`frozen: yes → no`), `phase` (`phase: none → ubu-p0001`), `blocked` (the reason while blocked,
+  `no` while not: `blocked: dependency → no`, `blocked: no → review`), `tickets` and `placed` (a release's and a
+  recall's: `tickets: 40`, `placed: bottom`), `depends_on`, `assignee`, `labels` (what it added and removed: `+Physics −Biomes`), `links`
   (`+item:rag-t0002 −ledger:rag-0033`), `title`, `body: edited`, `intensity`, `release`, `parallel`, `order`,
   `path`, and a document edit's `revision`, each as `<field>: <from> → <to>`. Values: `none` for a cleared one or an
   empty list, `yes`/`no` for a flag, a list comma-separated, each cut at 40 characters. An event written before
@@ -820,6 +1089,16 @@ belongs to the read below), as is a `coalesce` above 0 with `format=json`.
   (`?since=13949&limit=1&surface=any&kinds=all`) and in the record's history (`tracker_get`, `history: N`).
 * `[<who>]`: the event's `agent`: `Owner` for the owner's web writes (rag-t0038; before it, the author's email),
   the agent's name for an `mcp` one.
+
+**A release and a recall are one frame each** (spec:roadmap D18), on the phase, in the default kinds: the moved
+tickets' events are stamped `roadmap`, and the filter comes before the grouping, so they never join a default frame.
+The body always begins `Phase released.` or `Phase recalled.`, a note following it and never replacing it, so it
+cannot be read as a build release. The channel carries stamped events to whoever asked, so a release of more than 1024
+tickets makes a live subscriber lag, whatever it asked for: it is closed with 1013 and resumes by id, and no frame is
+lost. A **pull to the queue** (`frozen: false`) is one stamped event and sends no frame.
+
+    #13908 ubu web release phase:ubu-p0001 "Creatures" {state: planned → released; tickets: 40; placed: bottom}: Phase released. Go. [Owner]
+    #13909 ubu web recall phase:ubu-p0001 "Creatures" {state: released → planned; tickets: 38}: Phase recalled. [Owner]
 
 **Bursts are one frame** (rag-t0039, text only). Events of one project and one surface committed within `coalesce`
 seconds of the first of them (by their own timestamps, to the second) share a frame, so a drag reorder or a run of
@@ -835,8 +1114,9 @@ timestamps. A burst of one is the event's own line. A burst of several:
   client that resumes with `since=<that id>` has seen every event up to it, in this frame.
 * `<summary>`, parts separated by `; `: the moves as `queue reordered: <n> moves (<ids>)`, the acknowledgements as
   `acknowledged <n> done tickets (<ids>)` (at most five ids, then `+<k> more`), then each other record in the order it
-  first appears, as `<target> "<title>": <what>`. One event: its kind and changes (a note quoted, cut at 80
-  characters). Several: counts by kind (`3 edits, 1 status change`) and all their changes together, cut at 160
+  first appears, as `<target> "<title>": <what>`. One event: its kind and changes (a note, or a phase's release or
+  recall, quoting its body, cut at 80 characters, so it still says what it was: `phase:ubu-p0001 "Creatures": release
+  {state: planned → released; tickets: 40; placed: top}: Phase released. Go.`). Several: counts by kind (`3 edits, 1 status change`) and all their changes together, cut at 160
   characters. At most five records are named, then `+<k> more records`.
 * The events themselves are one read away: `GET …/events?since=<first id − 1>`.
 * The server closing the feed (a restart, a lagging client, a failed replay) sends the open burst first, so the
@@ -845,9 +1125,9 @@ timestamps. A burst of one is the event's own line. A burst of several:
   frame).
 
 `json`: the event as one line of JSON, every field in full: `event_id`, `ts`, `project`, `target_kind`, `target_id`,
-`title` (or `null`), `author_email`, `agent`, `surface`, `kind`, `body`, `fields` (the new values: the "to") and
-`before` (the prior values: the "from", `null` on a create and on an event written before rag-t0038; see
-[Event](#event)).
+`title` (or `null`), `author_email`, `agent`, `surface`, `kind`, `body`, `fields` (the new values: the "to"),
+`before` (the prior values: the "from", `null` on a create and on an event written before rag-t0038), `draft` and
+`roadmap` (see [Event](#event)).
 
 **Resume without loss or duplicates.** The server subscribes to the live channel **before** it replays from the
 events table, then drops any live event at or below the last id it has sent. An event committed before the

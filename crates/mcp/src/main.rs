@@ -412,9 +412,9 @@ impl CorpusServer {
         (code|wiki|ledger|tracker), repo, language, path_prefix. Pass corpus=\"ledger\" to \
         semantically search the decision/incident ledger (better recall than the ledger \
         server's keyword search). Pass corpus=\"tracker\" to search the tracker's specs, \
-        milestones, concepts and tickets (search it before re-planning work); repo is then \
-        the project, and each hit's `citation` is `<project>:<path>@r<revision>` for a document \
-        chunk (read it with tracker_doc_get) or the ticket id (tracker_get)."
+        milestones, concepts, tickets and phases (search it before re-planning work); repo is \
+        then the project, and each hit's `citation` is `<project>:<path>@r<revision>` for a \
+        document chunk (read it with tracker_doc_get) or the ticket or phase id (tracker_get)."
     )]
     async fn search_corpus(
         &self,
@@ -468,9 +468,9 @@ impl ServerHandler for CorpusServer {
             after pushing changes (it otherwise updates every 15 minutes). The decision/incident \
             ledger is indexed too: pass corpus=\"ledger\" to `search_corpus` for a semantic search \
             over it (better recall than the ledger server's keyword search). The tracker's \
-            documents and tickets are indexed too: pass corpus=\"tracker\" to find planned, \
-            specced or queued work; each hit's `citation` is `<project>:<path>@r<revision>` or an \
-            ticket id. Writing to the ledger (create/append) and exact lookups are on the separate \
+            documents, tickets and phases are indexed too: pass corpus=\"tracker\" to find planned, \
+            specced or queued work; each hit's `citation` is `<project>:<path>@r<revision>` or a \
+            ticket or phase id. Writing to the ledger (create/append) and exact lookups are on the separate \
             `ledger_*` MCP server; the tracker's are on the `tracker_*` server.",
         )
     }

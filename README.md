@@ -375,22 +375,41 @@ specs and concepts move out of the project's repository into it, keeping their p
   resolution, leaving out any ticket that is a draft now, drawn by the web UI's
   report page (`/projects/{project}/report`). See `specs/tracker/api.md` § *Velocity*.
 
+- **The roadmap** (spec:roadmap): a project's ordered list of **phases** ("Creatures"),
+  planned work written up and reviewed out of the queue. A ticket in a planned phase is
+  **frozen**: it is in no queue figure, `tracker_next` and a gate's batch never see it, and
+  planning wakes no monitor, because roadmap events are left out of the feed unless a client
+  passes `roadmap=true`. **Release** joins a phase's tickets to the queue in one transaction
+  and sends one frame; **recall** undoes it for the tickets still `pending`; a ticket keeps
+  its link for life. The **forward look** (`GET /tracker/{project}/roadmap`) gives each phase
+  an ETA from live velocity and live counts, durations of active work and never dates, with
+  how far out development is planned. No new tools: `tracker_create` takes `phase`,
+  `tracker_create_record` takes kind `phase`, `tracker_update` takes `phase` and `frozen`,
+  `tracker_update_record phase:<id>` edits it and with `state` releases (`released`),
+  recalls (`planned`), archives or unarchives it, `tracker_move` moves it,
+  `tracker_list what=phases` is the forward look, `what=items phase=<id>` its tickets,
+  `tracker_get phase:<id>` the phase and every ticket in full (the review pass in one
+  call), and `tracker_queue` ends with `Roadmap: 2 planned · 45 frozen · planned out 6
+  days`. Frozen tickets stay searchable in `corpus = tracker`, their header saying
+  `Phase: Creatures · frozen`, and a phase is a hit of its own, cited by its id. See
+  `specs/tracker/api.md` § *Phases and the roadmap*.
+
 - **MCP tools** (m02): `rag-mcp --server tracker` (stdio) or `/tracker` on the gateway, each
   forwarding to the API (`crates/mcp/src/tracker.rs`): `tracker_queue` (the dashboard as
   compact text: requests first, then review, then the queue with gate markers, blocked and deferred, bounded by `limit` (default 20),
   `until_gate` and `sections`, done only counted unless asked for, a `Not shown:` count
-  footer, then the velocity line, left out when that second read fails), `tracker_next` (the next `n` dispatchable tickets in full, stopping at the first
+  footer, then the velocity and roadmap lines, each left out when its own read fails), `tracker_next` (the next `n` dispatchable tickets in full, stopping at the first
   gate; rag-t0006; then any `parallel` tickets below the gate, which may start now and land
   after it, rag-t0013), `tracker_list`, `tracker_get` (history only when asked: `history:
   true` or `N`, rag-t0039), `tracker_create` (tickets and gates), `tracker_create_record`
-  (specs, milestones, concepts, documents), `tracker_update` (tickets),
-  `tracker_update_record` (specs, milestones, concepts), `tracker_move`, `tracker_doc_get`,
+  (specs, milestones, concepts, documents, phases), `tracker_update` (tickets),
+  `tracker_update_record` (specs, milestones, concepts, phases), `tracker_move`, `tracker_doc_get`,
   `tracker_doc_edit`, `tracker_attach`, `tracker_attachment_get` and `tracker_ack_done`.
   Every write carries `surface: mcp`, the git email and the `agent` passed, and answers with
   one line (`ok ubu-t0042 status: in_progress → done (#13950)`). Who may write what (the
   manager writes the queue; a sub-agent edits documents and notes its own task) and the
   rules every write shares are in the server's instructions, once, not in each tool, and
-  are not enforced. The fourteen tool definitions come to about 10k characters (~2.6k
+  are not enforced. The fourteen tool definitions come to about 11.4k characters (~2.9k
   tokens), down from 32k for twelve (rag-t0039). Over stdio, attachments are local files;
   over the gateway, base64 of at most 10 MB.
 
@@ -430,17 +449,18 @@ specs and concepts move out of the project's repository into it, keeping their p
   surface, message), each one's line diff and body, and *Restore* (with a message). The
   search view's **Corpus** filter searches the tracker (`corpus=tracker`).
 
-- **Search** (m05): every document (at its current revision, chunked) and every ticket (its
-  title, type, status, body and notes, done and cancelled ones included) is indexed as
+- **Search** (m05): every document (at its current revision, chunked), every ticket (its
+  title, type, status, labels, phase, body and notes, done, cancelled and frozen ones
+  included) and every phase (its title, state and body) is indexed as
   `corpus = tracker` by `rag-ingest reconcile-tracker`, a pull-based incremental reconcile in
   the ledger's style. `rag-serve` touches a trigger file after each successful tracker write
   (`server.tracker_reindex_trigger`), so a change is searchable within seconds; a 15-minute
   timer is the backstop. `search_corpus` takes `corpus: "tracker"` (and `repo` for the
   project), as does `POST /search` (`"filters": {"corpus": "tracker"}`). A tracker hit
-  carries `repo` (the project), `rel_path` (the document path, or the ticket id), `title`,
-  `kind` (`spec`, `milestone`, `concept`, `doc` or `item`), `tracker_id` (what `tracker_get`
-  takes), `revision`, `type` and `status` (tickets), a line range (documents), and
-  **`citation`**: `<project>:<path>@r<revision>` for a document chunk, the ticket id for a
+  carries `repo` (the project), `rel_path` (the document path, or the ticket or phase id), `title`,
+  `kind` (`spec`, `milestone`, `concept`, `doc`, `item` or `phase`), `tracker_id` (what `tracker_get`
+  takes), `revision`, `type` and `status` (tickets; a phase's `status` is its state), a line range (documents), and
+  **`citation`**: `<project>:<path>@r<revision>` for a document chunk, the phase id for a phase, the ticket id for a
   ticket. The corpus sync never purges tracker or ledger points.
 
 Built so far: the store and the API (m01), the MCP tools (m02), the dashboard (m03), the

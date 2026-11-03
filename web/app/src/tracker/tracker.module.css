@@ -82,7 +82,8 @@
   font-size: var(--rag-text-s);
 }
 
-.notice > span {
+.notice > span,
+.notice > div {
   flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
@@ -956,6 +957,16 @@
 /* The Parallel badge (rag-t0013). */
 .parallel {
   display: inline-flex;
+}
+
+/* A Frozen badge (spec:roadmap RM-48): the neutral badge, in deferred's teal. */
+.frozenBadge {
+  display: inline-flex;
+}
+
+.frozenBadge > span {
+  color: var(--rag-teal);
+  border-color: var(--rag-teal);
 }
 
 /* A Draft badge (2026-10-30): the neutral badge, its edge dashed. */

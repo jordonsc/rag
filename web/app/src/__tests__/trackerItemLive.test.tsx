@@ -92,6 +92,27 @@ describe('the item page, live', () => {
     expect(url.searchParams.get('format')).toBe('json');
     // The feed leaves drafts out by default; the owner's page follows them.
     expect(url.searchParams.get('drafts')).toBe('true');
+    // So too a frozen ticket's and a phase's events (spec:roadmap D19). A frozen
+    // draft's carry both flags, so the page needs both.
+    expect(url.searchParams.get('roadmap')).toBe('true');
+  });
+
+  it('shows a stamped event on a frozen ticket’s page without a reload (spec:roadmap RM-40)', async () => {
+    current = { ...current, frozen: true, queued: false, phase: 'demo-p0001' };
+    server.on('/tracker/demo/roadmap?window=7d', {
+      status: 500,
+      body: { error: 'not under test' },
+    });
+    open();
+    await screen.findByRole('heading', { name: 'Next up' });
+    await feed();
+    act(() => socket().open());
+
+    current = { ...current, title: 'Edited while frozen' };
+    act(() =>
+      socket().send(event(ID, { roadmap: true, fields: { title: 'Edited while frozen' } })),
+    );
+    expect(await screen.findByRole('heading', { name: 'Edited while frozen' })).toBeInTheDocument();
   });
 
   it('shows an agent’s write to the ticket without a reload', async () => {

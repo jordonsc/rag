@@ -12,9 +12,13 @@
 //!   revision and the chunk's line range. Point ids are keyed on the document id,
 //!   not the path, so an edit or a rename overwrites the same points and prunes the
 //!   tail: no point of an old revision or an old path survives a reconcile.
-//! * **an item** (`ubu-t0042`): one point of its title, type, status, labels, body
-//!   and notes (chunked only if it outgrows a chunk, which a queue item rarely
-//!   does). A status or label change changes its hash, so its point is rewritten.
+//! * **an item** (`ubu-t0042`): one point of its title, type, status, labels, phase,
+//!   body and notes (chunked only if it outgrows a chunk, which a queue item rarely
+//!   does). A status or label change changes its hash, so its point is rewritten,
+//!   and so do a release, a recall and a phase's rename, for each ticket linked.
+//! * **a phase** (`ubu-p0001`, spec:roadmap D28): one point of its title, state and
+//!   body, cited by its id, read with `tracker_get`. A phase is never deleted, in any
+//!   state, so it is never purged.
 //!
 //! Durability as the corpus and the ledger: token-safe batches, each unit written
 //! as soon as its vectors arrive and its stale points pruned only after, and a
@@ -30,7 +34,7 @@ use rag_core::hashing::hash_str;
 use rag_core::ids;
 use rag_core::model::{Corpus, TrackerPayload, TrackerPoint, TrackerPointKind};
 use rag_core::qdrant::VectorStore;
-use rag_core::tracker::{DocForIndex, IndexSnapshot, ItemForIndex, TrackerStore};
+use rag_core::tracker::{DocForIndex, IndexSnapshot, ItemForIndex, PhaseForIndex, TrackerStore};
 use rag_core::voyage::VoyageClient;
 
 use crate::breaker::{self, Breaker};
@@ -47,6 +51,8 @@ const BREAKER_FILE: &str = ".rag-tracker-breaker.json";
 /// Not bumped for labels (rag-t0027): an item's hash is taken over its text, the
 /// `Labels:` line is only written when it has labels, so an unlabelled item's
 /// text and point are unchanged and a labelled one re-indexes by its own hash.
+/// Nor for phases (spec:roadmap D28), by the same reasoning: the `Phase:` line is
+/// only written for a ticket with a phase, and no ticket had one before they existed.
 const INDEX_FORMAT: u32 = 1;
 
 /// Where tracker points are written. [`VectorStore`] in production; a map in
@@ -116,7 +122,8 @@ fn doc_hash(d: &DocForIndex) -> String {
 }
 
 /// An item's searchable text: its title, what it is, its labels (when it has
-/// any), its body and its notes.
+/// any), its phase (when it has one, saying whether it is frozen there: frozen
+/// tickets are searchable, spec:roadmap D28), its body and its notes.
 pub fn item_text(i: &ItemForIndex) -> String {
     let mut t = format!(
         "{}\n{} {} · {} · {}",
@@ -125,6 +132,13 @@ pub fn item_text(i: &ItemForIndex) -> String {
     if !i.labels.is_empty() {
         t.push_str("\nLabels: ");
         t.push_str(&i.labels.join(", "));
+    }
+    if let Some(p) = &i.phase {
+        t.push_str("\nPhase: ");
+        t.push_str(&p.title);
+        if p.frozen {
+            t.push_str(" · frozen");
+        }
     }
     if !i.body.trim().is_empty() {
         t.push_str("\n\n");
@@ -142,6 +156,20 @@ pub fn item_text(i: &ItemForIndex) -> String {
 
 fn item_hash(text: &str) -> String {
     hash_str(&format!("tracker-item v{INDEX_FORMAT}\u{0}{text}"))
+}
+
+/// A phase's searchable text: its title, what it is and its body, when it has one.
+pub fn phase_text(p: &PhaseForIndex) -> String {
+    let mut t = format!("{}\n{} {} · phase · {}", p.title, p.project, p.id, p.state);
+    if !p.body.trim().is_empty() {
+        t.push_str("\n\n");
+        t.push_str(p.body.trim());
+    }
+    t
+}
+
+fn phase_hash(text: &str) -> String {
+    hash_str(&format!("tracker-phase v{INDEX_FORMAT}\u{0}{text}"))
 }
 
 /// A document's points: one per chunk of its current body. Each chunk's text
@@ -234,6 +262,46 @@ pub fn item_unit(
     })
 }
 
+/// A phase's point (more than one only if its text outgrows a chunk).
+pub fn phase_unit(
+    p: &PhaseForIndex,
+    text: &str,
+    hash: String,
+    chunker: &Chunker,
+) -> anyhow::Result<Unit> {
+    let mut points = Vec::new();
+    for (ci, chunk) in chunker.chunk_text(text)?.into_iter().enumerate() {
+        points.push(TrackerPoint {
+            id: ids::tracker_point_id(&p.id, ci as u32),
+            payload: TrackerPayload {
+                corpus: Corpus::Tracker,
+                repo: p.project.clone(),
+                rel_path: p.id.clone(),
+                language: "markdown".into(),
+                tracker_id: p.id.clone(),
+                point_kind: TrackerPointKind::Phase.as_str().into(),
+                kind: "phase".into(),
+                item_type: None,
+                status: Some(p.state.as_str().into()),
+                title: p.title.clone(),
+                revision: None,
+                citation: p.id.clone(),
+                chunk_index: ci as u32,
+                start_line: 0,
+                end_line: 0,
+                content_hash: hash_str(&chunk),
+                text: chunk,
+                tracker_hash: hash.clone(),
+            },
+        });
+    }
+    Ok(Unit {
+        tracker_id: p.id.clone(),
+        tracker_hash: hash,
+        points,
+    })
+}
+
 /// Diff the store against the index. Only changed units are chunked.
 pub fn plan(
     snapshot: &IndexSnapshot,
@@ -241,7 +309,7 @@ pub fn plan(
     chunker: &Chunker,
 ) -> anyhow::Result<Plan> {
     let mut plan = Plan {
-        units: snapshot.documents.len() + snapshot.items.len(),
+        units: snapshot.documents.len() + snapshot.items.len() + snapshot.phases.len(),
         ..Default::default()
     };
     let mut desired: HashSet<&str> = HashSet::with_capacity(plan.units);
@@ -262,6 +330,16 @@ pub fn plan(
             plan.unchanged += 1;
         } else {
             plan.changed.push(item_unit(i, &text, hash, chunker)?);
+        }
+    }
+    for p in &snapshot.phases {
+        desired.insert(&p.id);
+        let text = phase_text(p);
+        let hash = phase_hash(&text);
+        if indexed.get(&p.id) == Some(&hash) {
+            plan.unchanged += 1;
+        } else {
+            plan.changed.push(phase_unit(p, &text, hash, chunker)?);
         }
     }
     let mut removed: Vec<String> = indexed
@@ -361,7 +439,7 @@ pub async fn run(cfg: &Config) -> anyhow::Result<()> {
             last_error = %st.error,
             state = %breaker_path.display(),
             "CIRCUIT BREAKER OPEN: this tracker reconcile has failed identically {} runs in a row; \
-             NOT re-attempting it until a document or item changes (delete the state file to retry now)",
+             NOT re-attempting it until a document, item or phase changes (delete the state file to retry now)",
             st.consecutive
         );
         anyhow::bail!(
@@ -379,10 +457,11 @@ pub async fn run(cfg: &Config) -> anyhow::Result<()> {
     let total = store.points_count().await.unwrap_or(0);
     println!("== reconcile-tracker ==");
     println!(
-        "units in tracker : {} ({} documents, {} items)",
+        "units in tracker : {} ({} documents, {} items, {} phases)",
         plan.units,
         snapshot.documents.len(),
-        snapshot.items.len()
+        snapshot.items.len(),
+        snapshot.phases.len()
     );
     println!("unchanged        : {}", plan.unchanged);
     println!("changed/new      : {}", plan.changed.len());

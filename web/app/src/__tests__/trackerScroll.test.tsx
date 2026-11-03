@@ -414,7 +414,7 @@ describe('the dashboard and the item page', () => {
 });
 
 describe('the links back', () => {
-  it('the Queue, Documents and History tabs each carry the return', async () => {
+  it('the Queue, Roadmap, Documents and History tabs each carry the return', async () => {
     const user = userEvent.setup();
     shell(
       <Routes>
@@ -423,6 +423,7 @@ describe('the links back', () => {
       '/start',
     );
     for (const [name, path] of [
+      ['Roadmap', '/projects/demo/roadmap'],
       ['Documents', '/projects/demo/docs'],
       ['History', '/projects/demo/history'],
       ['Queue', '/projects/demo'],

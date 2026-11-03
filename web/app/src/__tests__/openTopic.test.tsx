@@ -19,6 +19,8 @@ import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { App } from '../App';
+import { expandShortId, OPEN_ID_ERROR } from '../ledger/OpenTopic';
+import { phaseProject } from '../tracker/paths';
 import { NotFoundView } from '../views/NotFoundView';
 import { RECORD, Server, archivedSearch, liveSearch } from './fixtures';
 import { mount } from './harness';
@@ -127,6 +129,62 @@ describe('the id box in the shell', () => {
     await user.type(bar(), `${typed}{Enter}`);
 
     expect(screen.getByTestId('address')).toHaveTextContent(landed);
+  });
+
+  // spec:roadmap m04: a phase has a page of its own, and its project is in its id.
+  it.each([
+    ['ubu-p0001', '/', '/projects/ubu/roadmap/ubu-p0001'],
+    ['shq-suite-p0012', '/archived', '/projects/shq-suite/roadmap/shq-suite-p0012'],
+    ['p2', '/projects/ubu', '/projects/ubu/roadmap/ubu-p0002'],
+    ['P0002', '/projects/ubu/docs', '/projects/ubu/roadmap/ubu-p0002'],
+  ])(
+    'opens the phase id %s from %s at its page, with no round trip of its own',
+    async (id, route, to) => {
+      const user = userEvent.setup();
+      server.on(/\/ledger\/search/, archivedSearch());
+      mount(<App />, { route });
+      await user.type(bar(), `${id}{Enter}`);
+      expect(screen.getByTestId('address')).toHaveTextContent(to);
+      expect(screen.queryByText(OPEN_ID_ERROR)).toBeNull();
+    },
+  );
+
+  it('answers a phase that does not exist on its page, naming it', async () => {
+    const user = userEvent.setup();
+    server.on(/\/ledger\/search/, archivedSearch());
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve({
+          ok: false,
+          status: 404,
+          headers: new Headers(),
+          text: () => Promise.resolve(JSON.stringify({ error: 'no phase "ubu-p0404"' })),
+        } as Response),
+      ),
+    );
+    mount(<App />);
+    await user.type(bar(), 'ubu-p0404{Enter}');
+    expect(await screen.findByText('There is no phase ubu-p0404 in ubu.')).toBeInTheDocument();
+  });
+
+  it('refuses a short phase id away from a project, which has none to assume', async () => {
+    const user = userEvent.setup();
+    mount(<App />);
+    await user.type(bar(), 'p0001{Enter}');
+    expect(screen.getByRole('alert')).toHaveTextContent(OPEN_ID_ERROR);
+    expect(screen.getByTestId('address').textContent).toBe('/');
+  });
+
+  it('does not take a phase id’s look-alike for a phase', () => {
+    expect(phaseProject('ubu-p0001')).toBe('ubu');
+    expect(phaseProject('shq-suite-p0012')).toBe('shq-suite');
+    expect(phaseProject('ubu-p01')).toBeNull();
+    expect(phaseProject('ubu-t0001')).toBeNull();
+    expect(phaseProject('ubu-p-0001')).toBeNull();
+    expect(phaseProject('p0001')).toBeNull();
+    expect(expandShortId('p7', 'ubu')).toBe('ubu-p0007');
+    expect(expandShortId('p7', null)).toBe('p7');
   });
 
   it('opens a short document id in the project on screen', async () => {

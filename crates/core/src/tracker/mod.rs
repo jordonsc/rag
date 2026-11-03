@@ -20,11 +20,18 @@
 //! * **The queue is a doubly linked list** (D5, `list.rs`). Every list change is
 //!   one transaction relinking at most four rows; [`TrackerStore::check`] proves
 //!   the list sound.
+//! * **Two kinds of list own a ticket's links** (spec:roadmap D2, `list.rs`'s
+//!   `Owner`): the project's queue, or a planned phase (`phases.rs`) while the
+//!   ticket is frozen. A frozen ticket is out of the queue and of every queue
+//!   figure (D20), its events are stamped out of the default feed (D17,
+//!   [`event_is_roadmap`]), and its `status` span reads `frozen` (D21). Release
+//!   and recall move a phase's tickets in one transaction, and `roadmap.rs`
+//!   computes the forward look on request.
 //! * **Documents are revisioned** (D9, `docs.rs`). An edit names the revision it
 //!   read; an edit against an older one is refused with [`TrackerError::Stale`].
 //! * **A ticket's spans follow its row** (spec:velocity D22, `spans.rs`): every
-//!   item event reconciles the ticket's open `item_spans` with its status, block
-//!   and draft flag in the same transaction, so the velocity read
+//!   item event reconciles the ticket's open `item_spans` with its status, block,
+//!   draft flag and frozen flag in the same transaction, so the velocity read
 //!   (`velocity.rs`) and the report (`report.rs`) are range reads, never a
 //!   replay of history.
 //!
@@ -40,8 +47,10 @@ mod index;
 mod items;
 mod labels;
 mod list;
+mod phases;
 mod records;
 mod report;
+mod roadmap;
 mod spans;
 mod velocity;
 
@@ -68,18 +77,22 @@ pub use feed::{
     burst_line, describe_changes, joins_burst, FeedEvent, FeedFilter, BURST_WINDOW_SECS,
     DEFAULT_FEED_KINDS, FEED_CAPACITY,
 };
-pub use index::{DocForIndex, IndexSnapshot, ItemForIndex};
+pub use index::{DocForIndex, IndexSnapshot, ItemForIndex, ItemPhase, PhaseForIndex};
 pub use items::{
     default_approval, queued_status, transition_allowed, Item, ItemRecord, ItemUpdate, NewItem,
     ProjectSummary, QueueView,
 };
 pub use labels::{clean_labels, label_key, LabelCount, MAX_LABELS, MAX_LABEL_CHARS};
 pub use list::{IntegrityReport, Place};
+pub use phases::{
+    NewPhase, Phase, PhaseChange, PhaseOutcome, PhaseRecord, PhaseSize, PhaseUpdate, Waiting,
+};
 pub use records::{
     Concept, ConceptRecord, ConceptUpdate, Milestone, MilestoneRecord, MilestoneUpdate, NewConcept,
     NewMilestone, NewSpec, Spec, SpecRecord, SpecUpdate,
 };
 pub use report::{Bucket, Mttc, Mttr, Report, ReportStates, ReportWindow, StateTime};
+pub use roadmap::{PhaseFigures, Roadmap, RoadmapQueue};
 pub use velocity::{
     active_seconds, eta_days, velocity_per_day, Velocity, VelocityWindow, VelocityWindows,
     IDLE_GAP, MIN_ACTIVE,
@@ -326,6 +339,10 @@ str_enum!(
         Assign => "assign",
         Acknowledge => "acknowledge",
         Rename => "rename",
+        /// A phase's tickets joined the queue (spec:roadmap D11, D18).
+        Release => "release",
+        /// A released phase's pending tickets were frozen again (D12, D18).
+        Recall => "recall",
     }
 );
 
@@ -355,6 +372,18 @@ str_enum!(
         Open => "open",
         Refining => "refining",
         Refined => "refined",
+        Archived => "archived",
+    }
+);
+
+str_enum!(
+    /// A phase's state (spec:roadmap D1). `complete` is derived, not a state (D15).
+    PhaseState, "phase state" {
+        /// On the roadmap: its tickets are frozen, in its own list.
+        Planned => "planned",
+        /// Its tickets have joined the queue; they keep their link to it.
+        Released => "released",
+        /// Out of the roadmap; phases are never deleted (D14).
         Archived => "archived",
     }
 );
@@ -406,6 +435,8 @@ str_enum!(
         Milestone => "milestone",
         Concept => "concept",
         Document => "document",
+        /// A roadmap phase (spec:roadmap D1), by its id.
+        Phase => "phase",
     }
 );
 
@@ -500,6 +531,9 @@ pub struct Event {
     /// Written while its record was a draft (rag, owner 2026-10-30): the feed
     /// leaves it out unless asked for drafts. See [`event_is_draft`].
     pub draft: bool,
+    /// A roadmap change (spec:roadmap D17): the feed leaves it out unless asked
+    /// for them. See [`event_is_roadmap`].
+    pub roadmap: bool,
 }
 
 // ---- Store ------------------------------------------------------------------
@@ -577,6 +611,10 @@ impl TrackerStore {
                 Err(e) => return Err(e.into()),
             }
         }
+        // After the columns they name exist. Never in SCHEMA_SQL, which runs
+        // first: on an older database its CREATE TABLE is a no-op, the index
+        // would fail with `no such column`, and the store would not open.
+        sqlx::query(ROADMAP_INDEXES_SQL).execute(&self.pool).await?;
         // Before the migrations: they append item events, whose hook would open
         // spans and leave `item_spans` non-empty, so the backfill would never run.
         self.backfill_item_spans().await?;
@@ -853,10 +891,12 @@ async fn append_event(
     now: &str,
 ) -> TResult<i64> {
     let draft = event_is_draft(conn, project, target_kind, target_id, fields, before).await?;
+    let roadmap = event_is_roadmap(conn, target_kind, target_id, kind, fields, before).await?;
     let before = before.map(serde_json::to_string).transpose()?;
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO events (project, target_kind, target_id, ts, author_email, agent, surface, \
-         kind, body, fields, fields_before, draft) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) \
+         kind, body, fields, fields_before, draft, roadmap) \
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) \
          RETURNING event_id",
     )
     .bind(project)
@@ -871,6 +911,7 @@ async fn append_event(
     .bind(serde_json::to_string(fields)?)
     .bind(before)
     .bind(draft as i64)
+    .bind(roadmap as i64)
     .fetch_one(&mut *conn)
     .await?;
     // Keep the ticket's spans in step with its row, in this same transaction
@@ -914,6 +955,45 @@ pub(crate) async fn event_is_draft(
     record_is_draft(conn, project, target_kind, target_id).await
 }
 
+/// Whether an event is a **roadmap event** (spec:roadmap D17, R8): one the feed
+/// leaves out unless asked for them, so planning wakes no monitor.
+///
+/// Every event of a phase but its release or recall, which are its one frame each
+/// (D18). A ticket's event when the ticket was frozen before the write (`before`
+/// records it: every write that thaws a ticket says so), is frozen after it (read
+/// from the row, in the writing transaction, as [`event_is_draft`] reads its flag),
+/// or when the event, other than a create, names `phase` (a link-only write on a
+/// queued ticket is a roadmap change too). A create in a released phase is a queue
+/// ticket arriving. Unlike a draft's flip nothing is announced on the way in or
+/// out, and an event on any other record is never one: a request's `link` for a
+/// frozen ticket's `from` is on the request.
+pub(crate) async fn event_is_roadmap(
+    conn: &mut SqliteConnection,
+    target_kind: TargetKind,
+    target_id: &str,
+    kind: EventKind,
+    fields: &serde_json::Value,
+    before: Option<&serde_json::Value>,
+) -> TResult<bool> {
+    match target_kind {
+        TargetKind::Phase => Ok(!matches!(kind, EventKind::Release | EventKind::Recall)),
+        TargetKind::Item => {
+            if before.and_then(|b| b.get("frozen")?.as_bool()) == Some(true) {
+                return Ok(true);
+            }
+            if kind != EventKind::Create && fields.get("phase").is_some() {
+                return Ok(true);
+            }
+            let frozen: Option<i64> = sqlx::query_scalar("SELECT frozen FROM items WHERE id = ?")
+                .bind(target_id)
+                .fetch_optional(&mut *conn)
+                .await?;
+            Ok(frozen.unwrap_or(0) != 0)
+        }
+        _ => Ok(false),
+    }
+}
+
 /// Whether a record is a draft now (see [`event_is_draft`]).
 pub(crate) async fn record_is_draft(
     conn: &mut SqliteConnection,
@@ -944,7 +1024,7 @@ pub(crate) async fn record_is_draft(
             .fetch_optional(&mut *conn)
             .await?
         }
-        TargetKind::Spec | TargetKind::Milestone => return Ok(false),
+        TargetKind::Spec | TargetKind::Milestone | TargetKind::Phase => return Ok(false),
     };
     Ok(draft.unwrap_or(0) != 0)
 }
@@ -961,6 +1041,7 @@ struct EventRow {
     fields: String,
     fields_before: Option<String>,
     draft: i64,
+    roadmap: i64,
 }
 
 impl EventRow {
@@ -979,6 +1060,7 @@ impl EventRow {
                 .as_deref()
                 .and_then(|b| serde_json::from_str(b).ok()),
             draft: self.draft != 0,
+            roadmap: self.roadmap != 0,
         })
     }
 }
@@ -992,7 +1074,7 @@ async fn events_for(
 ) -> TResult<Vec<Event>> {
     let rows = sqlx::query_as::<_, EventRow>(
         "SELECT event_id, ts, author_email, agent, surface, kind, body, fields, fields_before, \
-         draft FROM events \
+         draft, roadmap FROM events \
          WHERE project = ? AND target_kind = ? AND target_id = ? ORDER BY event_id",
     )
     .bind(project)
@@ -1126,7 +1208,31 @@ pub(crate) const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
     ("items", "draft", "INTEGER NOT NULL DEFAULT 0"),
     ("documents", "draft", "INTEGER NOT NULL DEFAULT 0"),
     ("events", "draft", "INTEGER NOT NULL DEFAULT 0"),
+    // spec:roadmap (D1, D2, D17): a project's roadmap and phase sequence, a
+    // ticket's phase and frozen flag, and an event stamped as a roadmap change.
+    ("projects", "phase_seq", "INTEGER NOT NULL DEFAULT 0"),
+    ("projects", "roadmap_head_id", "TEXT"),
+    ("projects", "roadmap_tail_id", "TEXT"),
+    ("items", "phase_id", "TEXT"),
+    ("items", "frozen", "INTEGER NOT NULL DEFAULT 0"),
+    ("events", "roadmap", "INTEGER NOT NULL DEFAULT 0"),
 ];
+
+/// The indexes on the roadmap's added columns (spec:roadmap D2), run by
+/// [`TrackerStore::open`] straight after [`ADDED_COLUMNS`]. **Never in
+/// [`SCHEMA_SQL`]:** that runs first, its `CREATE TABLE items` is a no-op on an
+/// older database, so these would fail with `no such column`, the store would not
+/// open and every tracker route would answer 503. The first is partial so a
+/// `frozen = 0` read can never pick it over `idx_items_project`. The last covers
+/// the velocity read's events (`velocity::ACTIVITY_SQL`): `ts` comes from the
+/// index and `draft` and `roadmap` from its condition, so the read never touches
+/// the table, whose rows hold every event's body (rag-l0107).
+pub(crate) const ROADMAP_INDEXES_SQL: &str = "
+CREATE INDEX IF NOT EXISTS idx_items_project_frozen ON items(project) WHERE frozen = 1;
+CREATE INDEX IF NOT EXISTS idx_items_phase ON items(phase_id);
+CREATE INDEX IF NOT EXISTS idx_events_activity ON events(project, ts)
+    WHERE draft = 0 AND roadmap = 0;
+";
 
 pub(crate) const SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -1135,6 +1241,9 @@ CREATE TABLE IF NOT EXISTS projects (
     tail_id    TEXT,
     item_seq   INTEGER NOT NULL DEFAULT 0,
     doc_seq    INTEGER NOT NULL DEFAULT 0,
+    phase_seq  INTEGER NOT NULL DEFAULT 0,
+    roadmap_head_id TEXT,
+    roadmap_tail_id TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -1155,6 +1264,8 @@ CREATE TABLE IF NOT EXISTS items (
     release         INTEGER NOT NULL DEFAULT 0,
     parallel        INTEGER NOT NULL DEFAULT 0,
     draft           INTEGER NOT NULL DEFAULT 0,
+    phase_id        TEXT,
+    frozen          INTEGER NOT NULL DEFAULT 0,
     prev_id         TEXT,
     next_id         TEXT,
     created_at      TEXT NOT NULL,
@@ -1305,6 +1416,7 @@ CREATE TABLE IF NOT EXISTS events (
     surface      TEXT NOT NULL,
     kind         TEXT NOT NULL,
     body         TEXT NOT NULL,
+    roadmap      INTEGER NOT NULL DEFAULT 0,
     fields       TEXT NOT NULL DEFAULT '{}',
     fields_before TEXT,
     draft        INTEGER NOT NULL DEFAULT 0
@@ -1335,6 +1447,33 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_item_spans_open ON item_spans(item_id, tra
 -- index above holds only the open ones): what the velocity read's
 -- draft-at-the-time check and the report's per-ticket sums read.
 CREATE INDEX IF NOT EXISTS idx_item_spans_item ON item_spans(item_id, track, started_event);
+-- spec:roadmap D22, the velocity read's check that a `done` span did not follow a
+-- `frozen` one. Only frozen spans, so a ticket's other status spans are never read
+-- for it and a project with no roadmap pays nothing (rag-l0107). Here, not in
+-- ROADMAP_INDEXES_SQL: no column of `item_spans` is an added one.
+CREATE INDEX IF NOT EXISTS idx_item_spans_frozen ON item_spans(item_id, ended_event)
+    WHERE state = 'frozen';
 -- Activity (D6) is a range read of a project's events by time.
 CREATE INDEX IF NOT EXISTS idx_events_project_ts ON events(project, ts);
+
+-- spec:roadmap (D1). A project's phases: `prev_id`/`next_id` their order on the
+-- roadmap (planned phases only; the ends are on the project row), `head_id`/
+-- `tail_id` the ends of a planned phase's list of frozen tickets. The tickets'
+-- own columns, and their indexes, are in ADDED_COLUMNS and ROADMAP_INDEXES_SQL.
+CREATE TABLE IF NOT EXISTS phases (
+    id          TEXT PRIMARY KEY,
+    project     TEXT NOT NULL REFERENCES projects(name),
+    seq         INTEGER NOT NULL,
+    title       TEXT NOT NULL,
+    body        TEXT NOT NULL DEFAULT '',
+    state       TEXT NOT NULL,
+    prev_id     TEXT,
+    next_id     TEXT,
+    head_id     TEXT,
+    tail_id     TEXT,
+    released_at TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_phases_project ON phases(project, state);
 ";

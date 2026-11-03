@@ -44,8 +44,9 @@ use rag_core::hashing::hash_str;
 use rag_core::tracker::{
     default_approval, Actor, Approval, BlockReason, ConceptState, ConceptUpdate, DocKind, Edit,
     Intensity, ItemStatus, ItemType, ItemUpdate, Link, MilestoneState, MilestoneUpdate,
-    NewAttachment, NewConcept, NewDocument, NewItem, NewMilestone, NewSpec, Place, Replacement,
-    ReportWindow, SpecState, SpecUpdate, Surface, TrackerError, TrackerStore, MAX_ATTACHMENT_BYTES,
+    NewAttachment, NewConcept, NewDocument, NewItem, NewMilestone, NewPhase, NewSpec, PhaseChange,
+    PhaseUpdate, Place, Replacement, ReportWindow, SpecState, SpecUpdate, Surface, TrackerError,
+    TrackerStore, MAX_ATTACHMENT_BYTES,
 };
 
 /// Body limit for the JSON routes: a document may be up to 4 MB, and JSON
@@ -96,6 +97,26 @@ pub fn router(store: Option<TrackerStore>, reindex_trigger: Option<PathBuf>) -> 
         )
         .route("/tracker/items/{id}", get(item_get).post(item_update))
         .route("/tracker/items/{id}/move", post(item_move))
+        .route("/tracker/{project}/roadmap", get(roadmap))
+        .route("/tracker/{project}/phases", post(phase_create))
+        .route(
+            "/tracker/{project}/phases/{id}",
+            get(phase_get).post(phase_update),
+        )
+        .route("/tracker/{project}/phases/{id}/move", post(phase_move))
+        .route(
+            "/tracker/{project}/phases/{id}/release",
+            post(phase_release),
+        )
+        .route("/tracker/{project}/phases/{id}/recall", post(phase_recall))
+        .route(
+            "/tracker/{project}/phases/{id}/archive",
+            post(phase_archive),
+        )
+        .route(
+            "/tracker/{project}/phases/{id}/unarchive",
+            post(phase_unarchive),
+        )
         .route("/tracker/{project}/docs", get(docs_list).post(doc_create))
         .route("/tracker/{project}/doc", get(doc_by_path))
         .route("/tracker/docs/{id}", get(doc_get))
@@ -372,7 +393,7 @@ async fn velocity(State(api): St, Path(project): Path<String>) -> ApiResult {
         .into_response())
 }
 
-/// `?window=` on the report: `24h` or `7d`, 7 days when absent.
+/// `?window=` on the report and the roadmap: `24h` or `7d`, 7 days when absent.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReportQuery {
@@ -380,17 +401,23 @@ struct ReportQuery {
     window: Option<String>,
 }
 
+impl ReportQuery {
+    fn window(&self) -> Result<ReportWindow, ApiError> {
+        Ok(self
+            .window
+            .as_deref()
+            .map(str::parse::<ReportWindow>)
+            .transpose()?
+            .unwrap_or_default())
+    }
+}
+
 /// The velocity report (spec:velocity D27): the window's burn-down, time in
 /// each state, MTTC and MTTR. Read-only; `no-store`, as the velocity read, for
 /// the same reason. Any window but `24h` and `7d` is a 400.
 async fn report(State(api): St, Path(project): Path<String>, Q(q): Q<ReportQuery>) -> ApiResult {
     rag_core::tracker::validate_project(&project)?;
-    let window = q
-        .window
-        .as_deref()
-        .map(str::parse::<ReportWindow>)
-        .transpose()?
-        .unwrap_or_default();
+    let window = q.window()?;
     let r = api
         .store()?
         .report(&project, window, chrono::Utc::now())
@@ -427,6 +454,9 @@ struct ItemsQuery {
     /// Only items carrying this label, matched case-insensitively (rag-t0027).
     #[serde(default)]
     label: Option<String>,
+    /// Only this phase's tickets, frozen ones included (spec:roadmap D20).
+    #[serde(default)]
+    phase: Option<String>,
 }
 
 async fn items_list(State(api): St, Path(project): Path<String>, Q(q): Q<ItemsQuery>) -> ApiResult {
@@ -435,10 +465,16 @@ async fn items_list(State(api): St, Path(project): Path<String>, Q(q): Q<ItemsQu
         .as_deref()
         .map(str::parse::<ItemStatus>)
         .transpose()?;
-    let items = api
-        .store()?
-        .list_items(&project, status, q.label.as_deref())
-        .await?;
+    let store = api.store()?;
+    let label = q.label.as_deref();
+    let items = match q.phase.as_deref() {
+        Some(phase) => {
+            store
+                .list_phase_items(&project, phase, status, label)
+                .await?
+        }
+        None => store.list_items(&project, status, label).await?,
+    };
     ok(&serde_json::json!({ "project": project, "items": items }))
 }
 
@@ -485,6 +521,9 @@ struct ItemCreateBody {
     note: Option<String>,
     #[serde(default)]
     draft: bool,
+    /// The phase it is created in (spec:roadmap D7).
+    #[serde(default)]
+    phase: Option<String>,
     author_email: String,
     #[serde(default)]
     agent: Option<String>,
@@ -493,32 +532,35 @@ struct ItemCreateBody {
 
 async fn item_create(State(api): St, Path(project): Path<String>, body: Bytes) -> ApiResult {
     let b: ItemCreateBody = parse(&body)?;
+    let phase = b.phase.as_deref().map(str::trim).map(str::to_string);
+    if phase.as_deref() == Some("") {
+        return Err(ApiError::BadRequest("phase is a phase id".into()));
+    }
     let place = place_of(b.before, b.after, b.top, b.bottom, false)?.unwrap_or(Place::Bottom);
     let actor = Actor::new(b.author_email, b.agent.as_deref(), b.surface);
     // Unnamed, a ticket broken out of a request is agent-approved (rag-t0044).
     let approval = b.approval.unwrap_or_else(|| default_approval(&b.links));
-    let rec = api
-        .store()?
-        .create_item(
-            NewItem {
-                draft: b.draft,
-                project,
-                item_type: b.item_type,
-                title: b.title,
-                body: b.body,
-                assignee: b.assignee,
-                approval,
-                links: b.links,
-                intensity: b.intensity,
-                release: b.release,
-                parallel: b.parallel,
-                labels: b.labels,
-                place,
-                note: b.note,
-            },
-            &actor,
-        )
-        .await?;
+    let new = NewItem {
+        draft: b.draft,
+        project,
+        item_type: b.item_type,
+        title: b.title,
+        body: b.body,
+        assignee: b.assignee,
+        approval,
+        links: b.links,
+        intensity: b.intensity,
+        release: b.release,
+        parallel: b.parallel,
+        labels: b.labels,
+        place,
+        note: b.note,
+    };
+    let store = api.store()?;
+    let rec = match &phase {
+        Some(phase) => store.create_item_in_phase(new, phase, &actor).await?,
+        None => store.create_item(new, &actor).await?,
+    };
     ok(&rec)
 }
 
@@ -564,15 +606,84 @@ struct ItemUpdateBody {
     note: Option<String>,
     #[serde(default)]
     draft: Option<bool>,
+    /// Single-purpose, with `frozen`: see [`phase_change_of`].
+    #[serde(default)]
+    phase: Option<String>,
+    #[serde(default)]
+    frozen: Option<bool>,
     author_email: String,
     #[serde(default)]
     agent: Option<String>,
     surface: Surface,
 }
 
+/// The phase write an update names, if any (spec:roadmap D8). `phase` and `frozen`
+/// are written alone, with at most a note, so a stamped event can never hide
+/// another change from the feed. No `..` here: a new field of the body stops this
+/// compiling until it is sorted into the fields refused beside them.
+fn phase_change_of(b: &ItemUpdateBody) -> Result<Option<PhaseChange>, ApiError> {
+    let ItemUpdateBody {
+        status,
+        blocked,
+        block_reason,
+        depends_on,
+        approval,
+        assignee,
+        title,
+        body,
+        add_links,
+        remove_links,
+        intensity,
+        release,
+        parallel,
+        labels,
+        note: _,
+        draft,
+        phase,
+        frozen,
+        author_email: _,
+        agent: _,
+        surface: _,
+    } = b;
+    let alone = status.is_none()
+        && blocked.is_none()
+        && block_reason.is_none()
+        && depends_on.is_none()
+        && approval.is_none()
+        && assignee.is_none()
+        && title.is_none()
+        && body.is_none()
+        && add_links.is_empty()
+        && remove_links.is_empty()
+        && intensity.is_none()
+        && release.is_none()
+        && parallel.is_none()
+        && labels.is_none()
+        && draft.is_none();
+    let change = match (phase.as_deref().map(str::trim), *frozen) {
+        (None, None) => return Ok(None),
+        (Some(_), Some(_)) => None,
+        _ if !alone => None,
+        (Some(""), None) => Some(PhaseChange::Clear),
+        (Some(phase), None) => Some(PhaseChange::Set(phase.to_string())),
+        (None, Some(frozen)) => Some(PhaseChange::Frozen(frozen)),
+    };
+    change.map(Some).ok_or_else(|| {
+        ApiError::BadRequest("phase and frozen are written alone, with at most a note".into())
+    })
+}
+
 async fn item_update(State(api): St, Path(id): Path<String>, body: Bytes) -> ApiResult {
     let b: ItemUpdateBody = parse(&body)?;
+    let change = phase_change_of(&b)?;
     let actor = Actor::new(b.author_email, b.agent.as_deref(), b.surface);
+    if let Some(change) = change {
+        let rec = api
+            .store()?
+            .set_item_phase(&id, change, b.note.as_deref(), &actor)
+            .await?;
+        return ok(&rec);
+    }
     let rec = api
         .store()?
         .update_item(
@@ -627,6 +738,230 @@ async fn item_move(State(api): St, Path(id): Path<String>, body: Bytes) -> ApiRe
     let rec = api
         .store()?
         .move_item(&id, place, b.note.as_deref(), &actor)
+        .await?;
+    ok(&rec)
+}
+
+// ---- Phases -----------------------------------------------------------------------
+
+/// The forward look (spec:roadmap D24): computed on request, so `no-store`, as the
+/// velocity read and the report.
+async fn roadmap(State(api): St, Path(project): Path<String>, Q(q): Q<ReportQuery>) -> ApiResult {
+    rag_core::tracker::validate_project(&project)?;
+    let window = q.window()?;
+    let r = api
+        .store()?
+        .roadmap(&project, window, chrono::Utc::now())
+        .await?;
+    Ok((
+        [(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))],
+        Json(r),
+    )
+        .into_response())
+}
+
+fn no_phase(project: &str, id: &str) -> ApiError {
+    not_found(format!("no phase {id:?} in project {project}"))
+}
+
+/// The store, once `id` is known to be a phase of `project`: the store's phase
+/// calls take only an id, and a phase never changes project, so this holds for the
+/// write that follows.
+async fn store_with_phase<'a>(
+    api: &'a TrackerApi,
+    project: &str,
+    id: &str,
+) -> Result<&'a TrackerStore, ApiError> {
+    rag_core::tracker::validate_project(project)?;
+    let store = api.store()?;
+    match store.get_phase(id, false, false).await? {
+        Some(rec) if rec.phase.project == project => Ok(store),
+        _ => Err(no_phase(project, id)),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PhaseCreateBody {
+    title: String,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    before: Option<String>,
+    #[serde(default)]
+    after: Option<String>,
+    #[serde(default)]
+    top: bool,
+    #[serde(default)]
+    bottom: bool,
+    #[serde(default)]
+    note: Option<String>,
+    author_email: String,
+    #[serde(default)]
+    agent: Option<String>,
+    surface: Surface,
+}
+
+/// Create a phase, planned, at the roadmap's bottom unless placed.
+async fn phase_create(State(api): St, Path(project): Path<String>, body: Bytes) -> ApiResult {
+    rag_core::tracker::validate_project(&project)?;
+    let b: PhaseCreateBody = parse(&body)?;
+    let place = place_of(b.before, b.after, b.top, b.bottom, false)?.unwrap_or(Place::Bottom);
+    let actor = Actor::new(b.author_email, b.agent.as_deref(), b.surface);
+    let rec = api
+        .store()?
+        .create_phase(
+            NewPhase {
+                project,
+                title: b.title,
+                body: b.body,
+                place,
+                note: b.note,
+            },
+            &actor,
+        )
+        .await?;
+    ok(&rec)
+}
+
+/// `?history=false` and `?tickets=true` on a phase's read.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PhaseQuery {
+    #[serde(default)]
+    history: Option<bool>,
+    #[serde(default)]
+    tickets: Option<bool>,
+}
+
+/// One phase, with its tickets and `would_wait` when `tickets=true`.
+async fn phase_get(
+    State(api): St,
+    Path((project, id)): Path<(String, String)>,
+    Q(q): Q<PhaseQuery>,
+) -> ApiResult {
+    rag_core::tracker::validate_project(&project)?;
+    let history = q.history.unwrap_or(true);
+    let tickets = q.tickets.unwrap_or(false);
+    match api.store()?.get_phase(&id, history, tickets).await? {
+        Some(rec) if rec.phase.project == project => ok(&rec),
+        _ => Err(no_phase(&project, &id)),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PhaseUpdateBody {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+    author_email: String,
+    #[serde(default)]
+    agent: Option<String>,
+    surface: Surface,
+}
+
+/// A phase's title or body, in any state, or a note on it.
+async fn phase_update(
+    State(api): St,
+    Path((project, id)): Path<(String, String)>,
+    body: Bytes,
+) -> ApiResult {
+    let b: PhaseUpdateBody = parse(&body)?;
+    let actor = Actor::new(b.author_email, b.agent.as_deref(), b.surface);
+    let upd = PhaseUpdate {
+        title: b.title,
+        body: b.body,
+        note: b.note,
+    };
+    let store = store_with_phase(&api, &project, &id).await?;
+    ok(&store.update_phase(&id, upd, &actor).await?)
+}
+
+/// Move a planned phase on the roadmap.
+async fn phase_move(
+    State(api): St,
+    Path((project, id)): Path<(String, String)>,
+    body: Bytes,
+) -> ApiResult {
+    let b: MoveBody = parse(&body)?;
+    let place = place_of(b.before, b.after, b.top, b.bottom, true)?.expect("required place");
+    let actor = Actor::new(b.author_email, b.agent.as_deref(), b.surface);
+    let store = store_with_phase(&api, &project, &id).await?;
+    let rec = store
+        .move_phase(&id, place, b.note.as_deref(), &actor)
+        .await?;
+    ok(&rec)
+}
+
+/// Release a planned phase into the queue, at its bottom unless placed.
+async fn phase_release(
+    State(api): St,
+    Path((project, id)): Path<(String, String)>,
+    body: Bytes,
+) -> ApiResult {
+    let b: MoveBody = parse(&body)?;
+    let place = place_of(b.before, b.after, b.top, b.bottom, false)?.unwrap_or(Place::Bottom);
+    let actor = Actor::new(b.author_email, b.agent.as_deref(), b.surface);
+    let store = store_with_phase(&api, &project, &id).await?;
+    let outcome = store
+        .release_phase(&id, place, b.note.as_deref(), &actor)
+        .await?;
+    ok(&outcome)
+}
+
+/// The body of a phase's recall, archive and unarchive.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PhaseNoteBody {
+    #[serde(default)]
+    note: Option<String>,
+    author_email: String,
+    #[serde(default)]
+    agent: Option<String>,
+    surface: Surface,
+}
+
+/// Recall a released phase: its `pending` tickets freeze again.
+async fn phase_recall(
+    State(api): St,
+    Path((project, id)): Path<(String, String)>,
+    body: Bytes,
+) -> ApiResult {
+    let b: PhaseNoteBody = parse(&body)?;
+    let actor = Actor::new(b.author_email, b.agent.as_deref(), b.surface);
+    let store = store_with_phase(&api, &project, &id).await?;
+    let outcome = store.recall_phase(&id, b.note.as_deref(), &actor).await?;
+    ok(&outcome)
+}
+
+/// Archive a released phase, or a planned one with no open ticket.
+async fn phase_archive(
+    State(api): St,
+    Path((project, id)): Path<(String, String)>,
+    body: Bytes,
+) -> ApiResult {
+    let b: PhaseNoteBody = parse(&body)?;
+    let actor = Actor::new(b.author_email, b.agent.as_deref(), b.surface);
+    let store = store_with_phase(&api, &project, &id).await?;
+    let rec = store.archive_phase(&id, b.note.as_deref(), &actor).await?;
+    ok(&rec)
+}
+
+/// Unarchive a phase: released again if it was, else planned at the roadmap's bottom.
+async fn phase_unarchive(
+    State(api): St,
+    Path((project, id)): Path<(String, String)>,
+    body: Bytes,
+) -> ApiResult {
+    let b: PhaseNoteBody = parse(&body)?;
+    let actor = Actor::new(b.author_email, b.agent.as_deref(), b.surface);
+    let store = store_with_phase(&api, &project, &id).await?;
+    let rec = store
+        .unarchive_phase(&id, b.note.as_deref(), &actor)
         .await?;
     ok(&rec)
 }

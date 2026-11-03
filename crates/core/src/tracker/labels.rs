@@ -183,10 +183,12 @@ pub(super) fn labels_said(labels: &[String]) -> String {
 impl TrackerStore {
     /// A project's label vocabulary: every label its items carry, once each in
     /// the project's casing, sorted case-insensitively, with how many items
-    /// carry it (and how many of those are queued). Empty for an unknown project.
+    /// carry it (and how many of those are queued; a frozen ticket is not, though
+    /// its label still counts as the project's, spec:roadmap D20). Empty for an
+    /// unknown project.
     pub async fn project_labels(&self, project: &str) -> TResult<Vec<LabelCount>> {
         let rows: Vec<(String, i64, i64)> = sqlx::query_as(&format!(
-            "SELECT MIN(l.label), COUNT(*), COALESCE(SUM(i.status IN {}), 0) \
+            "SELECT MIN(l.label), COUNT(*), COALESCE(SUM(i.status IN {} AND i.frozen = 0), 0) \
              FROM item_labels l JOIN items i ON i.id = l.item_id \
              WHERE l.project = ? GROUP BY l.label_key ORDER BY l.label_key",
             super::items::QUEUED_IN

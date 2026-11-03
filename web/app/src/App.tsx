@@ -16,9 +16,11 @@ import {
   ItemView,
   NewConceptView,
   PROJECTS_PATH,
+  PhaseView,
   ProjectsView,
   QueueView,
   ReportView,
+  RoadmapView,
   projectPath,
   readLastProject,
 } from './tracker';
@@ -131,7 +133,7 @@ export function App() {
                 every view, including the topic page, where the next thing a
                 reader does with an id is usually to follow another one. */}
             {/* On every page, the tracker's too (2026-10-30): it opens a
-                ledger topic, a ticket or a document by id. */}
+                ledger topic, a ticket, a document or a phase by id. */}
             <OpenTopic label="Open by id" actionLabel="Open id" compact />
             <IdentityControl />
           </>
@@ -159,6 +161,9 @@ export function App() {
           {/* The velocity report (spec:velocity m03), reached from the queue
               widget's Report: a page, not a tab. */}
           <Route path="/projects/:project/report" element={<ReportView />} />
+          {/* The roadmap (spec:roadmap D29): a project tab, and a phase's page. */}
+          <Route path="/projects/:project/roadmap" element={<RoadmapView />} />
+          <Route path="/projects/:project/roadmap/:id" element={<PhaseView />} />
           <Route path="*" element={<NotFoundView />} />
         </Routes>
       </main>

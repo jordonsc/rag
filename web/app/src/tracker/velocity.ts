@@ -153,6 +153,14 @@ function hours(seconds: number): string {
   return `${formatRate(seconds / 3600)} h`;
 }
 
+/**
+ * What an ETA's tooltip says (D14), on the widget and on the roadmap's figures
+ * (spec:roadmap D24): active work at this pace, never a date.
+ */
+export const ETA_TOOLTIP =
+  'Remaining ÷ velocity, in days of active work at this pace. ' +
+  'An idle project takes longer in calendar days.';
+
 /** The tooltips (D14), the native `title` as `linkTooltip` gives one. */
 export function velocityTooltips(velocity: Velocity): {
   velocity: string;
@@ -167,9 +175,7 @@ export function velocityTooltips(velocity: Velocity): {
       `${week.done} done in the last 7 days over ${hours(week.active_seconds)} of active time ` +
       `(24 h: ${day.done} over ${hours(day.active_seconds)}). ` +
       'Active time leaves out gaps of over 2 hours between writes.',
-    eta:
-      'Remaining ÷ velocity, in days of active work at this pace. ' +
-      'An idle project takes longer in calendar days.',
+    eta: ETA_TOOLTIP,
     inProgress: `Includes ${velocity.in_review} in review.`,
     pending: `Includes ${velocity.blocked} blocked. Deferred tickets (${velocity.deferred}) are left out.`,
   };

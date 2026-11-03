@@ -6,15 +6,17 @@
 //! index `idx_item_spans_open`):
 //!
 //! * `status`: always exactly one open span, its state the ticket's status
-//!   (`done` and `cancelled` included);
-//! * `blocked`: open while the ticket is blocked, its state `blocked`;
+//!   (`done` and `cancelled` included), or [`FROZEN`] while the ticket is frozen
+//!   in a phase (spec:roadmap D21): frozen is a span state, never an item status;
+//! * `blocked`: open while the ticket is blocked and not frozen, its state
+//!   `blocked`;
 //! * `draft`: open while the ticket is a draft, its state `draft`.
 //!
 //! [`sync_item_spans`] keeps them in step: `append_event` calls it after every
 //! item event, in the writing transaction, and it reconciles the open spans with
 //! the item's row as it now is. No write path has to say what it changed, and a
-//! write that changes none of the three (a note, a move, an edit, a link)
-//! touches nothing. [`backfill`] builds them once for a database written before
+//! write that changes none of the four (status, block, draft flag, frozen flag:
+//! a note, a move, an edit, a link) touches nothing. [`backfill`] builds them once for a database written before
 //! spans existed.
 
 use std::collections::HashMap;
@@ -31,12 +33,22 @@ pub(super) const BLOCKED: &str = "blocked";
 /// The track a ticket's draft flag runs on; its spans' state is `draft`.
 pub(super) const DRAFT: &str = "draft";
 
-/// The open span each track should hold for a ticket with this status, block
-/// and draft flag: `None` where the track holds nothing.
-fn wanted(status: &str, blocked: bool, draft: bool) -> [(&'static str, Option<&str>); 3] {
+/// The `status` track's state while a ticket is frozen in a phase (spec:roadmap
+/// D21). So a freeze closes the `pending` span and a release opens a new one,
+/// and every figure that names its statuses leaves frozen time out.
+pub(super) const FROZEN: &str = "frozen";
+
+/// The open span each track should hold for a ticket with this status, block,
+/// draft flag and frozen flag: `None` where the track holds nothing.
+fn wanted(
+    status: &str,
+    blocked: bool,
+    draft: bool,
+    frozen: bool,
+) -> [(&'static str, Option<&str>); 3] {
     [
-        (STATUS, Some(status)),
-        (BLOCKED, blocked.then_some(BLOCKED)),
+        (STATUS, Some(if frozen { FROZEN } else { status })),
+        (BLOCKED, (blocked && !frozen).then_some(BLOCKED)),
         (DRAFT, draft.then_some(DRAFT)),
     ]
 }
@@ -45,7 +57,8 @@ fn wanted(status: &str, blocked: bool, draft: bool) -> [(&'static str, Option<&s
 /// transaction: each track whose open span disagrees with the row is closed at
 /// `ts` by `event_id`, and the span the row calls for is opened from them. A
 /// track that agrees is left alone, so a write that changed none of status,
-/// block and draft writes nothing. A ticket that is gone has nothing to sync.
+/// block, draft and frozen writes nothing. A ticket that is gone has nothing to
+/// sync.
 pub(super) async fn sync_item_spans(
     conn: &mut SqliteConnection,
     project: &str,
@@ -53,12 +66,12 @@ pub(super) async fn sync_item_spans(
     event_id: i64,
     ts: &str,
 ) -> TResult<()> {
-    let row: Option<(String, i64, i64)> =
-        sqlx::query_as("SELECT status, blocked, draft FROM items WHERE id = ?")
+    let row: Option<(String, i64, i64, i64)> =
+        sqlx::query_as("SELECT status, blocked, draft, frozen FROM items WHERE id = ?")
             .bind(item_id)
             .fetch_optional(&mut *conn)
             .await?;
-    let Some((status, blocked, draft)) = row else {
+    let Some((status, blocked, draft, frozen)) = row else {
         return Ok(());
     };
     let open: Vec<(i64, String, String)> = sqlx::query_as(
@@ -67,7 +80,7 @@ pub(super) async fn sync_item_spans(
     .bind(item_id)
     .fetch_all(&mut *conn)
     .await?;
-    for (track, want) in wanted(&status, blocked != 0, draft != 0) {
+    for (track, want) in wanted(&status, blocked != 0, draft != 0, frozen != 0) {
         let have = open.iter().find(|(_, t, _)| t == track);
         if have.map(|(_, _, s)| s.as_str()) == want {
             continue;
@@ -149,6 +162,7 @@ struct State {
     status: String,
     blocked: bool,
     draft: bool,
+    frozen: bool,
 }
 
 /// One ticket's replay: the state so far, its open spans and the spans it has
@@ -165,7 +179,7 @@ impl Replay {
     /// Close each open span that disagrees with `state` and open what it calls
     /// for, at `ts` by `event_id`: [`sync_item_spans`] in memory.
     fn reconcile(&mut self, state: &State, event_id: i64, ts: &str) {
-        for (track, want) in wanted(&state.status, state.blocked, state.draft) {
+        for (track, want) in wanted(&state.status, state.blocked, state.draft, state.frozen) {
             let at = self.open.iter().position(|s| s.track == track);
             if at.map(|i| self.open[i].state.as_str()) == want {
                 continue;
@@ -202,8 +216,9 @@ fn object(raw: Option<&str>) -> Value {
 }
 
 /// The state after one event, from the state before it (D23). A `create` gives
-/// the first status (`pending` unless it says otherwise) and the draft flag; any
-/// other event changes what its `fields` set of `status`, `blocked` and `draft`.
+/// the first status (`pending` unless it says otherwise), the draft flag and the
+/// frozen flag; any other event changes what its `fields` set of `status`,
+/// `blocked`, `draft` and `frozen`.
 /// A ticket whose first event is not its create starts from that event's prior
 /// values (`fields_before`), or as a new ticket would, and the check against its
 /// row puts right whatever that guessed wrong.
@@ -215,12 +230,14 @@ fn step(prev: Option<&State>, kind: &str, fields: &Value, before: &Value) -> Sta
             status: text(fields, "status").unwrap_or_else(|| "pending".into()),
             blocked: false,
             draft: flag(fields, "draft").unwrap_or(false),
+            frozen: flag(fields, "frozen").unwrap_or(false),
         },
         (_, Some(p)) => p.clone(),
         (_, None) => State {
             status: text(before, "status").unwrap_or_else(|| "pending".into()),
             blocked: flag(before, "blocked").unwrap_or(false),
             draft: flag(before, "draft").unwrap_or(false),
+            frozen: flag(before, "frozen").unwrap_or(false),
         },
     };
     if kind != "create" {
@@ -232,6 +249,9 @@ fn step(prev: Option<&State>, kind: &str, fields: &Value, before: &Value) -> Sta
         }
         if let Some(draft) = flag(fields, "draft") {
             s.draft = draft;
+        }
+        if let Some(frozen) = flag(fields, "frozen") {
+            s.frozen = frozen;
         }
     }
     s
@@ -256,9 +276,10 @@ pub(super) async fn backfill(conn: &mut SqliteConnection) -> TResult<Option<Back
     if have_spans.is_some() {
         return Ok(None);
     }
-    type ItemRow = (String, String, String, i64, i64, String);
+    type ItemRow = (String, String, String, i64, i64, i64, String);
     let items: Vec<ItemRow> = sqlx::query_as(
-        "SELECT id, project, status, blocked, draft, updated_at FROM items ORDER BY project, seq",
+        "SELECT id, project, status, blocked, draft, frozen, updated_at FROM items \
+         ORDER BY project, seq",
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -282,7 +303,7 @@ pub(super) async fn backfill(conn: &mut SqliteConnection) -> TResult<Option<Back
         spans: 0,
         corrected: 0,
     };
-    for (id, project, status, blocked, draft, updated_at) in items {
+    for (id, project, status, blocked, draft, frozen, updated_at) in items {
         let mut replay = Replay {
             project,
             item_id: id.clone(),
@@ -305,6 +326,7 @@ pub(super) async fn backfill(conn: &mut SqliteConnection) -> TResult<Option<Back
             status,
             blocked: blocked != 0,
             draft: draft != 0,
+            frozen: frozen != 0,
         };
         if replay.state.as_ref() != Some(&row) {
             let (event_id, ts) = last.unwrap_or((0, updated_at));

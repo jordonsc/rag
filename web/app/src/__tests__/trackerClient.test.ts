@@ -11,18 +11,28 @@
 import {
   TrackerApiError,
   ackDone,
+  archivePhase,
   attachmentUrl,
   createItem,
+  createPhase,
   editDoc,
   getDocByPath,
+  getPhase,
   getQueue,
+  getRoadmap,
   getVelocity,
   isProjectName,
   listItems,
   moveItem,
+  movePhase,
+  recallPhase,
+  releasePhase,
+  setItemPhase,
   trackerAuthor,
+  unarchivePhase,
   updateConcept,
   updateItem,
+  updatePhase,
   uploadAttachment,
 } from '../tracker/api';
 import {
@@ -32,8 +42,10 @@ import {
   itemPath,
   itemProject,
   linkHref,
+  phasePath,
   projectPath,
   reportPath,
+  roadmapPath,
 } from '../tracker/paths';
 import type { Velocity } from '../tracker/types';
 import { LedgerApiError } from '../api';
@@ -113,6 +125,126 @@ describe('the queue read', () => {
     server.on(/\/tracker\/demo\/items/, { body: { project: 'demo', items: [] } });
     await listItems('demo', 'done');
     expect(server.last(/items/).path).toBe('/tracker/demo/items?status=done');
+  });
+});
+
+describe('the roadmap (spec:roadmap RM-40 to RM-49)', () => {
+  const WEB = { author_email: 'alice@example.com', surface: 'web' };
+  const PHASES = '/tracker/demo/phases';
+  const ONE = `${PHASES}/demo-p0001`;
+
+  it('reads the forward look over one window', async () => {
+    server.on(/\/roadmap/, { body: { project: 'demo' } });
+    await getRoadmap('demo', '24h');
+    expect(server.last(/\/roadmap/).path).toBe('/tracker/demo/roadmap?window=24h');
+    expect(server.last(/\/roadmap/).method).toBe('GET');
+  });
+
+  it('reads a phase with its tickets and its history', async () => {
+    server.on(/\/phases\//, { body: { id: 'demo-p0001' } });
+    await getPhase('demo', 'demo-p0001', { tickets: true, history: true });
+    expect(server.last(/\/phases\//).path).toBe(`${ONE}?tickets=true&history=true`);
+    expect(server.last(/\/phases\//).method).toBe('GET');
+  });
+
+  it('sends every phase write as a POST, with surface web and no agent', async () => {
+    server.on(/\/phases/, { body: { id: 'demo-p0001' } }, 'POST');
+    const smuggled = { ...AUTHOR, agent: 'smuggled' } as typeof AUTHOR;
+    const writes: Array<[() => Promise<unknown>, string, Record<string, unknown>]> = [
+      [
+        () => createPhase('demo', { title: 'Birds', place: { top: true } }, smuggled),
+        PHASES,
+        { title: 'Birds', top: true },
+      ],
+      [() => updatePhase('demo', 'demo-p0001', { body: 'New' }, smuggled), ONE, { body: 'New' }],
+      [
+        () => movePhase('demo', 'demo-p0001', { after: 'demo-p0002' }, smuggled, 'Why'),
+        `${ONE}/move`,
+        { after: 'demo-p0002', note: 'Why' },
+      ],
+      [
+        () => releasePhase('demo', 'demo-p0001', { place: { top: true }, note: 'Go' }, smuggled),
+        `${ONE}/release`,
+        { top: true, note: 'Go' },
+      ],
+      [
+        () => recallPhase('demo', 'demo-p0001', { note: 'Back' }, smuggled),
+        `${ONE}/recall`,
+        { note: 'Back' },
+      ],
+      [() => archivePhase('demo', 'demo-p0001', { note: '  ' }, smuggled), `${ONE}/archive`, {}],
+      [() => unarchivePhase('demo', 'demo-p0001', {}, smuggled), `${ONE}/unarchive`, {}],
+    ];
+    for (const [write, path, body] of writes) {
+      await write();
+      const sent = server.last(path, 'POST');
+      expect(sent.method).toBe('POST');
+      expect(sent.body).toEqual({ ...body, ...WEB });
+    }
+  });
+
+  it('refuses a blank title before anything leaves', async () => {
+    await expect(createPhase('demo', { title: '  ' }, AUTHOR)).rejects.toThrow(
+      'A phase needs a title.',
+    );
+    await expect(updatePhase('demo', 'demo-p0001', { title: ' ' }, AUTHOR)).rejects.toThrow(
+      'A phase needs a title.',
+    );
+    await expect(updatePhase('demo', 'demo-p0001', {}, AUTHOR)).rejects.toThrow('Nothing to send.');
+    expect(server.sent).toEqual([]);
+  });
+
+  it('sends a ticket’s phase alone, with at most a note, whatever a caller spreads in', async () => {
+    const PATH = '/tracker/items/demo-t0001';
+    server.on(PATH, { body: item('demo-t0001') }, 'POST');
+
+    await setItemPhase('demo-t0001', { phase: 'demo-p0001' }, AUTHOR);
+    expect(server.last(PATH).body).toEqual({ phase: 'demo-p0001', ...WEB });
+
+    await setItemPhase('demo-t0001', { phase: '', note: 'Not in it' }, AUTHOR);
+    expect(server.last(PATH).body).toEqual({ phase: '', note: 'Not in it', ...WEB });
+
+    await setItemPhase('demo-t0001', { frozen: false, note: '  ' }, AUTHOR);
+    expect(server.last(PATH).body).toEqual({ frozen: false, ...WEB });
+
+    // The server refuses anything beside them: a stamped event must not hide a change.
+    await setItemPhase(
+      'demo-t0001',
+      { phase: 'demo-p0002', frozen: true, status: 'done', agent: 'x' } as never,
+      AUTHOR,
+    );
+    expect(server.last(PATH).body).toEqual({ phase: 'demo-p0002', ...WEB });
+  });
+
+  it('creates a ticket in a phase', async () => {
+    server.on('/tracker/demo/items', { body: item('demo-t0001') });
+    await createItem('demo', { type: 'dev', title: 'One', phase: 'demo-p0001' }, AUTHOR);
+    expect(server.last('/tracker/demo/items').body).toEqual({
+      type: 'dev',
+      title: 'One',
+      phase: 'demo-p0001',
+      ...WEB,
+    });
+  });
+
+  it('lists a phase’s tickets, and sends no blank `phase`: that is a 404 (rag-l0099)', async () => {
+    server.on(/\/tracker\/demo\/items/, { body: { project: 'demo', items: [] } });
+    await listItems('demo', { phase: 'demo-p0001' });
+    expect(server.last(/items/).path).toBe('/tracker/demo/items?phase=demo-p0001');
+    await listItems('demo', { phase: 'demo-p0001', status: 'pending' });
+    expect(server.last(/items/).path).toBe('/tracker/demo/items?status=pending&phase=demo-p0001');
+    for (const phase of ['', '   ', null]) {
+      await listItems('demo', { phase });
+      expect(server.last(/items/).path).toBe('/tracker/demo/items');
+    }
+    await listItems('demo');
+    expect(server.last(/items/).path).toBe('/tracker/demo/items');
+  });
+
+  it('builds the pages’ paths, never under /tracker/', () => {
+    expect(roadmapPath('demo')).toBe('/projects/demo/roadmap');
+    expect(phasePath('demo', 'demo-p0001')).toBe('/projects/demo/roadmap/demo-p0001');
+    expect(phasePath('a b', 'x/y')).toBe('/projects/a%20b/roadmap/x%2Fy');
   });
 });
 

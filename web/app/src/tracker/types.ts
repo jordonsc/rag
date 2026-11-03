@@ -69,6 +69,9 @@ export const EVENT_KINDS = [
   'assign',
   'acknowledge',
   'rename',
+  // A phase's (spec:roadmap D18): each the one frame its write sends.
+  'release',
+  'recall',
 ] as const;
 export type TrackerEventKind = (typeof EVENT_KINDS)[number];
 
@@ -80,6 +83,14 @@ export type MilestoneState = (typeof MILESTONE_STATES)[number];
 
 export const CONCEPT_STATES = ['open', 'refining', 'refined', 'archived'] as const;
 export type ConceptState = (typeof CONCEPT_STATES)[number];
+
+/**
+ * A phase's state (spec:roadmap D1): `planned` (on the roadmap, its tickets
+ * frozen), `released` (its tickets have joined the queue, keeping the link),
+ * `archived` (off the roadmap). `complete` is derived, never a state (D15).
+ */
+export const PHASE_STATES = ['planned', 'released', 'archived'] as const;
+export type PhaseState = (typeof PHASE_STATES)[number];
 
 export const DOCUMENT_KINDS = ['spec', 'milestone', 'concept', 'doc'] as const;
 export type DocumentKind = (typeof DOCUMENT_KINDS)[number];
@@ -137,10 +148,17 @@ export interface TrackerEvent {
    * out unless asked (`drafts=true`). Absent from a server before drafts.
    */
   draft?: boolean;
+  /**
+   * A roadmap event (spec:roadmap D17): a phase's, or a frozen ticket's, or one
+   * that changed a ticket's phase. The feed leaves it out unless asked
+   * (`roadmap=true`), so planning wakes no monitor. Absent from a server before
+   * the roadmap.
+   */
+  roadmap?: boolean;
 }
 
 /** The kind of record an event belongs to. */
-export type TargetKind = 'item' | 'spec' | 'milestone' | 'concept' | 'document';
+export type TargetKind = 'item' | 'spec' | 'milestone' | 'concept' | 'document' | 'phase';
 
 /**
  * One event as the feed sends it with `format=json` (api.md § The event
@@ -201,6 +219,18 @@ export interface Item {
    * nothing dispatches it. Absent from a server before drafts: read as false.
    */
   draft?: boolean;
+  /**
+   * The phase it belongs to (spec:roadmap R4), kept for life: a released ticket
+   * still names it. Absent from a server before the roadmap; read as none. The
+   * phase's title is not here: `phaseTitles.tsx` holds them, one read a page.
+   */
+  phase?: string | null;
+  /**
+   * Held out of the queue in a planned phase (spec:roadmap R6). `queued` is
+   * then false, and `prev_id` / `next_id` are its neighbours in the phase's
+   * list. Absent from a server before the roadmap: read as false.
+   */
+  frozen?: boolean;
   /** Present on a record read; absent or empty on list reads. */
   events?: TrackerEvent[];
 }
@@ -223,6 +253,11 @@ export interface ProjectSummary {
    * none of the other buckets. Absent from a server before drafts.
    */
   drafts?: number;
+  /**
+   * Tickets frozen in a phase (spec:roadmap D20), drafts included; counted
+   * under none of the others. Absent from a server before the roadmap.
+   */
+  frozen?: number;
   done_unacknowledged: number;
 }
 
@@ -262,6 +297,11 @@ export interface QueueView {
    * server older than the status; read as empty.
    */
   deferred?: Item[];
+  /**
+   * How many tickets are frozen in a phase (spec:roadmap D20), drafts included.
+   * Every list above leaves them out. Absent from a server before the roadmap.
+   */
+  frozen?: number;
 }
 
 export interface CheckResponse {
@@ -385,6 +425,118 @@ export interface Report {
   states: Record<ReportState, StateTime>;
   mttc: ReportMttc;
   mttr: ReportMttr;
+}
+
+// ---- The roadmap (spec:roadmap D1, D24, D25; api.md § Phases and the roadmap) --
+
+/** A phase's size and progress (D25), from its linked tickets now. */
+export interface PhaseSize {
+  /** Frozen, drafts left out. */
+  frozen: number;
+  /** Unfrozen and not done or cancelled, drafts left out. */
+  open: number;
+  /** Done, drafts left out. */
+  done: number;
+  /** Cancelled, drafts left out. */
+  cancelled: number;
+  /** Every linked draft, whatever its status. */
+  drafts: number;
+  /** Blocked, of `frozen` and `open`. */
+  blocked: number;
+  /** Every linked ticket. */
+  total: number;
+  /** Released, with at least one linked ticket and all of them done or cancelled (D15). */
+  complete: boolean;
+}
+
+/** A phase (D1). */
+export interface Phase {
+  id: string;
+  project: string;
+  title: string;
+  /** Markdown. */
+  body: string;
+  state: PhaseState;
+  /** Its neighbours on the roadmap; planned phases only. */
+  prev_id: string | null;
+  next_id: string | null;
+  /** The ends of its list of frozen tickets; planned phases only. */
+  head_id: string | null;
+  tail_id: string | null;
+  /** `null` while not released. An archived phase keeps it: unarchiving reads it. */
+  released_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A ticket left waiting across the boundary (D13). */
+export interface Waiting {
+  ticket: string;
+  on: string;
+}
+
+/** `GET …/phases/{id}`, and every phase write's reply. */
+export interface PhaseRecord extends Phase {
+  size: PhaseSize;
+  /** Oldest first; empty with `history=false`. */
+  events: TrackerEvent[];
+  /**
+   * With `tickets=true`: its linked tickets in full, frozen in the phase's
+   * order, then unfrozen queued in the queue's order, then the rest by age.
+   */
+  tickets?: Item[];
+  /** With `tickets=true`: what its next release or recall would leave waiting (D13). */
+  would_wait?: Waiting[];
+}
+
+/** The reply to a release or a recall (D13). */
+export interface PhaseOutcome extends PhaseRecord {
+  /** How many tickets the write moved. */
+  moved: number;
+  /** A release's place in words (`bottom`, `top`, `before <id>`); `null` on a recall. */
+  placed: string | null;
+  /** What the write left waiting, after it. */
+  waiting: Waiting[];
+}
+
+/** One phase in the forward look: no body, as the roadmap reads many phases. */
+export interface PhaseFigures {
+  id: string;
+  project: string;
+  title: string;
+  state: PhaseState;
+  released_at: string | null;
+  created_at: string;
+  updated_at: string;
+  size: PhaseSize;
+  /** The counted tickets its ETA covers. */
+  ahead: number;
+  /** `ahead` ÷ velocity, in fractional days of active work; `null` when unknown (D24). */
+  eta_days: number | null;
+}
+
+/**
+ * `GET /tracker/{project}/roadmap?window=` (D24). Durations of active work,
+ * never dates, computed on request; an unknown project answers it empty.
+ */
+export interface Roadmap {
+  project: string;
+  window: VelocityWindow;
+  now: string;
+  velocity_per_day: number;
+  queue: { remaining: number; eta_days: number | null };
+  /** The project's frozen tickets, drafts included. */
+  frozen: number;
+  /** The last planned phase's ETA, or the queue's with none planned. */
+  planned_out_days: number | null;
+  /** Released and incomplete, soonest first. */
+  released: PhaseFigures[];
+  /** In the roadmap's order. */
+  planned: PhaseFigures[];
+  /** Released and complete, newest release first. */
+  complete: PhaseFigures[];
+  /** Newest change first. */
+  archived: PhaseFigures[];
 }
 
 export interface ItemsResponse {
@@ -557,6 +709,45 @@ export interface ItemCreate {
   place?: Place;
   /** Create it as a draft (2026-10-30), published later with `draft: false`. */
   draft?: boolean;
+  /**
+   * Create it in a phase (spec:roadmap D7): frozen at a planned phase's tail, or
+   * straight into the queue from a released one. Never blank: the server refuses it.
+   */
+  phase?: string;
+}
+
+/**
+ * A ticket's phase, on its own (spec:roadmap D8, D9): `phase` or `frozen`, and
+ * at most a note. The server refuses anything beside them, which is why this
+ * is not part of {@link ItemUpdate}: a stamped event must never hide a status
+ * change from the feed.
+ */
+export type ItemPhaseChange =
+  | {
+      /** A phase id to move it there, or `''` to remove the link. */
+      phase: string;
+      note?: string;
+    }
+  | {
+      /** `false` pulls it to the queue, `true` freezes it again in its own phase. */
+      frozen: boolean;
+      note?: string;
+    };
+
+/** `POST /tracker/{project}/phases`. */
+export interface PhaseCreate {
+  title: string;
+  body?: string;
+  note?: string;
+  /** Where it joins the roadmap; the bottom by default. */
+  place?: Place;
+}
+
+/** `POST /tracker/{project}/phases/{id}`: title and body, in any state. */
+export interface PhaseUpdate {
+  title?: string;
+  body?: string;
+  note?: string;
 }
 
 export interface ItemUpdate {
@@ -707,9 +898,9 @@ export interface TrackerHit {
   type?: string;
   /** `<project>:<path>@r<revision>` for a document chunk, the item id for an item. */
   citation?: string;
-  /** The document or item id. */
+  /** The document, item or phase id. */
   tracker_id?: string;
-  /** A document's kind (`spec`, `milestone`, `concept`, `doc`), or `item`. */
+  /** A document's kind (`spec`, `milestone`, `concept`, `doc`), or `item`, or `phase`. */
   kind?: string;
   /** The revision a document chunk is from. */
   revision?: number;

@@ -7,13 +7,14 @@ import {
   type CSSProperties,
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from 'react';
 import { Badge, Icon } from '@rag/ui';
 import { Link, useNavigate } from 'react-router';
 
 import { cx } from '../util';
 import type { ApprovalAction } from './dialogs';
-import { ApprovalControl, ParallelBadge, SecondLine, StatusDot } from './parts';
+import { ApprovalControl, DraftBadge, ParallelBadge, SecondLine, StatusDot } from './parts';
 import { itemPath } from './paths';
 import { RowMenu, type RowMenuAction } from './RowMenu';
 import styles from './tracker.module.css';
@@ -29,17 +30,30 @@ export interface QueueListProps {
   /** Why it is off, when it is: the grip's hint says so. */
   reorderHint?: string;
   /** The server view's revision: a change mid-drag cancels the drag. */
-  revision: number;
+  revision: number | string;
   /** One move: the place to send, and the order to show until the server answers. */
   onMove: (item: Item, place: Place, order: string[]) => void;
   onRemove: (item: Item) => void;
-  /** Defer it (rag-t0017): it leaves the drawn queue for Deferred, keeping its place. */
-  onDefer: (item: Item) => void;
+  /**
+   * Defer it (rag-t0017): it leaves the drawn queue for Deferred, keeping its
+   * place. Omitted: no menu entry, as for a frozen ticket (spec:roadmap D5).
+   */
+  onDefer?: (item: Item) => void;
   /**
    * Make it a draft again (2026-10-30): it leaves the drawn queue for Drafts,
    * keeping its place, and nothing dispatches it. Omitted: no menu entry.
    */
   onDraft?: (item: Item) => void;
+  /**
+   * Publish a draft (2026-10-30). A queue never draws one, having its own
+   * section for them; a phase's frozen list does, and says Publish in place of
+   * Make draft, which the server would refuse.
+   */
+  onPublish?: (item: Item) => void;
+  /** What a row adds on its second line: a phase's list holds drafts and blocked tickets. */
+  rowDetail?: (item: Item) => ReactNode;
+  /** The list's name, for a screen reader. Defaults to `Queue`. */
+  label?: string;
   /** The owner's approval from the row: the Agent-approved badge, or Approve. */
   onApproval: (item: Item, action: ApprovalAction) => void;
   /** A drag was cancelled because the server's order changed under it. */
@@ -62,7 +76,10 @@ interface DragGeometry {
 }
 
 /** Where a drop at `target` (an index in the list without the dragged row) goes. */
-export function placeFor(others: readonly Item[], target: number): Place | null {
+export function placeFor<T extends { id: string }>(
+  others: readonly T[],
+  target: number,
+): Place | null {
   if (others.length === 0) {
     return null;
   }
@@ -113,8 +130,10 @@ export interface GateMarkerProps {
 /**
  * A gate's line across a list (D14): a dashed rule, its label, a dashed rule.
  * The label links to the item page and says the intensity, the gate's own
- * title (rag-t0015), Release, a state other than pending, and the id; on a
- * phone the title takes a line of its own (rag-t0019). Its container is the
+ * title (rag-t0015), Release, Draft, a state other than pending, and the id; on
+ * a phone the title takes a line of its own (rag-t0019). The queue's own list holds
+ * no draft or blocked gate, each having its section; a phase's frozen list holds
+ * both (spec:roadmap D6, D16), so the marker says so. Its container is the
  * caller's, an element with the `marker` class: the queue adds a grip and a
  * menu either side, Done adds nothing.
  */
@@ -141,7 +160,8 @@ export function GateMarker({ project, item, variant = 'queue' }: GateMarkerProps
             <Badge tone="acc">Release</Badge>
           </span>
         )}
-        {item.status !== 'pending' && <StatusDot state={dotState(item)} compact />}
+        {item.draft === true && <DraftBadge />}
+        {dotState(item) !== 'pending' && <StatusDot state={dotState(item)} compact />}
         <code className={styles.markerId}>{item.id}</code>
       </Link>
       <span className={cx(styles.rule, tone)} aria-hidden />
@@ -196,6 +216,9 @@ export function QueueList({
   onRemove,
   onDefer,
   onDraft,
+  onPublish,
+  rowDetail,
+  label = 'Queue',
   onApproval,
   onInterrupted,
 }: QueueListProps) {
@@ -390,22 +413,35 @@ export function QueueList({
       disabled: index === items.length - 1,
       onSelect: () => onMove(item, { bottom: true }, reordered(items, index, items.length - 1)),
     },
-    {
-      id: 'defer',
-      label: item.type === 'gate' ? 'Defer gate' : 'Defer',
-      icon: 'circle-pause',
-      onSelect: () => onDefer(item),
-    },
-    ...(onDraft === undefined
+    ...(onDefer === undefined
       ? []
       : [
           {
-            id: 'draft',
-            label: 'Make draft',
-            icon: 'eye-off',
-            onSelect: () => onDraft(item),
+            id: 'defer',
+            label: item.type === 'gate' ? 'Defer gate' : 'Defer',
+            icon: 'circle-pause',
+            onSelect: () => onDefer(item),
           },
         ]),
+    ...(item.draft === true && onPublish !== undefined
+      ? [
+          {
+            id: 'publish',
+            label: 'Publish',
+            icon: 'eye',
+            onSelect: () => onPublish(item),
+          },
+        ]
+      : onDraft === undefined || item.draft === true
+        ? []
+        : [
+            {
+              id: 'draft',
+              label: 'Make draft',
+              icon: 'eye-off',
+              onSelect: () => onDraft(item),
+            },
+          ]),
     {
       id: 'remove',
       label: item.type === 'gate' ? 'Remove gate' : 'Remove',
@@ -416,7 +452,7 @@ export function QueueList({
   ];
 
   return (
-    <ol className={cx(styles.queue, drag !== null && styles.dragging)} aria-label="Queue">
+    <ol className={cx(styles.queue, drag !== null && styles.dragging)} aria-label={label}>
       {items.map((item, index) => {
         const gate = item.type === 'gate';
         const dragged = drag?.id === item.id;
@@ -482,6 +518,7 @@ export function QueueList({
                 {actions}
                 <SecondLine project={project} item={item}>
                   {item.parallel === true && <ParallelBadge />}
+                  {rowDetail?.(item)}
                 </SecondLine>
               </>
             )}

@@ -914,6 +914,43 @@ describe('searching the tracker', () => {
     expect(screen.getByTestId('address')).toHaveTextContent('/projects/demo/ticket/demo-t0004');
   });
 
+  it('routes a phase hit to the phase’s page, named as one, not to a document (RM-49)', async () => {
+    const user = userEvent.setup();
+    server.on(
+      '/search',
+      {
+        body: {
+          query: 'birds',
+          top_k: 8,
+          reranked: true,
+          candidates: 1,
+          timings: { embed_ms: 1, search_ms: 1, rerank_ms: 1, total_ms: 3 },
+          results: [
+            {
+              corpus: 'tracker',
+              repo: 'demo',
+              rel_path: 'demo-p0001',
+              start_line: 0,
+              end_line: 0,
+              text: 'Birds\nWhat flies.',
+              ann_score: 0.5,
+              title: 'Birds',
+              citation: 'demo-p0001',
+              tracker_id: 'demo-p0001',
+              kind: 'phase',
+            },
+          ],
+        },
+      },
+      'POST',
+    );
+    mount(<SearchView />, { route: '/?q=birds&corpus=tracker' });
+    await screen.findByText('1 result in the tracker');
+    expect(screen.getAllByText('Phase').length).toBeGreaterThan(0);
+    await user.click(screen.getAllByText('Birds')[0]!);
+    expect(screen.getByTestId('address')).toHaveTextContent('/projects/demo/roadmap/demo-p0001');
+  });
+
   it('offers the corpus as a filter and keeps the ledger as the default', async () => {
     const user = userEvent.setup();
     mount(<SearchView />, { route: '/' });

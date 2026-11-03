@@ -11,9 +11,17 @@ import userEvent from '@testing-library/user-event';
 
 import { ItemView } from '../tracker/ItemView';
 import { dependencyCandidates, editBody } from '../tracker/ItemActions';
-import { NOTE_ROWS } from '../tracker/dialogs';
+import { NOTE_ROWS, phaseMoveRefusal } from '../tracker/dialogs';
 import { mountAt } from './harness';
-import { EVENTS, TrackerServer, gateItem, item } from './trackerFixtures';
+import {
+  EVENTS,
+  TrackerServer,
+  frozenItem,
+  gateItem,
+  item,
+  phaseFigures,
+  roadmap,
+} from './trackerFixtures';
 
 const ID = 'demo-t0002';
 const PATH = `/tracker/items/${ID}`;
@@ -655,6 +663,16 @@ describe('editBody', () => {
     expect(offered.map((candidate) => candidate.id)).toEqual(['demo-t0001', 'demo-t0005']);
   });
 
+  it('offers a frozen ticket as a dependency: it works across the boundary (D6)', () => {
+    const self = item('demo-t0002');
+    const offered = dependencyCandidates(self, [
+      frozenItem('demo-t0001'),
+      frozenItem('demo-t0002'),
+      item('demo-t0003', { status: 'done', queued: false, phase: 'demo-p0001' }),
+    ]);
+    expect(offered.map((candidate) => candidate.id)).toEqual(['demo-t0001']);
+  });
+
   it('never sends gate fields for an item that is not a gate', () => {
     const work = item('demo-t0001');
     expect(
@@ -667,5 +685,371 @@ describe('editBody', () => {
         release: true,
       }),
     ).toEqual({ assignee: 'dev-1' });
+  });
+});
+
+describe('a ticket and its phase (spec:roadmap RM-48)', () => {
+  const PHASE = 'demo-p0001';
+  const FROZEN = frozenItem(ID, {
+    title: 'Next up',
+    prev_id: 'demo-t0001',
+    next_id: 'demo-t0003',
+    events: EVENTS,
+  });
+  const ROADMAP = /^\/tracker\/demo\/roadmap/;
+  const ANSWER = roadmap({
+    planned: [
+      phaseFigures(PHASE, { title: 'Creatures' }),
+      phaseFigures('demo-p0002', { title: 'Birds' }),
+    ],
+    released: [phaseFigures('demo-p0003', { title: 'Fish', state: 'released' })],
+    archived: [phaseFigures('demo-p0004', { title: 'Old', state: 'archived' })],
+  });
+
+  function serve(record: typeof RECORD) {
+    server = new TrackerServer();
+    server.on(PATH, { body: record }, 'GET');
+    server.on(PATH, { body: record }, 'POST');
+    server.on(ROADMAP, { body: ANSWER });
+    server.install();
+  }
+
+  async function opened(record: typeof RECORD) {
+    serve(record);
+    open();
+    await screen.findByRole('heading', { name: 'Next up' });
+  }
+
+  it('offers a frozen ticket Block, and Unblock when blocked', async () => {
+    await opened(FROZEN);
+    expect(screen.getByRole('button', { name: /Block…/ })).toBeInTheDocument();
+  });
+
+  it('says a frozen ticket’s block keeps its place in the phase', async () => {
+    const user = userEvent.setup();
+    await opened(FROZEN);
+    await user.click(screen.getByRole('button', { name: /Block…/ }));
+    expect(screen.getByRole('dialog', { name: 'Block this ticket' })).toHaveTextContent(
+      'keeps its place in the phase',
+    );
+  });
+
+  it('offers Unblock on a frozen, blocked ticket', async () => {
+    await opened({ ...FROZEN, blocked: true, block_reason: 'review' });
+    expect(screen.getByRole('button', { name: 'Unblock' })).toBeInTheDocument();
+  });
+
+  it('offers a frozen ticket Make draft, not a frozen draft', async () => {
+    await opened(FROZEN);
+    expect(screen.getByRole('button', { name: 'Make draft' })).toBeInTheDocument();
+  });
+
+  it('offers neither Block nor Make draft on a closed ticket with a phase', async () => {
+    await opened(item(ID, { title: 'Next up', status: 'done', queued: false, phase: PHASE }));
+    expect(screen.queryByRole('button', { name: /Block…/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Make draft' })).toBeNull();
+  });
+
+  it('offers only Done and Cancelled, and no Defer', async () => {
+    const user = userEvent.setup();
+    await opened(FROZEN);
+    expect(screen.queryByRole('button', { name: 'Defer' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Status…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Change the status' });
+    expect(
+      within(dialog)
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual(['Done (leaves the queue)', 'Cancel (leaves the queue)']);
+    expect(dialog).toHaveTextContent('pull it to the queue first');
+  });
+
+  it('still offers an unfrozen ticket with a phase its usual moves, Defer too', async () => {
+    const user = userEvent.setup();
+    await opened(item(ID, { title: 'Next up', phase: 'demo-p0003' }));
+    expect(screen.getByRole('button', { name: 'Defer' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Status…' }));
+    expect(
+      within(screen.getByRole('dialog', { name: 'Change the status' })).getAllByRole('option')
+        .length,
+    ).toBeGreaterThan(2);
+  });
+
+  it('says In phase, with the chip and its neighbours, and not In the queue', async () => {
+    await opened(FROZEN);
+    const term = screen.getByText('In phase');
+    const row = term.parentElement!;
+    expect(await within(row).findByRole('link', { name: 'Creatures' })).toHaveAttribute(
+      'href',
+      `/projects/demo/roadmap/${PHASE}`,
+    );
+    expect(within(row).getByRole('link', { name: 'demo-t0001' })).toBeInTheDocument();
+    expect(within(row).getByRole('link', { name: 'demo-t0003' })).toBeInTheDocument();
+    expect(screen.queryByText('In the queue')).toBeNull();
+  });
+
+  it('says In the queue for one that is not frozen, and no In phase', async () => {
+    await opened(item(ID, { title: 'Next up', phase: 'demo-p0003' }));
+    expect(screen.getByText('In the queue')).toBeInTheDocument();
+    expect(screen.queryByText('In phase')).toBeNull();
+  });
+
+  it('badges a frozen ticket, beside its draft, with a title that explains it', async () => {
+    await opened({ ...FROZEN, draft: true });
+    expect(screen.getByText('Frozen').closest('[title]')).toHaveAttribute(
+      'title',
+      expect.stringContaining('out of the queue'),
+    );
+    expect(screen.getByText('Draft')).toBeInTheDocument();
+  });
+
+  it('has no Frozen badge once it is not frozen', async () => {
+    await opened(item(ID, { title: 'Next up', phase: 'demo-p0003' }));
+    expect(screen.queryByText('Frozen')).toBeNull();
+  });
+
+  it('keeps the chip on a closed ticket with a phase', async () => {
+    await opened(
+      item(ID, { title: 'Next up', status: 'done', queued: false, phase: 'demo-p0003' }),
+    );
+    expect(await screen.findByRole('link', { name: 'Fish' })).toHaveAttribute(
+      'href',
+      '/projects/demo/roadmap/demo-p0003',
+    );
+  });
+
+  it('reads no roadmap for a ticket with no phase', async () => {
+    await opened(RECORD);
+    expect(server.matching(ROADMAP)).toHaveLength(0);
+    expect(screen.queryByRole('button', { name: 'Pull to queue' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Remove from phase' })).toBeNull();
+  });
+
+  it('pulls to the queue with `frozen: false` and at most a note', async () => {
+    const user = userEvent.setup();
+    await opened(FROZEN);
+    await user.click(screen.getByRole('button', { name: 'Pull to queue' }));
+    const dialog = screen.getByRole('dialog', { name: 'Pull this ticket to the queue?' });
+    await user.type(within(dialog).getByLabelText('Note (optional)'), 'Urgent.');
+    await user.click(within(dialog).getByRole('button', { name: 'Pull to queue' }));
+    await waitFor(() => expect(server.matching(PATH, 'POST')).toHaveLength(1));
+    expect(server.last(PATH, 'POST').body).toEqual({
+      frozen: false,
+      note: 'Urgent.',
+      author_email: 'alice@example.com',
+      surface: 'web',
+    });
+  });
+
+  it('removes from the phase with `phase: ""`', async () => {
+    const user = userEvent.setup();
+    await opened(FROZEN);
+    await user.click(screen.getByRole('button', { name: 'Remove from phase' }));
+    const dialog = screen.getByRole('dialog', { name: 'Remove this ticket from its phase?' });
+    expect(dialog).toHaveTextContent('joins the bottom of the queue');
+    await user.click(within(dialog).getByRole('button', { name: 'Remove from phase' }));
+    await waitFor(() => expect(server.matching(PATH, 'POST')).toHaveLength(1));
+    expect(server.last(PATH, 'POST').body).toEqual({
+      phase: '',
+      author_email: 'alice@example.com',
+      surface: 'web',
+    });
+  });
+
+  it('says an unfrozen ticket stays where it is when removed', async () => {
+    const user = userEvent.setup();
+    await opened(item(ID, { title: 'Next up', phase: 'demo-p0003' }));
+    await user.click(screen.getByRole('button', { name: 'Remove from phase' }));
+    expect(
+      screen.getByRole('dialog', { name: 'Remove this ticket from its phase?' }),
+    ).toHaveTextContent('It stays where it is');
+  });
+
+  it('moves to a phase with `phase` alone, listing planned and released, not archived', async () => {
+    const user = userEvent.setup();
+    await opened(FROZEN);
+    await user.click(screen.getByRole('button', { name: 'Move to phase…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Move this ticket to a phase' });
+    const select = within(dialog).getByRole('combobox', { name: 'Phase' });
+    await within(select).findByRole('option', { name: /Birds/ });
+    expect(
+      within(select)
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual([
+      'Choose a phase',
+      'Creatures (planned): already frozen here',
+      'Birds (planned)',
+      'Fish (released)',
+    ]);
+    expect(within(select).getByRole('option', { name: /Creatures/ })).toBeDisabled();
+
+    // What it will do is said before it is pressed.
+    await user.selectOptions(select, 'demo-p0003');
+    expect(dialog).toHaveTextContent('joins the bottom of the queue, unfrozen');
+    await user.selectOptions(select, 'demo-p0002');
+    expect(dialog).toHaveTextContent('frozen at the bottom of that phase');
+
+    await user.click(within(dialog).getByRole('button', { name: 'Move to phase' }));
+    await waitFor(() => expect(server.matching(PATH, 'POST')).toHaveLength(1));
+    expect(server.last(PATH, 'POST').body).toEqual({
+      phase: 'demo-p0002',
+      author_email: 'alice@example.com',
+      surface: 'web',
+    });
+  });
+
+  it('sends nothing without a phase chosen', async () => {
+    const user = userEvent.setup();
+    await opened(FROZEN);
+    await user.click(screen.getByRole('button', { name: 'Move to phase…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Move this ticket to a phase' });
+    await user.click(within(dialog).getByRole('button', { name: 'Move to phase' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Choose a phase.');
+    expect(server.matching(PATH, 'POST')).toHaveLength(0);
+  });
+
+  it('disables a planned target for a ticket that is not pending, naming the rule', async () => {
+    const user = userEvent.setup();
+    await opened(item(ID, { title: 'Next up', status: 'in_progress' }));
+    await user.click(screen.getByRole('button', { name: 'Move to phase…' }));
+    const select = within(
+      screen.getByRole('dialog', { name: 'Move this ticket to a phase' }),
+    ).getByRole('combobox', { name: 'Phase' });
+    const birds = await within(select).findByRole('option', { name: /Birds/ });
+    expect(birds).toBeDisabled();
+    expect(birds).toHaveTextContent('only a pending ticket can be frozen');
+    expect(within(select).getByRole('option', { name: /Fish/ })).toBeEnabled();
+  });
+
+  it('knows the server’s rules for a move', () => {
+    const planned = { id: PHASE, state: 'planned' } as const;
+    const released = { id: 'demo-p0003', state: 'released' } as const;
+    const pending = { status: 'pending' } as const;
+    // Pending may freeze, and a pulled one may freeze again in its own phase.
+    expect(phaseMoveRefusal(pending, planned)).toBeNull();
+    expect(phaseMoveRefusal({ ...pending, phase: PHASE }, planned)).toBeNull();
+    // Frozen here is no change; frozen elsewhere moves over, even to a planned one.
+    expect(phaseMoveRefusal({ ...pending, phase: PHASE, frozen: true }, planned)).toBe(
+      'already frozen here',
+    );
+    expect(phaseMoveRefusal({ ...pending, phase: 'demo-p0002', frozen: true }, planned)).toBeNull();
+    // Any other status cannot freeze, but can take a released phase's link.
+    for (const status of ['in_progress', 'failed', 'deferred', 'review', 'done'] as const) {
+      expect(phaseMoveRefusal({ status }, planned)).toBe('only a pending ticket can be frozen');
+      expect(phaseMoveRefusal({ status }, released)).toBeNull();
+    }
+    // A link it already has is no change, unless frozen: it then thaws.
+    expect(phaseMoveRefusal({ ...pending, phase: released.id }, released)).toBe(
+      'already its phase',
+    );
+    expect(phaseMoveRefusal({ ...pending, phase: released.id, frozen: true }, released)).toBeNull();
+  });
+
+  it('has no Move to phase on a request', async () => {
+    await opened(item(ID, { title: 'Next up', type: 'request' }));
+    expect(screen.queryByRole('button', { name: 'Move to phase…' })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Phase' })).toBeNull();
+  });
+
+  it('prompts for an identity rather than opening the three actions', async () => {
+    const user = userEvent.setup();
+    serve(FROZEN);
+    open({ identity: null });
+    await screen.findByRole('heading', { name: 'Next up' });
+    await user.click(screen.getByRole('button', { name: 'Pull to queue' }));
+    expect(screen.getByRole('dialog', { name: 'Who is writing?' })).toBeInTheDocument();
+    expect(server.matching(PATH, 'POST')).toHaveLength(0);
+  });
+
+  it('offers a frozen ticket’s phase-mates as dependencies, read beside the queue', async () => {
+    const user = userEvent.setup();
+    serve(FROZEN);
+    server.on('/tracker/demo/items', {
+      body: { project: 'demo', items: [item('demo-t0005', { title: 'In the queue' })] },
+    });
+    server.on(`/tracker/demo/items?phase=${PHASE}`, {
+      body: {
+        project: 'demo',
+        items: [
+          FROZEN,
+          frozenItem('demo-t0006', { title: 'A phase-mate' }),
+          item('demo-t0005', { title: 'In the queue', phase: PHASE }),
+        ],
+      },
+    });
+    open();
+    await screen.findByRole('heading', { name: 'Next up' });
+    await user.click(screen.getByRole('button', { name: /Block…/ }));
+    const dialog = screen.getByRole('dialog', { name: 'Block this ticket' });
+    await user.click(within(dialog).getByRole('radio', { name: 'Waits on tickets' }));
+    await waitFor(() =>
+      expect(server.matching(`/tracker/demo/items?phase=${PHASE}`, 'GET')).toHaveLength(1),
+    );
+    await user.click(within(dialog).getByRole('combobox'));
+    const offered = (await screen.findAllByRole('option')).map(
+      (option) => option.textContent ?? '',
+    );
+    expect(offered.filter((text) => text.includes('demo-t0005'))).toHaveLength(1);
+    expect(offered.some((text) => text.includes('demo-t0006'))).toBe(true);
+    expect(offered.some((text) => text.includes(ID))).toBe(false);
+  });
+
+  it('keeps the queue’s candidates when the phase-mates cannot be read', async () => {
+    const user = userEvent.setup();
+    serve(FROZEN);
+    server.on('/tracker/demo/items', {
+      body: { project: 'demo', items: [item('demo-t0005', { title: 'In the queue' })] },
+    });
+    server.on(`/tracker/demo/items?phase=${PHASE}`, { status: 500, body: { error: 'Down.' } });
+    open();
+    await screen.findByRole('heading', { name: 'Next up' });
+    await user.click(screen.getByRole('button', { name: /Block…/ }));
+    const dialog = screen.getByRole('dialog', { name: 'Block this ticket' });
+    await user.click(within(dialog).getByRole('radio', { name: 'Waits on tickets' }));
+    await waitFor(() =>
+      expect(server.matching(`/tracker/demo/items?phase=${PHASE}`, 'GET')).toHaveLength(1),
+    );
+    await user.click(within(dialog).getByRole('combobox'));
+    expect(await screen.findByRole('option', { name: /In the queue/ })).toBeInTheDocument();
+  });
+
+  it('asks for no phase-mates for a ticket with no phase', async () => {
+    const user = userEvent.setup();
+    server.on('/tracker/demo/items', { body: { project: 'demo', items: [] } }, 'GET');
+    open();
+    await screen.findByRole('heading', { name: 'Next up' });
+    await user.click(screen.getByRole('button', { name: /Block…/ }));
+    await user.click(
+      within(screen.getByRole('dialog', { name: 'Block this ticket' })).getByRole('radio', {
+        name: 'Waits on tickets',
+      }),
+    );
+    await waitFor(() => expect(server.matching('/tracker/demo/items', 'GET')).toHaveLength(1));
+    expect(server.matching(/items\?phase=/)).toHaveLength(0);
+  });
+
+  it('says a phase’s fields in the history, and marks a roadmap event', async () => {
+    await opened({
+      ...FROZEN,
+      events: [
+        {
+          event_id: 9,
+          ts: '2026-01-05T00:00:00Z',
+          author_email: 'alice@example.com',
+          agent: 'Owner',
+          surface: 'web',
+          kind: 'move',
+          body: 'Frozen in demo-p0001.',
+          fields: { phase: PHASE, frozen: true },
+          roadmap: true,
+        },
+      ],
+    });
+    expect(screen.getByText('roadmap')).toHaveAttribute(
+      'title',
+      expect.stringContaining('left out of the default feed'),
+    );
+    expect(screen.getByText('Phase', { selector: 'span' })).toBeInTheDocument();
   });
 });

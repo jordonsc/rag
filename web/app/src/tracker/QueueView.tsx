@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
-  Badge,
   Button,
   Card,
   EmptyState,
@@ -30,8 +29,9 @@ import {
 import { ProjectTabs } from './docParts';
 import { TRACKER_IDENTITY_NEEDED, useTrackerGate } from './gate';
 import { hasLabel, labelsIn, normaliseLabel } from './labels';
-import { ApprovalControl, DraftBadge, SecondLine, StatusDot, WaitsOn } from './parts';
+import { ApprovalControl, BlockDetail, DraftBadge, SecondLine, StatusDot } from './parts';
 import { itemPath, storeLastProject } from './paths';
+import { PhaseFilter, phasesIn, PhaseTitlesProvider } from './phaseTitles';
 import { ProjectPicker } from './ProjectPicker';
 import { GateMarker, QueueList } from './QueueList';
 import styles from './tracker.module.css';
@@ -41,7 +41,7 @@ import { useQueue } from './useQueue';
 import { useVelocity } from './useVelocity';
 import { hasCountedTickets } from './velocity';
 import { VelocityBar } from './VelocityBar';
-import { blockReasonLabel, dotState, type DotState } from './vocab';
+import { dotState, type DotState } from './vocab';
 
 type Notice = { tone: 'warn' | 'crit'; text: string };
 
@@ -99,7 +99,7 @@ interface FlatRowProps {
  * what it waits on, and the labels at the right (no link chips: rag-t0031).
  * A block note, when there is one, is a third line.
  */
-function FlatRow({ project, item, state, actions, detail, note }: FlatRowProps) {
+export function FlatRow({ project, item, state, actions, detail, note }: FlatRowProps) {
   return (
     <li
       className={cx(styles.flatRow, item.status === 'in_progress' && styles.rowInProgress)}
@@ -120,21 +120,6 @@ function FlatRow({ project, item, state, actions, detail, note }: FlatRowProps) 
         <p className={styles.blockNote}>{note}</p>
       )}
     </li>
-  );
-}
-
-/** A blocked item's reason (or the bare word) and what it waits on. */
-function BlockDetail({ project, item }: { project: string; item: Item }) {
-  if (!item.blocked) {
-    return null;
-  }
-  return (
-    <>
-      <Badge tone="warn">
-        {item.block_reason === null ? 'Blocked' : blockReasonLabel(item.block_reason)}
-      </Badge>
-      <WaitsOn project={project} ids={item.depends_on ?? []} />
-    </>
   );
 }
 
@@ -183,8 +168,12 @@ export function QueueView() {
  * **Filters**: *Unratified only*, and a **label** (rag-t0027) held in the URL
  * (`?label=Physics`, matched case-insensitively), so a reload or a shared
  * link keeps it. A label filter keeps the queue's gates, so the reader still
- * sees which batch each labelled item sits in. Either filter turns reordering
- * off: the hidden rows are neighbours too.
+ * sees which batch each labelled item sits in. A **phase** (spec:roadmap RM-47)
+ * filters the same way (`?phase=<id>`), its options the phases the view's
+ * tickets name, drawn only with at least one. Any filter turns reordering off:
+ * the hidden rows are neighbours too. A row names its phase with a chip, from
+ * one read of the roadmap for the page rather than one a row; a frozen ticket
+ * is in no section and no count here, since the server leaves it out.
  *
  * **Approval from the row** (rag-t0009): an *Agent-approved* badge, in any
  * section, is a button that asks to ratify it; an unapproved item in the queue
@@ -227,22 +216,25 @@ function Dashboard({ project }: { project: string }) {
   const [acking, setAcking] = useState(false);
   const [params, setParams] = useSearchParams();
   const label = normaliseLabel(params.get('label') ?? '');
+  const phase = (params.get('phase') ?? '').trim();
 
-  /** Set or clear the label filter in the URL, keeping any other parameter. */
-  const setLabel = (value: string) => {
+  /** Set or clear a filter in the URL, keeping any other parameter. */
+  const setFilter = (key: 'label' | 'phase', value: string) => {
     setParams(
       (current) => {
         const next = new URLSearchParams(current);
         if (value === '') {
-          next.delete('label');
+          next.delete(key);
         } else {
-          next.set('label', value);
+          next.set(key, value);
         }
         return next;
       },
       { replace: true },
     );
   };
+  const setLabel = (value: string) => setFilter('label', value);
+  const setPhase = (value: string) => setFilter('phase', value);
 
   useEffect(() => storeLastProject(project), [project]);
 
@@ -312,15 +304,19 @@ function Dashboard({ project }: { project: string }) {
 
   const view = state.kind === 'ready' ? state.view : null;
   const keep = useCallback(
-    (item: Item) => (!unratified || item.approval === 'agent') && hasLabel(item, label),
-    [unratified, label],
+    (item: Item) =>
+      (!unratified || item.approval === 'agent') &&
+      hasLabel(item, label) &&
+      (phase === '' || item.phase === phase),
+    [unratified, label, phase],
   );
-  // The queue's gates stay through a label filter: they say which batch the
-  // labelled work is in. The unratified filter applies to them as before.
+  // The queue's gates stay through a label or phase filter: they say which batch
+  // the filtered work is in. The unratified filter applies to them as before.
+  const narrowed = label !== '' || phase !== '';
   const keepInQueue = useCallback(
     (item: Item) =>
-      item.type === 'gate' && label !== '' ? !unratified || item.approval === 'agent' : keep(item),
-    [keep, unratified, label],
+      item.type === 'gate' && narrowed ? !unratified || item.approval === 'agent' : keep(item),
+    [keep, unratified, narrowed],
   );
   const queue = useMemo(
     () => (view === null ? [] : inOrder(view.queue, pendingOrder).filter(keepInQueue)),
@@ -368,7 +364,7 @@ function Dashboard({ project }: { project: string }) {
 
   const full = state.view;
   const gates = queue.filter((item) => item.type === 'gate').length;
-  const unratifiedCount = [
+  const everyTicket = [
     ...full.done,
     ...(full.drafts ?? []),
     ...(full.requests ?? []),
@@ -376,557 +372,568 @@ function Dashboard({ project }: { project: string }) {
     ...full.queue,
     ...full.blocked,
     ...(full.deferred ?? []),
-  ].filter((item) => item.approval === 'agent').length;
+  ];
+  const unratifiedCount = everyTicket.filter((item) => item.approval === 'agent').length;
   const reorderHint =
     pendingOrder !== null
       ? 'A move is being saved.'
-      : unratified || label !== ''
+      : unratified || narrowed
         ? 'Reordering is off while the list is filtered: the hidden rows are its neighbours too.'
         : undefined;
   const labelOptions = [
     { value: '', label: 'All labels' },
-    ...labelsIn(
-      [
-        ...full.done,
-        ...(full.drafts ?? []),
-        ...(full.requests ?? []),
-        ...(full.review ?? []),
-        ...full.queue,
-        ...full.blocked,
-        ...(full.deferred ?? []),
-      ],
-      label,
-    ).map((value) => ({ value, label: value })),
+    ...labelsIn(everyTicket, label).map((value) => ({ value, label: value })),
   ];
+  const phaseOptions = phasesIn(everyTicket, phase);
   const queueEmpty =
     label !== ''
       ? `No ticket labelled ${label} in the queue`
-      : unratified
-        ? 'No unratified approvals in the queue'
-        : 'The queue is empty';
+      : phase !== ''
+        ? 'No ticket of this phase in the queue'
+        : unratified
+          ? 'No unratified approvals in the queue'
+          : 'The queue is empty';
 
   return (
-    <div className={styles.view}>
-      <header className={styles.head}>
-        <div className={styles.headTitle}>
-          <Icon name="list-todo" size={18} />
-          <h1 className={styles.title}>{project}</h1>
-        </div>
-        <div className={styles.headControls}>
-          <ProjectTabs project={project} active="queue" />
-          <span className={styles.picker}>
-            <ProjectPicker current={project} />
-          </span>
-          <Toggle
-            checked={unratified}
-            onChange={setUnratified}
-            label={`Unratified only (${unratifiedCount})`}
-          />
-          {labelOptions.length > 1 && (
-            <span className={styles.labelFilter}>
-              <Select
-                value={
-                  labelOptions.find((o) => o.value.toLowerCase() === label.toLowerCase())?.value ??
-                  ''
-                }
-                onChange={setLabel}
-                options={labelOptions}
-                aria-label="Label"
-              />
+    <PhaseTitlesProvider
+      project={project}
+      enabled={everyTicket.some((item) => item.phase)}
+      viewKey={state.revision}
+    >
+      <div className={styles.view}>
+        <header className={styles.head}>
+          <div className={styles.headTitle}>
+            <Icon name="list-todo" size={18} />
+            <h1 className={styles.title}>{project}</h1>
+          </div>
+          <div className={styles.headControls}>
+            <ProjectTabs project={project} active="queue" />
+            <span className={styles.picker}>
+              <ProjectPicker current={project} />
             </span>
-          )}
-          <Button size="sm" variant="accent" onClick={() => setAdding('request')}>
-            <Icon name="message-square" size={14} />
-            Add request
-          </Button>
-        </div>
-      </header>
-
-      {velocity !== null && hasCountedTickets(velocity) && (
-        <VelocityBar project={project} velocity={velocity} />
-      )}
-
-      {state.error !== null && (
-        <p className={cx(styles.notice, styles.notice_warn)} role="status">
-          <Icon name="triangle-alert" size={14} />
-          <span>Could not refresh: {state.error.message} Showing the last good view.</span>
-        </p>
-      )}
-      {notice !== null && (
-        <p className={cx(styles.notice, styles[`notice_${notice.tone}`])} role="alert">
-          <Icon name={notice.tone === 'crit' ? 'octagon-alert' : 'info'} size={14} />
-          <span>{notice.text}</span>
-          <button
-            type="button"
-            className={styles.noticeClose}
-            aria-label="Dismiss"
-            onClick={() => setNotice(null)}
-          >
-            <Icon name="x" size={12} />
-          </button>
-        </p>
-      )}
-      {!full.exists && (
-        <p className={styles.notice}>
-          <Icon name="info" size={14} />
-          <span>
-            Nothing has been written to <code>{project}</code> yet. Its first ticket creates it.
-          </span>
-        </p>
-      )}
-
-      {done.length > 0 && (
-        <section className={cx(styles.section, styles.section_done)} aria-label="Done">
-          <header className={styles.sectionHead}>
-            <h2 className={styles.sectionTitle}>
-              Done <span className={styles.count}>{done.length}</span>
-            </h2>
-            <Button size="sm" onClick={acknowledge} loading={acking}>
-              <Icon name="check-check" size={14} />
-              {gate.ready ? 'Acknowledge all done' : 'Set your email to acknowledge'}
+            <Toggle
+              checked={unratified}
+              onChange={setUnratified}
+              label={`Unratified only (${unratifiedCount})`}
+            />
+            {labelOptions.length > 1 && (
+              <span className={styles.labelFilter}>
+                <Select
+                  value={
+                    labelOptions.find((o) => o.value.toLowerCase() === label.toLowerCase())
+                      ?.value ?? ''
+                  }
+                  onChange={setLabel}
+                  options={labelOptions}
+                  aria-label="Label"
+                />
+              </span>
+            )}
+            {phaseOptions.length > 0 && (
+              <PhaseFilter
+                className={styles.labelFilter}
+                phases={phaseOptions}
+                value={phase}
+                onChange={setPhase}
+              />
+            )}
+            <Button size="sm" variant="accent" onClick={() => setAdding('request')}>
+              <Icon name="message-square" size={14} />
+              Add request
             </Button>
-          </header>
-          <ul className={styles.flat}>
-            {done.map((item) =>
-              item.type === 'gate' ? (
-                <li
-                  key={item.id}
-                  className={cx(styles.marker, styles.markerDone)}
-                  data-id={item.id}
-                  aria-label={`Gate ${item.id}: ${item.title}`}
-                >
-                  <GateMarker project={project} item={item} variant="done" />
-                </li>
-              ) : (
+          </div>
+        </header>
+
+        {velocity !== null && hasCountedTickets(velocity) && (
+          <VelocityBar project={project} velocity={velocity} />
+        )}
+
+        {state.error !== null && (
+          <p className={cx(styles.notice, styles.notice_warn)} role="status">
+            <Icon name="triangle-alert" size={14} />
+            <span>Could not refresh: {state.error.message} Showing the last good view.</span>
+          </p>
+        )}
+        {notice !== null && (
+          <p className={cx(styles.notice, styles[`notice_${notice.tone}`])} role="alert">
+            <Icon name={notice.tone === 'crit' ? 'octagon-alert' : 'info'} size={14} />
+            <span>{notice.text}</span>
+            <button
+              type="button"
+              className={styles.noticeClose}
+              aria-label="Dismiss"
+              onClick={() => setNotice(null)}
+            >
+              <Icon name="x" size={12} />
+            </button>
+          </p>
+        )}
+        {!full.exists && (
+          <p className={styles.notice}>
+            <Icon name="info" size={14} />
+            <span>
+              Nothing has been written to <code>{project}</code> yet. Its first ticket creates it.
+            </span>
+          </p>
+        )}
+
+        {done.length > 0 && (
+          <section className={cx(styles.section, styles.section_done)} aria-label="Done">
+            <header className={styles.sectionHead}>
+              <h2 className={styles.sectionTitle}>
+                Done <span className={styles.count}>{done.length}</span>
+              </h2>
+              <Button size="sm" onClick={acknowledge} loading={acking}>
+                <Icon name="check-check" size={14} />
+                {gate.ready ? 'Acknowledge all done' : 'Set your email to acknowledge'}
+              </Button>
+            </header>
+            <ul className={styles.flat}>
+              {done.map((item) =>
+                item.type === 'gate' ? (
+                  <li
+                    key={item.id}
+                    className={cx(styles.marker, styles.markerDone)}
+                    data-id={item.id}
+                    aria-label={`Gate ${item.id}: ${item.title}`}
+                  >
+                    <GateMarker project={project} item={item} variant="done" />
+                  </li>
+                ) : (
+                  <FlatRow
+                    key={item.id}
+                    project={project}
+                    item={item}
+                    state="done"
+                    actions={
+                      <>
+                        <ApprovalControl
+                          id={item.id}
+                          approval={item.approval}
+                          onRatify={() => approve(item, 'ratify')}
+                        />
+                        {item.done_at !== null && (
+                          <time className={styles.when} dateTime={item.done_at}>
+                            {format.stamp(item.done_at)}
+                          </time>
+                        )}
+                      </>
+                    }
+                  />
+                ),
+              )}
+            </ul>
+          </section>
+        )}
+
+        {drafts.length > 0 && (
+          <section className={cx(styles.section, styles.section_drafts)} aria-label="Drafts">
+            <header className={styles.sectionHead}>
+              <h2 className={styles.sectionTitle}>
+                Drafts <span className={styles.count}>{drafts.length}</span>
+              </h2>
+            </header>
+            <ul className={styles.flat}>
+              {drafts.map((item) => (
                 <FlatRow
                   key={item.id}
                   project={project}
                   item={item}
-                  state="done"
+                  state={dotState(item)}
                   actions={
                     <>
                       <ApprovalControl
                         id={item.id}
                         approval={item.approval}
                         onRatify={() => approve(item, 'ratify')}
+                        onApprove={() => approve(item, 'approve')}
                       />
-                      {item.done_at !== null && (
-                        <time className={styles.when} dateTime={item.done_at}>
-                          {format.stamp(item.done_at)}
-                        </time>
-                      )}
+                      <Button
+                        size="sm"
+                        aria-label={`Publish ${item.id}`}
+                        onClick={() => setPublishing(item)}
+                      >
+                        <Icon name="eye" size={14} />
+                        Publish
+                      </Button>
                     </>
                   }
+                  detail={
+                    <>
+                      <DraftBadge />
+                      <BlockDetail project={project} item={item} />
+                    </>
+                  }
+                  note={item.blocked ? item.block_note : null}
                 />
-              ),
-            )}
-          </ul>
-        </section>
-      )}
-
-      {drafts.length > 0 && (
-        <section className={cx(styles.section, styles.section_drafts)} aria-label="Drafts">
-          <header className={styles.sectionHead}>
-            <h2 className={styles.sectionTitle}>
-              Drafts <span className={styles.count}>{drafts.length}</span>
-            </h2>
-          </header>
-          <ul className={styles.flat}>
-            {drafts.map((item) => (
-              <FlatRow
-                key={item.id}
-                project={project}
-                item={item}
-                state={dotState(item)}
-                actions={
-                  <>
-                    <ApprovalControl
-                      id={item.id}
-                      approval={item.approval}
-                      onRatify={() => approve(item, 'ratify')}
-                      onApprove={() => approve(item, 'approve')}
-                    />
-                    <Button
-                      size="sm"
-                      aria-label={`Publish ${item.id}`}
-                      onClick={() => setPublishing(item)}
-                    >
-                      <Icon name="eye" size={14} />
-                      Publish
-                    </Button>
-                  </>
-                }
-                detail={
-                  <>
-                    <DraftBadge />
-                    <BlockDetail project={project} item={item} />
-                  </>
-                }
-                note={item.blocked ? item.block_note : null}
-              />
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {requests.length > 0 && (
-        <section className={cx(styles.section, styles.section_requests)} aria-label="Requests">
-          <header className={styles.sectionHead}>
-            <h2 className={styles.sectionTitle}>
-              Requests <span className={styles.count}>{requests.length}</span>
-            </h2>
-          </header>
-          <ul className={styles.flat}>
-            {requests.map((item) => (
-              <FlatRow
-                key={item.id}
-                project={project}
-                item={item}
-                state={dotState(item)}
-                actions={
-                  <ApprovalControl
-                    id={item.id}
-                    approval={item.approval}
-                    onRatify={() => approve(item, 'ratify')}
-                    onApprove={() => approve(item, 'approve')}
-                  />
-                }
-                detail={<BlockDetail project={project} item={item} />}
-                note={item.blocked ? item.block_note : null}
-              />
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {review.length > 0 && (
-        <section className={cx(styles.section, styles.section_review)} aria-label="Review">
-          <header className={styles.sectionHead}>
-            <h2 className={styles.sectionTitle}>
-              Review <span className={styles.count}>{review.length}</span>
-            </h2>
-          </header>
-          <ul className={styles.flat}>
-            {review.map((item) => (
-              <FlatRow
-                key={item.id}
-                project={project}
-                item={item}
-                state={dotState(item)}
-                actions={
-                  <>
-                    <ApprovalControl
-                      id={item.id}
-                      approval={item.approval}
-                      onRatify={() => approve(item, 'ratify')}
-                      onApprove={() => approve(item, 'approve')}
-                    />
-                    <Button
-                      size="sm"
-                      variant="good"
-                      aria-label={`Confirm ${item.id}`}
-                      onClick={() => setConfirming(item)}
-                    >
-                      <Icon name="check" size={14} />
-                      Confirm
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="caution"
-                      aria-label={`Send back ${item.id}`}
-                      onClick={() => setSendingBack(item)}
-                    >
-                      <Icon name="rotate-ccw" size={14} />
-                      Send back
-                    </Button>
-                  </>
-                }
-                detail={<BlockDetail project={project} item={item} />}
-                note={item.blocked ? item.block_note : null}
-              />
-            ))}
-          </ul>
-        </section>
-      )}
-
-      <section className={styles.section} aria-label="Queue">
-        <header className={styles.sectionHead}>
-          <h2 className={styles.sectionTitle}>
-            Queue{' '}
-            <span className={styles.count}>
-              {queue.length - gates} {queue.length - gates === 1 ? 'ticket' : 'tickets'}
-              {gates > 0 && ` · ${gates} ${gates === 1 ? 'gate' : 'gates'}`}
-            </span>
-          </h2>
-          <div className={styles.sectionActions}>
-            <Button size="sm" onClick={() => setAdding('item')}>
-              <Icon name="plus" size={14} />
-              Add ticket
-            </Button>
-            <Button size="sm" onClick={() => setAdding('gate')}>
-              <Icon name="flag" size={14} />
-              Add gate
-            </Button>
-          </div>
-        </header>
-        {queue.length === 0 || (label !== '' && queue.length === gates) ? (
-          <EmptyState
-            icon="list-todo"
-            title={queueEmpty}
-            message={
-              unratified || label !== ''
-                ? undefined
-                : 'Add ticket and Add gate put work at the bottom.'
-            }
-          />
-        ) : (
-          <QueueList
-            project={project}
-            items={queue}
-            reorderable={reorderHint === undefined}
-            {...(reorderHint === undefined ? {} : { reorderHint })}
-            revision={state.revision}
-            onMove={move}
-            onRemove={setRemoving}
-            onDefer={setDeferring}
-            onDraft={setDrafting}
-            onApproval={approve}
-            onInterrupted={interrupted}
-          />
+              ))}
+            </ul>
+          </section>
         )}
-        {!gate.ready && <p className={styles.gateNote}>{TRACKER_IDENTITY_NEEDED}</p>}
-      </section>
 
-      {blocked.length > 0 && (
-        <section className={cx(styles.section, styles.section_blocked)} aria-label="Blocked">
-          <header className={styles.sectionHead}>
-            <h2 className={styles.sectionTitle}>
-              Blocked <span className={styles.count}>{blocked.length}</span>
-            </h2>
-          </header>
-          <ul className={styles.flat}>
-            {blocked.map((item) => (
-              <FlatRow
-                key={item.id}
-                project={project}
-                item={item}
-                state="blocked"
-                actions={
-                  <>
+        {requests.length > 0 && (
+          <section className={cx(styles.section, styles.section_requests)} aria-label="Requests">
+            <header className={styles.sectionHead}>
+              <h2 className={styles.sectionTitle}>
+                Requests <span className={styles.count}>{requests.length}</span>
+              </h2>
+            </header>
+            <ul className={styles.flat}>
+              {requests.map((item) => (
+                <FlatRow
+                  key={item.id}
+                  project={project}
+                  item={item}
+                  state={dotState(item)}
+                  actions={
                     <ApprovalControl
                       id={item.id}
                       approval={item.approval}
                       onRatify={() => approve(item, 'ratify')}
                       onApprove={() => approve(item, 'approve')}
                     />
-                    <Button size="sm" onClick={() => setUnblocking(item)}>
-                      <Icon name="lock-open" size={14} />
-                      Unblock
-                    </Button>
-                  </>
-                }
-                detail={<BlockDetail project={project} item={item} />}
-                note={item.block_note}
-              />
-            ))}
-          </ul>
-        </section>
-      )}
+                  }
+                  detail={<BlockDetail project={project} item={item} />}
+                  note={item.blocked ? item.block_note : null}
+                />
+              ))}
+            </ul>
+          </section>
+        )}
 
-      {deferred.length > 0 && (
-        <section className={cx(styles.section, styles.section_deferred)} aria-label="Deferred">
+        {review.length > 0 && (
+          <section className={cx(styles.section, styles.section_review)} aria-label="Review">
+            <header className={styles.sectionHead}>
+              <h2 className={styles.sectionTitle}>
+                Review <span className={styles.count}>{review.length}</span>
+              </h2>
+            </header>
+            <ul className={styles.flat}>
+              {review.map((item) => (
+                <FlatRow
+                  key={item.id}
+                  project={project}
+                  item={item}
+                  state={dotState(item)}
+                  actions={
+                    <>
+                      <ApprovalControl
+                        id={item.id}
+                        approval={item.approval}
+                        onRatify={() => approve(item, 'ratify')}
+                        onApprove={() => approve(item, 'approve')}
+                      />
+                      <Button
+                        size="sm"
+                        variant="good"
+                        aria-label={`Confirm ${item.id}`}
+                        onClick={() => setConfirming(item)}
+                      >
+                        <Icon name="check" size={14} />
+                        Confirm
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="caution"
+                        aria-label={`Send back ${item.id}`}
+                        onClick={() => setSendingBack(item)}
+                      >
+                        <Icon name="rotate-ccw" size={14} />
+                        Send back
+                      </Button>
+                    </>
+                  }
+                  detail={<BlockDetail project={project} item={item} />}
+                  note={item.blocked ? item.block_note : null}
+                />
+              ))}
+            </ul>
+          </section>
+        )}
+
+        <section className={styles.section} aria-label="Queue">
           <header className={styles.sectionHead}>
             <h2 className={styles.sectionTitle}>
-              Deferred <span className={styles.count}>{deferred.length}</span>
+              Queue{' '}
+              <span className={styles.count}>
+                {queue.length - gates} {queue.length - gates === 1 ? 'ticket' : 'tickets'}
+                {gates > 0 && ` · ${gates} ${gates === 1 ? 'gate' : 'gates'}`}
+              </span>
             </h2>
+            <div className={styles.sectionActions}>
+              <Button size="sm" onClick={() => setAdding('item')}>
+                <Icon name="plus" size={14} />
+                Add ticket
+              </Button>
+              <Button size="sm" onClick={() => setAdding('gate')}>
+                <Icon name="flag" size={14} />
+                Add gate
+              </Button>
+            </div>
           </header>
-          <ul className={styles.flat}>
-            {deferred.map((item) => (
-              <FlatRow
-                key={item.id}
-                project={project}
-                item={item}
-                state={dotState(item)}
-                actions={
-                  <>
-                    <ApprovalControl
-                      id={item.id}
-                      approval={item.approval}
-                      onRatify={() => approve(item, 'ratify')}
-                      onApprove={() => approve(item, 'approve')}
-                    />
-                    <Button size="sm" onClick={() => setResuming(item)}>
-                      <Icon name="circle-play" size={14} />
-                      Resume
-                    </Button>
-                  </>
-                }
-                detail={<BlockDetail project={project} item={item} />}
-                note={item.blocked ? item.block_note : null}
-              />
-            ))}
-          </ul>
+          {queue.length === 0 || (narrowed && queue.length === gates) ? (
+            <EmptyState
+              icon="list-todo"
+              title={queueEmpty}
+              message={
+                unratified || narrowed
+                  ? undefined
+                  : 'Add ticket and Add gate put work at the bottom.'
+              }
+            />
+          ) : (
+            <QueueList
+              project={project}
+              items={queue}
+              reorderable={reorderHint === undefined}
+              {...(reorderHint === undefined ? {} : { reorderHint })}
+              revision={state.revision}
+              onMove={move}
+              onRemove={setRemoving}
+              onDefer={setDeferring}
+              onDraft={setDrafting}
+              onApproval={approve}
+              onInterrupted={interrupted}
+            />
+          )}
+          {!gate.ready && <p className={styles.gateNote}>{TRACKER_IDENTITY_NEEDED}</p>}
         </section>
-      )}
 
-      <AddItemDialog
-        key={`item:${project}`}
-        open={adding === 'item'}
-        project={project}
-        onCancel={() => setAdding(null)}
-        onDone={() => {
-          setAdding(null);
-          void refresh();
-        }}
-      />
-      <AddRequestDialog
-        key={`request:${project}`}
-        open={adding === 'request'}
-        project={project}
-        onCancel={() => setAdding(null)}
-        onDone={() => {
-          setAdding(null);
-          void refresh();
-        }}
-      />
-      <AddGateDialog
-        open={adding === 'gate'}
-        project={project}
-        onCancel={() => setAdding(null)}
-        onDone={() => {
-          setAdding(null);
-          void refresh();
-        }}
-      />
-      <NoteDialog
-        project={project}
-        open={removing !== null}
-        title={removing?.type === 'gate' ? 'Remove this gate?' : 'Remove this ticket?'}
-        {...(removing === null ? {} : { subject: removing })}
-        message={
-          <p>
-            It is cancelled: it leaves the queue and the dashboard, and stays in its history.
-            Reopening it later puts it back at the top.
-          </p>
-        }
-        confirmLabel="Remove"
-        danger
-        onCancel={() => setRemoving(null)}
-        onSubmit={(note, fields) => updateItem(removing!.id, { status: 'cancelled', note }, fields)}
-        onDone={() => {
-          setRemoving(null);
-          void refresh();
-        }}
-      />
-      <ApprovalDialog
-        project={project}
-        action={approving?.action ?? null}
-        subject={approving?.item ?? null}
-        onCancel={() => setApproving(null)}
-        onDone={() => {
-          setRefocus(approving?.item.id ?? null);
-          setApproving(null);
-          void refresh();
-        }}
-      />
-      <NoteDialog
-        project={project}
-        open={unblocking !== null}
-        title="Unblock this ticket?"
-        {...(unblocking === null ? {} : { subject: unblocking })}
-        message={<p>It goes back into the queue at the place it kept while blocked.</p>}
-        confirmLabel="Unblock"
-        onCancel={() => setUnblocking(null)}
-        onSubmit={(note, fields) => updateItem(unblocking!.id, { blocked: false, note }, fields)}
-        onDone={() => {
-          setUnblocking(null);
-          void refresh();
-        }}
-      />
-      <NoteDialog
-        project={project}
-        open={deferring !== null}
-        title={deferring?.type === 'gate' ? 'Defer this gate?' : 'Defer this ticket?'}
-        {...(deferring === null ? {} : { subject: deferring })}
-        message={
-          <p>
-            It moves to Deferred and keeps its place in the queue, so resuming puts it back where it
-            was. Nothing picks it up while it is deferred.
-          </p>
-        }
-        confirmLabel="Defer"
-        onCancel={() => setDeferring(null)}
-        onSubmit={(note, fields) => updateItem(deferring!.id, { status: 'deferred', note }, fields)}
-        onDone={() => {
-          setDeferring(null);
-          void refresh();
-        }}
-      />
-      <NoteDialog
-        project={project}
-        open={confirming !== null}
-        title={confirming?.type === 'gate' ? 'Confirm this gate?' : 'Confirm this ticket?'}
-        {...(confirming === null ? {} : { subject: confirming })}
-        message={
-          <p>It is done: it leaves the queue and shows under Done until you acknowledge it.</p>
-        }
-        confirmLabel="Confirm"
-        onCancel={() => setConfirming(null)}
-        onSubmit={(note, fields) => updateItem(confirming!.id, { status: 'done', note }, fields)}
-        onDone={() => {
-          setConfirming(null);
-          void refresh();
-        }}
-      />
-      <NoteDialog
-        project={project}
-        open={sendingBack !== null}
-        title={sendingBack?.type === 'gate' ? 'Send this gate back?' : 'Send this ticket back?'}
-        {...(sendingBack === null ? {} : { subject: sendingBack })}
-        message={<p>It goes back to in progress at the place it kept while in review.</p>}
-        noteRows={SEND_BACK_NOTE_ROWS}
-        confirmLabel="Send back"
-        onCancel={() => setSendingBack(null)}
-        onSubmit={(note, fields) =>
-          updateItem(sendingBack!.id, { status: 'in_progress', note }, fields)
-        }
-        onDone={() => {
-          setSendingBack(null);
-          void refresh();
-        }}
-      />
-      <PublishDialog
-        project={project}
-        item={publishing}
-        onCancel={() => setPublishing(null)}
-        onDone={() => {
-          setPublishing(null);
-          void refresh();
-        }}
-      />
-      <MakeDraftDialog
-        project={project}
-        item={drafting}
-        onCancel={() => setDrafting(null)}
-        onDone={() => {
-          setDrafting(null);
-          void refresh();
-        }}
-      />
-      <NoteDialog
-        project={project}
-        open={resuming !== null}
-        title={resuming?.type === 'gate' ? 'Resume this gate?' : 'Resume this ticket?'}
-        {...(resuming === null ? {} : { subject: resuming })}
-        message={<p>It goes back to pending at the place it kept while deferred.</p>}
-        confirmLabel="Resume"
-        onCancel={() => setResuming(null)}
-        onSubmit={(note, fields) => updateItem(resuming!.id, { status: 'pending', note }, fields)}
-        onDone={() => {
-          setResuming(null);
-          void refresh();
-        }}
-      />
-    </div>
+        {blocked.length > 0 && (
+          <section className={cx(styles.section, styles.section_blocked)} aria-label="Blocked">
+            <header className={styles.sectionHead}>
+              <h2 className={styles.sectionTitle}>
+                Blocked <span className={styles.count}>{blocked.length}</span>
+              </h2>
+            </header>
+            <ul className={styles.flat}>
+              {blocked.map((item) => (
+                <FlatRow
+                  key={item.id}
+                  project={project}
+                  item={item}
+                  state="blocked"
+                  actions={
+                    <>
+                      <ApprovalControl
+                        id={item.id}
+                        approval={item.approval}
+                        onRatify={() => approve(item, 'ratify')}
+                        onApprove={() => approve(item, 'approve')}
+                      />
+                      <Button size="sm" onClick={() => setUnblocking(item)}>
+                        <Icon name="lock-open" size={14} />
+                        Unblock
+                      </Button>
+                    </>
+                  }
+                  detail={<BlockDetail project={project} item={item} />}
+                  note={item.block_note}
+                />
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {deferred.length > 0 && (
+          <section className={cx(styles.section, styles.section_deferred)} aria-label="Deferred">
+            <header className={styles.sectionHead}>
+              <h2 className={styles.sectionTitle}>
+                Deferred <span className={styles.count}>{deferred.length}</span>
+              </h2>
+            </header>
+            <ul className={styles.flat}>
+              {deferred.map((item) => (
+                <FlatRow
+                  key={item.id}
+                  project={project}
+                  item={item}
+                  state={dotState(item)}
+                  actions={
+                    <>
+                      <ApprovalControl
+                        id={item.id}
+                        approval={item.approval}
+                        onRatify={() => approve(item, 'ratify')}
+                        onApprove={() => approve(item, 'approve')}
+                      />
+                      <Button size="sm" onClick={() => setResuming(item)}>
+                        <Icon name="circle-play" size={14} />
+                        Resume
+                      </Button>
+                    </>
+                  }
+                  detail={<BlockDetail project={project} item={item} />}
+                  note={item.blocked ? item.block_note : null}
+                />
+              ))}
+            </ul>
+          </section>
+        )}
+
+        <AddItemDialog
+          key={`item:${project}`}
+          open={adding === 'item'}
+          project={project}
+          onCancel={() => setAdding(null)}
+          onDone={() => {
+            setAdding(null);
+            void refresh();
+          }}
+        />
+        <AddRequestDialog
+          key={`request:${project}`}
+          open={adding === 'request'}
+          project={project}
+          onCancel={() => setAdding(null)}
+          onDone={() => {
+            setAdding(null);
+            void refresh();
+          }}
+        />
+        <AddGateDialog
+          open={adding === 'gate'}
+          project={project}
+          onCancel={() => setAdding(null)}
+          onDone={() => {
+            setAdding(null);
+            void refresh();
+          }}
+        />
+        <NoteDialog
+          project={project}
+          open={removing !== null}
+          title={removing?.type === 'gate' ? 'Remove this gate?' : 'Remove this ticket?'}
+          {...(removing === null ? {} : { subject: removing })}
+          message={
+            <p>
+              It is cancelled: it leaves the queue and the dashboard, and stays in its history.
+              Reopening it later puts it back at the top.
+            </p>
+          }
+          confirmLabel="Remove"
+          danger
+          onCancel={() => setRemoving(null)}
+          onSubmit={(note, fields) =>
+            updateItem(removing!.id, { status: 'cancelled', note }, fields)
+          }
+          onDone={() => {
+            setRemoving(null);
+            void refresh();
+          }}
+        />
+        <ApprovalDialog
+          project={project}
+          action={approving?.action ?? null}
+          subject={approving?.item ?? null}
+          onCancel={() => setApproving(null)}
+          onDone={() => {
+            setRefocus(approving?.item.id ?? null);
+            setApproving(null);
+            void refresh();
+          }}
+        />
+        <NoteDialog
+          project={project}
+          open={unblocking !== null}
+          title="Unblock this ticket?"
+          {...(unblocking === null ? {} : { subject: unblocking })}
+          message={<p>It goes back into the queue at the place it kept while blocked.</p>}
+          confirmLabel="Unblock"
+          onCancel={() => setUnblocking(null)}
+          onSubmit={(note, fields) => updateItem(unblocking!.id, { blocked: false, note }, fields)}
+          onDone={() => {
+            setUnblocking(null);
+            void refresh();
+          }}
+        />
+        <NoteDialog
+          project={project}
+          open={deferring !== null}
+          title={deferring?.type === 'gate' ? 'Defer this gate?' : 'Defer this ticket?'}
+          {...(deferring === null ? {} : { subject: deferring })}
+          message={
+            <p>
+              It moves to Deferred and keeps its place in the queue, so resuming puts it back where
+              it was. Nothing picks it up while it is deferred.
+            </p>
+          }
+          confirmLabel="Defer"
+          onCancel={() => setDeferring(null)}
+          onSubmit={(note, fields) =>
+            updateItem(deferring!.id, { status: 'deferred', note }, fields)
+          }
+          onDone={() => {
+            setDeferring(null);
+            void refresh();
+          }}
+        />
+        <NoteDialog
+          project={project}
+          open={confirming !== null}
+          title={confirming?.type === 'gate' ? 'Confirm this gate?' : 'Confirm this ticket?'}
+          {...(confirming === null ? {} : { subject: confirming })}
+          message={
+            <p>It is done: it leaves the queue and shows under Done until you acknowledge it.</p>
+          }
+          confirmLabel="Confirm"
+          onCancel={() => setConfirming(null)}
+          onSubmit={(note, fields) => updateItem(confirming!.id, { status: 'done', note }, fields)}
+          onDone={() => {
+            setConfirming(null);
+            void refresh();
+          }}
+        />
+        <NoteDialog
+          project={project}
+          open={sendingBack !== null}
+          title={sendingBack?.type === 'gate' ? 'Send this gate back?' : 'Send this ticket back?'}
+          {...(sendingBack === null ? {} : { subject: sendingBack })}
+          message={<p>It goes back to in progress at the place it kept while in review.</p>}
+          noteRows={SEND_BACK_NOTE_ROWS}
+          confirmLabel="Send back"
+          onCancel={() => setSendingBack(null)}
+          onSubmit={(note, fields) =>
+            updateItem(sendingBack!.id, { status: 'in_progress', note }, fields)
+          }
+          onDone={() => {
+            setSendingBack(null);
+            void refresh();
+          }}
+        />
+        <PublishDialog
+          project={project}
+          item={publishing}
+          onCancel={() => setPublishing(null)}
+          onDone={() => {
+            setPublishing(null);
+            void refresh();
+          }}
+        />
+        <MakeDraftDialog
+          project={project}
+          item={drafting}
+          onCancel={() => setDrafting(null)}
+          onDone={() => {
+            setDrafting(null);
+            void refresh();
+          }}
+        />
+        <NoteDialog
+          project={project}
+          open={resuming !== null}
+          title={resuming?.type === 'gate' ? 'Resume this gate?' : 'Resume this ticket?'}
+          {...(resuming === null ? {} : { subject: resuming })}
+          message={<p>It goes back to pending at the place it kept while deferred.</p>}
+          confirmLabel="Resume"
+          onCancel={() => setResuming(null)}
+          onSubmit={(note, fields) => updateItem(resuming!.id, { status: 'pending', note }, fields)}
+          onDone={() => {
+            setResuming(null);
+            void refresh();
+          }}
+        />
+      </div>
+    </PhaseTitlesProvider>
   );
 }

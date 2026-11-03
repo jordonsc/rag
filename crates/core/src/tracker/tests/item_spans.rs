@@ -86,6 +86,7 @@ const SPAN_SCHEMA_NAMES: &[&str] = &[
     "idx_item_spans_project_ended",
     "idx_item_spans_open",
     "idx_item_spans_item",
+    "idx_item_spans_frozen",
     "idx_events_project_ts",
 ];
 

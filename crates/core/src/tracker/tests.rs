@@ -9,6 +9,7 @@ use super::*;
 
 mod item_spans;
 mod report_read;
+mod roadmap;
 mod velocity_read;
 
 struct Fixture {
@@ -103,18 +104,19 @@ fn ids(v: &[&str]) -> Vec<String> {
     v.iter().map(|s| s.to_string()).collect()
 }
 
-/// The span invariant (spec:velocity VL-02): every ticket has exactly one open
-/// `status` span, its state the ticket's status; an open `blocked` span exactly
-/// when it is blocked and an open `draft` span exactly when it is a draft; no
-/// span on any other track; and every closed span ends no earlier than it
-/// started, by a later event.
+/// The span invariant (spec:velocity VL-02, spec:roadmap D21): every ticket has
+/// exactly one open `status` span, its state the ticket's status, or `frozen`
+/// while it is frozen; an open `blocked` span exactly when it is blocked and not
+/// frozen, and an open `draft` span exactly when it is a draft; no span on any
+/// other track; and every closed span ends no earlier than it started, by a later
+/// event.
 async fn assert_spans_match_rows(s: &TrackerStore) {
-    let rows: Vec<(String, String, String, i64, i64)> =
-        sqlx::query_as("SELECT id, project, status, blocked, draft FROM items ORDER BY id")
+    let rows: Vec<(String, String, String, i64, i64, i64)> =
+        sqlx::query_as("SELECT id, project, status, blocked, draft, frozen FROM items ORDER BY id")
             .fetch_all(&s.pool)
             .await
             .unwrap();
-    for (id, project, status, blocked, draft) in rows {
+    for (id, project, status, blocked, draft, frozen) in rows {
         let open: Vec<(String, String, String)> = sqlx::query_as(
             "SELECT track, state, project FROM item_spans WHERE item_id = ? AND ended_at IS NULL \
              ORDER BY track",
@@ -129,8 +131,13 @@ async fn assert_spans_match_rows(s: &TrackerStore) {
                 .map(|(_, state, _)| state.as_str())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(on("status"), vec![status.as_str()], "{id}'s status span");
-        let want_blocked: Vec<&str> = if blocked != 0 {
+        let want_status = if frozen != 0 {
+            "frozen"
+        } else {
+            status.as_str()
+        };
+        assert_eq!(on("status"), vec![want_status], "{id}'s status span");
+        let want_blocked: Vec<&str> = if blocked != 0 && frozen == 0 {
             vec!["blocked"]
         } else {
             vec![]
@@ -3993,6 +4000,7 @@ async fn events_after_applies_project_surface_and_kind_filters() {
         surfaces: Some(vec![Surface::Mcp]),
         kinds: None,
         drafts: false,
+        roadmap: false,
     };
     let sql = all(filter.clone()).await;
     let rust: Vec<_> = all(FeedFilter::default())
@@ -4042,6 +4050,7 @@ async fn concurrent_writers_publish_every_event_once_in_id_order() {
 fn a_feed_line_is_one_line_with_the_event_id_first() {
     let e = FeedEvent {
         draft: false,
+        roadmap: false,
         event_id: 13901,
         ts: "2026-10-27T21:49:42Z".into(),
         project: "rag".into(),
@@ -4261,6 +4270,7 @@ fn feed_event(
 ) -> FeedEvent {
     FeedEvent {
         draft: false,
+        roadmap: false,
         event_id: 7,
         ts: "2026-10-27T21:49:42Z".into(),
         project: "rag".into(),

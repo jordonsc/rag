@@ -73,6 +73,9 @@ pub(super) struct FeedQuery {
     /// Include draft events (owner, 2026-10-30): `true` to see what the owner
     /// writes while a ticket or document is a draft. Off by default.
     drafts: Option<bool>,
+    /// Include roadmap events (spec:roadmap D17, R8): `true` to see a phase's
+    /// changes and a frozen ticket's. Off by default, so planning wakes nobody.
+    roadmap: Option<bool>,
     surface: Option<String>,
     kinds: Option<String>,
     format: Option<String>,
@@ -89,7 +92,7 @@ enum Format {
 /// The filter a query names: the project from the path (`*` for every
 /// project), the surface (default `web`, the owner's actions; `any` for both),
 /// the kinds (default [`DEFAULT_FEED_KINDS`]; `all` for every kind) and
-/// whether draft events are wanted (default not).
+/// whether draft events and roadmap events are wanted (default neither).
 fn filter_of(project: &str, q: &FeedQuery) -> Result<FeedFilter, ApiError> {
     let project = if project == "*" {
         None
@@ -131,6 +134,7 @@ fn filter_of(project: &str, q: &FeedQuery) -> Result<FeedFilter, ApiError> {
         surfaces,
         kinds,
         drafts: q.drafts.unwrap_or(false),
+        roadmap: q.roadmap.unwrap_or(false),
     })
 }
 

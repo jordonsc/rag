@@ -1665,6 +1665,11 @@ fn the_tool_list_is_lean_and_says_the_rules_once() {
     // rag-t0050 (the word "ticket" for a queue record): 10,456 → 10,458 and
     // 1,560 → 1,564.
     // Drafts (owner, 2026-10-30): `draft` on the three create/update tools.
+    // spec:roadmap (no new tool): `phase`, `frozen` and a phase's fields on four
+    // tools, 10,772 → 11,410. RM-31's docs as written came to 11,561, so their words
+    // were cut (the "alone, or with a note" the server's refusal says anyway, "a
+    // planned one freezes it", "frozen too", `body`'s doc, which the description
+    // repeats): the words go, not the limit.
     let size: usize = tools
         .iter()
         .map(|t| serde_json::to_string(t).unwrap().len())
@@ -1698,11 +1703,15 @@ fn the_tool_list_is_lean_and_says_the_rules_once() {
         "approval defaults to agent",
         "place them as it says (else the bottom)",
         "done with a note listing them",
+        // spec:roadmap D27: frozen tickets, and who releases.
+        "out of the queue and the feed",
+        "release it when told to, after a review",
     ] {
         assert!(rules.contains(rule), "the instructions lack {rule:?}");
     }
     // Drafts (owner, 2026-10-30): one sentence, 1,564 → ~1,680.
-    assert!(rules.len() < 1_750, "{}", rules.len());
+    // spec:roadmap D27 (a phase's tickets): one sentence, 1,692 → 1,829.
+    assert!(rules.len() < 1_850, "{}", rules.len());
     // rag-t0050: the prose says "ticket"; "item" survives only as an API value
     // (`what=items`, the link kind `item:`), never as the word for a record.
     let says_item = |text: &str| {
@@ -2824,4 +2833,945 @@ async fn tracker_next_is_unchanged_by_velocity() {
     let without = next_text(&stand_in_with(false).await).await;
     assert_eq!(with, without);
     assert!(!with.contains("Velocity"), "{with}");
+}
+
+// ---- The roadmap (spec:roadmap, m03) -----------------------------------------------
+
+#[test]
+fn a_phase_is_named_by_its_id_with_or_without_the_prefix() {
+    for raw in ["phase:ubu-p0001", "ubu-p0001", " phase: ubu-p0001 "] {
+        assert_eq!(
+            parse_target(raw).unwrap(),
+            Target::Phase("ubu-p0001".into()),
+            "{raw}"
+        );
+    }
+    // A project with hyphens: the last one divides.
+    assert_eq!(
+        parse_target("my-proj-p0001").unwrap(),
+        Target::Phase("my-proj-p0001".into())
+    );
+    assert_eq!(phase_project("my-proj-p0001").unwrap(), "my-proj");
+    assert_eq!(phase_project("ubu-p0001").unwrap(), "ubu");
+    for bad in ["ubu", "-p0001", "ubu-t0001", "ubu-p", "ubu-pxx"] {
+        let e = phase_project(bad).unwrap_err();
+        assert!(e.contains("not a phase id"), "{bad}: {e}");
+    }
+    let e = parse_target("phase:").unwrap_err();
+    assert!(e.contains("names no phase"), "{e}");
+    assert!(parse_target("phase:  ").is_err());
+    // The neighbours are what they were, and the list of forms has it.
+    assert_eq!(
+        parse_target("ubu-t0001").unwrap(),
+        Target::Item("ubu-t0001".into())
+    );
+    assert_eq!(
+        parse_target("ubu-d0001").unwrap(),
+        Target::Doc("ubu-d0001".into())
+    );
+    assert!(parse_target("ubu-l0001")
+        .unwrap_err()
+        .contains("is a ledger topic id"));
+    assert!(parse_target("ubu-p").unwrap_err().contains("phase:<id>"));
+}
+
+#[test]
+fn a_phase_read_is_its_review_pass_and_names_its_own_project() {
+    let phase = Target::Phase("my-proj-p0001".into());
+    // The project argument does not matter: the id names it.
+    for project in [None, Some("other")] {
+        assert_eq!(
+            get_of(&record_get_req(&phase, project, false).unwrap()),
+            "/tracker/my-proj/phases/my-proj-p0001?tickets=true&history=false"
+        );
+        assert_eq!(
+            get_of(&record_get_req(&phase, project, true).unwrap()),
+            "/tracker/my-proj/phases/my-proj-p0001?tickets=true"
+        );
+    }
+    assert!(record_get_req(&Target::Phase("nonsense".into()), None, false).is_err());
+    // A document read is refused without touching the server.
+    assert!(doc_get_req(&phase, None, None, false).is_err());
+}
+
+#[tokio::test]
+async fn a_phase_is_not_a_document() {
+    let server = TrackerServer::new(
+        reqwest::Client::new(),
+        "http://127.0.0.1:9",
+        Transport::Gateway,
+    );
+    let e = server
+        .tracker_doc_get(Parameters(TrackerDocGetArgs {
+            doc: "phase:ubu-p0001".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap_err();
+    assert!(e.message.contains("a phase is not a document"), "{e:?}");
+    let e = server
+        .tracker_doc_edit(Parameters(TrackerDocEditArgs {
+            doc: "ubu-p0001".into(),
+            base_revision: Some(1),
+            body: Some("x".into()),
+            ..Default::default()
+        }))
+        .await
+        .unwrap_err();
+    assert!(e.message.contains("read it with tracker_get"), "{e:?}");
+}
+
+fn record_args(kind: &str) -> CreateRecordArgs {
+    CreateRecordArgs {
+        kind: kind.into(),
+        title: "Creatures".into(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_phase_is_created_with_title_body_and_note_only() {
+    let args = CreateRecordArgs {
+        body: Some("All of them.".into()),
+        note: Some("for the owner".into()),
+        ..record_args("phase")
+    };
+    let all = TrackerCreateArgs::try_from(args).unwrap();
+    let r = create_req(&all, Some("ubu"), &who()).unwrap();
+    assert_eq!(
+        post_of(&r),
+        (
+            "/tracker/ubu/phases",
+            &with_author(json!({
+                "title": "Creatures", "body": "All of them.", "note": "for the owner"
+            }))
+        )
+    );
+    // Other fields are refused, never dropped; a new phase joins the bottom, and
+    // tracker_move places it.
+    for (args, field) in [
+        (
+            CreateRecordArgs {
+                slug: Some("x".into()),
+                ..record_args("phase")
+            },
+            "slug",
+        ),
+        (
+            CreateRecordArgs {
+                state: Some("planned".into()),
+                ..record_args("phase")
+            },
+            "state",
+        ),
+        (
+            CreateRecordArgs {
+                approval: Some("agent".into()),
+                ..record_args("phase")
+            },
+            "approval",
+        ),
+    ] {
+        let all = TrackerCreateArgs::try_from(args).unwrap();
+        let e = create_req(&all, Some("ubu"), &who()).unwrap_err();
+        assert!(
+            e.contains(&format!("`{field}` does not apply to a phase")),
+            "{e}"
+        );
+    }
+    let k = TrackerCreateArgs::try_from(record_args("epic")).unwrap();
+    assert!(create_req(&k, Some("ubu"), &who())
+        .unwrap_err()
+        .contains("concept, doc or phase"));
+}
+
+#[test]
+fn a_ticket_is_created_in_a_phase_at_a_place_in_it() {
+    let base = || CreateItemArgs {
+        item_type: "dev".into(),
+        title: "Wolves".into(),
+        phase: Some("ubu-p0001".into()),
+        ..Default::default()
+    };
+    let all = TrackerCreateArgs::try_from(base()).unwrap();
+    let r = create_req(&all, Some("ubu"), &who()).unwrap();
+    assert_eq!(
+        post_of(&r),
+        (
+            "/tracker/ubu/items",
+            &with_author(json!({"type": "dev", "title": "Wolves", "phase": "ubu-p0001"}))
+        )
+    );
+    let all = TrackerCreateArgs::try_from(CreateItemArgs {
+        top: Some(true),
+        ..base()
+    })
+    .unwrap();
+    assert_eq!(
+        *post_of(&create_req(&all, Some("ubu"), &who()).unwrap()).1,
+        with_author(json!({
+            "type": "dev", "title": "Wolves", "phase": "ubu-p0001", "top": true
+        }))
+    );
+    // `phase` is a ticket's: another record's create refuses it by `only`.
+    let spec = TrackerCreateArgs {
+        kind: "spec".into(),
+        slug: Some("a".into()),
+        title: Some("A".into()),
+        phase: Some("ubu-p0001".into()),
+        ..Default::default()
+    };
+    assert!(create_req(&spec, Some("ubu"), &who())
+        .unwrap_err()
+        .contains("`phase` does not apply to a spec"));
+}
+
+/// `tracker_update_record` on a phase, through its `TryFrom` as the tool goes.
+fn phase_update(args: UpdateRecordArgs) -> Result<Req, String> {
+    let all = TrackerUpdateArgs::try_from(UpdateRecordArgs {
+        id: "phase:my-proj-p0001".into(),
+        ..args
+    })?;
+    // `project` is ignored: the id names it.
+    update_req(&all, Some("elsewhere"), &who())
+}
+
+#[test]
+fn a_state_on_a_phase_picks_its_route() {
+    let base = "/tracker/my-proj/phases/my-proj-p0001";
+    for (state, route) in [
+        ("released", "release"),
+        ("planned", "recall"),
+        ("archived", "archive"),
+        ("unarchived", "unarchive"),
+    ] {
+        let r = phase_update(UpdateRecordArgs {
+            state: Some(state.into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(
+            post_of(&r),
+            (format!("{base}/{route}").as_str(), &with_author(json!({}))),
+            "{state}: the state stays out of the body"
+        );
+        let r = phase_update(UpdateRecordArgs {
+            state: Some(state.into()),
+            note: Some("the owner said so".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(
+            *post_of(&r).1,
+            with_author(json!({"note": "the owner said so"})),
+            "{state}"
+        );
+    }
+    // Release takes a place; each of the four goes through.
+    for (args, body) in [
+        (
+            UpdateRecordArgs {
+                before: Some("my-proj-t0003".into()),
+                ..Default::default()
+            },
+            json!({"before": "my-proj-t0003"}),
+        ),
+        (
+            UpdateRecordArgs {
+                after: Some("my-proj-t0003".into()),
+                ..Default::default()
+            },
+            json!({"after": "my-proj-t0003"}),
+        ),
+        (
+            UpdateRecordArgs {
+                top: Some(true),
+                ..Default::default()
+            },
+            json!({"top": true}),
+        ),
+        (
+            UpdateRecordArgs {
+                bottom: Some(true),
+                ..Default::default()
+            },
+            json!({"bottom": true}),
+        ),
+    ] {
+        let r = phase_update(UpdateRecordArgs {
+            state: Some("released".into()),
+            ..args
+        })
+        .unwrap();
+        assert_eq!(
+            post_of(&r),
+            (format!("{base}/release").as_str(), &with_author(body))
+        );
+    }
+    // A place on any other state is refused, as is any other field beside it.
+    for state in ["planned", "archived", "unarchived"] {
+        let e = phase_update(UpdateRecordArgs {
+            state: Some(state.into()),
+            top: Some(true),
+            ..Default::default()
+        })
+        .unwrap_err();
+        assert!(e.contains("`top` does not apply"), "{state}: {e}");
+    }
+    let e = phase_update(UpdateRecordArgs {
+        state: Some("released".into()),
+        title: Some("New".into()),
+        ..Default::default()
+    })
+    .unwrap_err();
+    assert!(e.contains("`title` does not apply to a release"), "{e}");
+    let e = phase_update(UpdateRecordArgs {
+        state: Some("complete".into()),
+        ..Default::default()
+    })
+    .unwrap_err();
+    for says in [
+        "released",
+        "planned",
+        "archived",
+        "unarchived",
+        "`complete`",
+    ] {
+        assert!(e.contains(says), "{says}: {e}");
+    }
+}
+
+#[test]
+fn a_phases_title_and_body_go_to_its_own_route_and_a_place_does_not() {
+    let r = phase_update(UpdateRecordArgs {
+        title: Some("Beasts".into()),
+        body: Some("All of them.".into()),
+        note: Some("renamed".into()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(
+        post_of(&r),
+        (
+            "/tracker/my-proj/phases/my-proj-p0001",
+            &with_author(json!({
+                "title": "Beasts", "body": "All of them.", "note": "renamed"
+            }))
+        )
+    );
+    // A note alone is how to say something about a phase.
+    let r = phase_update(UpdateRecordArgs {
+        note: Some("looks right".into()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(*post_of(&r).1, with_author(json!({"note": "looks right"})));
+    assert!(phase_update(UpdateRecordArgs::default())
+        .unwrap_err()
+        .contains("nothing to update"));
+    for args in [
+        UpdateRecordArgs {
+            before: Some("my-proj-p0002".into()),
+            ..Default::default()
+        },
+        UpdateRecordArgs {
+            after: Some("my-proj-p0002".into()),
+            ..Default::default()
+        },
+        UpdateRecordArgs {
+            top: Some(true),
+            ..Default::default()
+        },
+        UpdateRecordArgs {
+            bottom: Some(true),
+            ..Default::default()
+        },
+    ] {
+        let e = phase_update(args).unwrap_err();
+        assert!(e.contains("a phase moves with tracker_move"), "{e}");
+    }
+    // What is a spec's, a milestone's or a concept's stays theirs.
+    for args in [
+        UpdateRecordArgs {
+            approval: Some("agent".into()),
+            ..Default::default()
+        },
+        UpdateRecordArgs {
+            order: Some(2),
+            ..Default::default()
+        },
+        UpdateRecordArgs {
+            add_links: Some(vec!["spec:a".into()]),
+            ..Default::default()
+        },
+    ] {
+        let e = phase_update(args).unwrap_err();
+        assert!(e.contains("does not apply to a phase"), "{e}");
+    }
+    // A malformed id fails on the builder, which needs its project.
+    let all = TrackerUpdateArgs::try_from(UpdateRecordArgs {
+        id: "phase:nonsense".into(),
+        title: Some("x".into()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(update_req(&all, Some("p"), &who())
+        .unwrap_err()
+        .contains("not a phase id"));
+}
+
+/// A phase's fields do not leak onto the other records: `only` refuses them there.
+#[test]
+fn a_body_or_a_place_is_refused_on_a_spec_milestone_or_concept() {
+    for (id, what) in [
+        ("spec:audio", "a spec"),
+        ("milestone:audio/m01", "a milestone"),
+        ("concept:terrain", "a concept"),
+    ] {
+        for (args, field) in [
+            (
+                UpdateRecordArgs {
+                    body: Some("x".into()),
+                    ..Default::default()
+                },
+                "body",
+            ),
+            (
+                UpdateRecordArgs {
+                    before: Some("x".into()),
+                    ..Default::default()
+                },
+                "before",
+            ),
+            (
+                UpdateRecordArgs {
+                    after: Some("x".into()),
+                    ..Default::default()
+                },
+                "after",
+            ),
+            (
+                UpdateRecordArgs {
+                    top: Some(true),
+                    ..Default::default()
+                },
+                "top",
+            ),
+            (
+                UpdateRecordArgs {
+                    bottom: Some(true),
+                    ..Default::default()
+                },
+                "bottom",
+            ),
+        ] {
+            let all = TrackerUpdateArgs::try_from(UpdateRecordArgs {
+                id: id.into(),
+                ..args
+            })
+            .unwrap();
+            let e = update_req(&all, Some("p"), &who()).unwrap_err();
+            assert!(
+                e.contains(&format!("`{field}` does not apply to {what}")),
+                "{id}: {e}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_tickets_phase_and_frozen_pass_through_and_a_phase_is_not_a_ticket() {
+    let update = |args: UpdateItemArgs| {
+        let all = TrackerUpdateArgs::try_from(UpdateItemArgs {
+            id: "ubu-t0042".into(),
+            ..args
+        })
+        .unwrap();
+        update_req(&all, None, &who())
+    };
+    let r = update(UpdateItemArgs {
+        phase: Some("ubu-p0001".into()),
+        note: Some("belongs there".into()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(
+        post_of(&r),
+        (
+            "/tracker/items/ubu-t0042",
+            &with_author(json!({"phase": "ubu-p0001", "note": "belongs there"}))
+        )
+    );
+    // Removal is the empty string, as assignee's, and is sent as given.
+    let r = update(UpdateItemArgs {
+        phase: Some(String::new()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(*post_of(&r).1, with_author(json!({"phase": ""})));
+    let r = update(UpdateItemArgs {
+        frozen: Some(false),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(*post_of(&r).1, with_author(json!({"frozen": false})));
+    // A mixed write is the server's to refuse (D8), so its message comes back.
+    let r = update(UpdateItemArgs {
+        frozen: Some(false),
+        status: Some("done".into()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(
+        *post_of(&r).1,
+        with_author(json!({"frozen": false, "status": "done"}))
+    );
+    for id in ["phase:ubu-p0001", "ubu-p0001"] {
+        let e = TrackerUpdateArgs::try_from(UpdateItemArgs {
+            id: id.into(),
+            title: Some("x".into()),
+            ..Default::default()
+        })
+        .unwrap_err();
+        assert!(e.contains("phase is"), "{id}: {e}");
+        assert!(e.contains("tracker_update_record"), "{id}: {e}");
+    }
+}
+
+#[test]
+fn a_phase_moves_without_a_project() {
+    let m = TrackerMoveArgs {
+        id: "phase:my-proj-p0002".into(),
+        before: Some("my-proj-p0001".into()),
+        note: Some("sooner".into()),
+        ..Default::default()
+    };
+    let r = move_req(&m, &who()).unwrap();
+    assert_eq!(
+        post_of(&r),
+        (
+            "/tracker/my-proj/phases/my-proj-p0002/move",
+            &with_author(json!({"before": "my-proj-p0001", "note": "sooner"}))
+        )
+    );
+    // An anchor written as the id was.
+    let m = TrackerMoveArgs {
+        id: "my-proj-p0002".into(),
+        after: Some("phase:my-proj-p0001".into()),
+        ..Default::default()
+    };
+    let r = move_req(&m, &who()).unwrap();
+    assert_eq!(
+        *post_of(&r).1,
+        with_author(json!({"after": "my-proj-p0001"}))
+    );
+    let m = TrackerMoveArgs {
+        id: "phase:nonsense".into(),
+        top: Some(true),
+        ..Default::default()
+    };
+    assert!(move_req(&m, &who()).unwrap_err().contains("not a phase id"));
+    // A ticket's is what it was, frozen or not: the server knows which list.
+    let m = TrackerMoveArgs {
+        id: "my-proj-t0002".into(),
+        top: Some(true),
+        ..Default::default()
+    };
+    let r = move_req(&m, &who()).unwrap();
+    assert_eq!(
+        post_of(&r),
+        (
+            "/tracker/items/my-proj-t0002/move",
+            &with_author(json!({"top": true}))
+        )
+    );
+    let m = TrackerMoveArgs {
+        id: "spec:a".into(),
+        top: Some(true),
+        ..Default::default()
+    };
+    assert!(move_req(&m, &who())
+        .unwrap_err()
+        .contains("only tickets and phases move"));
+}
+
+#[test]
+fn phases_list_reads_the_roadmap_and_items_filter_by_phase() {
+    let l = |what: &str| TrackerListArgs {
+        what: what.into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        get_of(&list_req(&l("phases"), Some("ubu")).unwrap()),
+        "/tracker/ubu/roadmap"
+    );
+    assert!(list_req(&l("phases"), None).is_err());
+    assert_eq!(
+        get_of(&roadmap_req(Some("ubu")).unwrap()),
+        "/tracker/ubu/roadmap"
+    );
+    assert!(roadmap_req(None).is_err());
+    for phase in ["ubu-p0001", "phase:ubu-p0001", " phase:ubu-p0001 "] {
+        let items = TrackerListArgs {
+            phase: Some(phase.into()),
+            ..l("items")
+        };
+        assert_eq!(
+            get_of(&list_req(&items, Some("ubu")).unwrap()),
+            "/tracker/ubu/items?phase=ubu-p0001",
+            "{phase}"
+        );
+    }
+    let items = TrackerListArgs {
+        status: Some("pending".into()),
+        label: Some("Birds".into()),
+        phase: Some("ubu-p0001".into()),
+        ..l("items")
+    };
+    assert_eq!(
+        get_of(&list_req(&items, Some("ubu")).unwrap()),
+        "/tracker/ubu/items?status=pending&label=Birds&phase=ubu-p0001"
+    );
+    // `phase` belongs to items; nothing filters a list of phases.
+    for what in ["specs", "labels", "concepts", "phases"] {
+        let wrong = TrackerListArgs {
+            phase: Some("ubu-p0001".into()),
+            ..l(what)
+        };
+        let e = list_req(&wrong, Some("ubu")).unwrap_err();
+        assert!(e.contains("`phase` does not apply"), "{what}: {e}");
+    }
+    let wrong = TrackerListArgs {
+        status: Some("done".into()),
+        ..l("phases")
+    };
+    assert!(list_req(&wrong, Some("ubu"))
+        .unwrap_err()
+        .contains("`status` does not apply to a list of phases"));
+    assert!(list_req(&l("widgets"), Some("ubu"))
+        .unwrap_err()
+        .contains("or phases"));
+}
+
+/// A phase as a write answers with it: `released_at` always there, `null` included.
+fn written_phase(released_at: Value, extra: Value, event: Value) -> Value {
+    let mut v = json!({
+        "id": "ubu-p0001", "project": "ubu", "title": "Creatures", "body": "",
+        "state": "planned", "prev_id": null, "next_id": null, "head_id": null,
+        "tail_id": null, "released_at": released_at, "size": {"total": 0},
+        "events": [{"event_id": 1, "kind": "create", "fields": {}}, event]
+    });
+    for (k, x) in extra.as_object().unwrap() {
+        v[k] = x.clone();
+    }
+    v
+}
+
+#[test]
+fn a_phase_write_answers_with_one_line_naming_the_phase() {
+    assert_eq!(
+        record_of(&written_phase(json!(null), json!({}), json!({}))),
+        ("phase:ubu-p0001".to_string(), TargetKind::Phase)
+    );
+    let created = json!({
+        "id": "ubu-p0001", "title": "Creatures", "state": "planned", "released_at": null,
+        "events": [{"event_id": 20, "kind": "create", "fields": {"title": "Creatures"}}]
+    });
+    assert_eq!(
+        write_line(&created),
+        "ok created phase:ubu-p0001 \"Creatures\" (#20)"
+    );
+    let cases = [
+        (
+            json!({"event_id": 21, "kind": "edit", "fields": {"title": "Beasts", "body": "x"},
+                   "before": {"title": "Creatures", "body": ""}}),
+            "ok phase:ubu-p0001 title: Creatures → Beasts; body: edited (#21)",
+        ),
+        (
+            json!({"event_id": 22, "kind": "move",
+                   "fields": {"place": {"after": "ubu-p0002"}, "prev_id": "ubu-p0002"},
+                   "before": {"prev_id": null}}),
+            "ok phase:ubu-p0001 moved: top → after ubu-p0002 (#22)",
+        ),
+        (
+            json!({"event_id": 23, "kind": "edit", "fields": {"state": "archived"},
+                   "before": {"state": "planned"}}),
+            "ok phase:ubu-p0001 state: planned → archived (#23)",
+        ),
+        (
+            json!({"event_id": 24, "kind": "note", "body": "looks right", "fields": {}}),
+            "ok phase:ubu-p0001 note (#24)",
+        ),
+    ];
+    for (event, line) in cases {
+        let v = written_phase(json!(null), json!({}), event);
+        let said = write_line(&v);
+        assert_eq!(said, line);
+        assert!(!said.contains("concept:"), "{said}");
+    }
+}
+
+fn outcome(kind: &str, moved: i64, placed: Value, waiting: Value) -> Value {
+    written_phase(
+        json!("2026-11-03T00:00:00Z"),
+        json!({"moved": moved, "placed": placed, "waiting": waiting}),
+        json!({"event_id": 30, "kind": kind,
+               "fields": {"state": "released", "tickets": moved}}),
+    )
+}
+
+#[test]
+fn a_release_or_a_recall_says_what_moved_and_what_is_left_waiting() {
+    assert_eq!(
+        write_line(&outcome("release", 40, json!("bottom"), json!([]))),
+        "ok phase:ubu-p0001 released: 40 tickets, at the bottom (#30)"
+    );
+    assert_eq!(
+        write_line(&outcome("release", 1, json!("top"), json!([]))),
+        "ok phase:ubu-p0001 released: 1 ticket, at the top (#30)"
+    );
+    assert_eq!(
+        write_line(&outcome("release", 2, json!("before ubu-t0007"), json!([]))),
+        "ok phase:ubu-p0001 released: 2 tickets, before ubu-t0007 (#30)"
+    );
+    assert_eq!(
+        write_line(&outcome("release", 0, json!("after ubu-t0007"), json!([]))),
+        "ok phase:ubu-p0001 released: 0 tickets, after ubu-t0007 (#30)"
+    );
+    // A recall's `placed` is null.
+    assert_eq!(
+        write_line(&outcome("recall", 12, json!(null), json!([]))),
+        "ok phase:ubu-p0001 recalled: 12 tickets (#30)"
+    );
+    let pairs = |n: usize| {
+        Value::Array(
+            (0..n)
+                .map(|i| json!({"ticket": format!("ubu-t{i}"), "on": format!("ubu-t1{i}")}))
+                .collect(),
+        )
+    };
+    assert_eq!(
+        write_line(&outcome("recall", 3, json!(null), pairs(1))),
+        "ok phase:ubu-p0001 recalled: 3 tickets; waiting across the boundary: ubu-t0 on \
+         ubu-t10 (#30)"
+    );
+    assert_eq!(
+        write_line(&outcome("release", 9, json!("bottom"), pairs(5))),
+        "ok phase:ubu-p0001 released: 9 tickets, at the bottom; waiting across the boundary: \
+         ubu-t0 on ubu-t10, ubu-t1 on ubu-t11, ubu-t2 on ubu-t12, ubu-t3 on ubu-t13, ubu-t4 on \
+         ubu-t14 (#30)",
+        "exactly five, all named"
+    );
+    assert_eq!(
+        write_line(&outcome("release", 9, json!("bottom"), pairs(8))),
+        "ok phase:ubu-p0001 released: 9 tickets, at the bottom; waiting across the boundary: \
+         ubu-t0 on ubu-t10, ubu-t1 on ubu-t11, ubu-t2 on ubu-t12, ubu-t3 on ubu-t13, ubu-t4 on \
+         ubu-t14, +3 more (#30)"
+    );
+}
+
+#[test]
+fn a_frozen_tickets_create_and_pull_say_so() {
+    let created = |frozen: bool, phase: Value, prev: Value| {
+        json!({
+            "id": "ubu-t0050", "type": "dev", "title": "Wolves", "status": "pending",
+            "frozen": frozen, "phase": phase, "prev_id": prev, "next_id": null,
+            "events": [{"event_id": 40, "kind": "create", "fields": {}}]
+        })
+    };
+    assert_eq!(
+        write_line(&created(true, json!("ubu-p0001"), json!(null))),
+        "ok created ubu-t0050 [dev] \"Wolves\" frozen in ubu-p0001 (#40)"
+    );
+    assert_eq!(
+        write_line(&created(true, json!("ubu-p0001"), json!("ubu-t0049"))),
+        "ok created ubu-t0050 [dev] \"Wolves\" frozen in ubu-p0001 after ubu-t0049 (#40)"
+    );
+    // In a released phase it is a queue ticket arriving.
+    assert_eq!(
+        write_line(&created(false, json!("ubu-p0001"), json!("ubu-t0049"))),
+        "ok created ubu-t0050 [dev] \"Wolves\" after ubu-t0049 (#40)"
+    );
+    let pull = written_item(
+        "ubu-t0050",
+        json!(null),
+        json!(null),
+        json!({"event_id": 41, "kind": "move", "fields": {"frozen": false},
+               "before": {"frozen": true}}),
+    );
+    assert_eq!(write_line(&pull), "ok ubu-t0050 frozen: yes → no (#41)");
+    let link = written_item(
+        "ubu-t0050",
+        json!(null),
+        json!(null),
+        json!({"event_id": 42, "kind": "link", "fields": {"phase": "ubu-p0002"},
+               "before": {"phase": null}}),
+    );
+    assert_eq!(
+        write_line(&link),
+        "ok ubu-t0050 phase: none → ubu-p0002 (#42)"
+    );
+}
+
+#[test]
+fn a_tickets_line_says_frozen_and_its_phase_after_draft() {
+    let mut t = it("ubu-t0050", "dev", "Wolves", "pending");
+    let plain = item_line(&t);
+    assert_eq!(plain, "○ ubu-t0050 [dev] Wolves · pending");
+    // Null and false read exactly as absent, so the golden queue stands.
+    t["phase"] = json!(null);
+    t["frozen"] = json!(false);
+    assert_eq!(item_line(&t), plain);
+    t["phase"] = json!("ubu-p0001");
+    assert_eq!(
+        item_line(&t),
+        "○ ubu-t0050 [dev] Wolves · pending · phase: ubu-p0001"
+    );
+    t["frozen"] = json!(true);
+    t["draft"] = json!(true);
+    t["assignee"] = json!("dev-1");
+    assert_eq!(
+        item_line(&t),
+        "○ ubu-t0050 [dev] Wolves · pending · draft · frozen · phase: ubu-p0001 · agent: dev-1"
+    );
+}
+
+fn figures(id: &str, title: &str, size: Value, eta: Value) -> Value {
+    json!({"id": id, "project": "ubu", "title": title, "size": size, "ahead": 1, "eta_days": eta})
+}
+
+#[test]
+fn phases_list_one_line_each_in_the_answers_order() {
+    let roadmap = json!({
+        "project": "ubu", "frozen": 40, "planned_out_days": 6.0,
+        "released": [
+            figures("ubu-p0002", "Birds", json!({"done": 3, "total": 12}), json!(1.6)),
+            figures("ubu-p0005", "Bats", json!({"done": 0, "total": 2}), json!(null)),
+        ],
+        "planned": [
+            figures("ubu-p0001", "Creatures", json!({"frozen": 40}), json!(6.0)),
+            figures("ubu-p0006", "Bees", json!({"frozen": 1}), json!(null)),
+        ],
+        "complete": [figures("ubu-p0003", "Fish", json!({"done": 9, "total": 9}), json!(null))],
+        "archived": [figures("ubu-p0004", "Old", json!({"total": 2}), json!(null))],
+    });
+    assert_eq!(
+        render_list("phases", &roadmap),
+        "ubu-p0002 · released · Birds · 3 of 12 done · ETA 1.6 days\n\
+         ubu-p0005 · released · Bats · 0 of 2 done · ETA unknown\n\
+         ubu-p0001 · planned · Creatures · 40 frozen · ETA 6 days\n\
+         ubu-p0006 · planned · Bees · 1 frozen · ETA unknown\n\
+         ubu-p0003 · complete · Fish · 9 of 9 done\n\
+         ubu-p0004 · archived · Old"
+    );
+    let empty = json!({"released": [], "planned": [], "complete": [], "archived": []});
+    assert_eq!(render_list("phases", &empty), "No phases.");
+}
+
+#[test]
+fn the_project_list_says_frozen_only_when_there_are_some() {
+    let row = |frozen: i64| json!({"projects": [{"name": "ubu", "queued": 4, "blocked": 1, "frozen": frozen}]});
+    let plain = "ubu · 0 requests · 0 in review · 3 in the queue · 1 blocked · 0 deferred · 0 \
+                 done not acknowledged";
+    assert_eq!(render_list("projects", &row(0)), plain);
+    assert_eq!(
+        render_list("projects", &row(45)),
+        format!("{plain} · 45 frozen"),
+        "frozen is out of `queued`, so the subtraction stands"
+    );
+}
+
+#[test]
+fn the_roadmap_line_says_how_far_out_development_is_planned() {
+    let v = |planned: usize, frozen: i64, out: Value| json!({"planned": vec![json!({}); planned], "frozen": frozen, "planned_out_days": out});
+    assert_eq!(
+        roadmap_line(&v(2, 45, json!(6.0))).unwrap(),
+        "Roadmap: 2 planned · 45 frozen · planned out 6 days"
+    );
+    assert_eq!(
+        roadmap_line(&v(1, 3, json!(null))).unwrap(),
+        "Roadmap: 1 planned · 3 frozen · planned out unknown"
+    );
+    assert_eq!(
+        roadmap_line(&v(1, 0, json!(0.0))).unwrap(),
+        "Roadmap: 1 planned · 0 frozen · planned out done"
+    );
+    assert_eq!(
+        roadmap_line(&v(1, 1, json!(1.6))).unwrap(),
+        "Roadmap: 1 planned · 1 frozen · planned out 1.6 days"
+    );
+    // Nothing planned and nothing frozen is nothing to say, whatever the queue's ETA.
+    assert_eq!(roadmap_line(&v(0, 0, json!(6.0))), None);
+    // A short answer says nothing rather than something wrong.
+    assert_eq!(roadmap_line(&json!({"planned": [], "frozen": 3})), None);
+    assert_eq!(
+        roadmap_line(&json!({"frozen": 3, "planned_out_days": 1.0})),
+        None
+    );
+    assert_eq!(roadmap_line(&json!({"error": "no"})), None);
+}
+
+async fn roadmap_figures() -> impl IntoResponse {
+    Json(json!({
+        "planned": [{"id": "ubu-p0001"}, {"id": "ubu-p0002"}],
+        "frozen": 45, "planned_out_days": 6.0
+    }))
+}
+
+async fn empty_roadmap() -> impl IntoResponse {
+    Json(json!({"planned": [], "frozen": 0, "planned_out_days": 2.0}))
+}
+
+/// A stand-in serving the queue view, its velocity when asked and the given roadmap.
+async fn stand_in_roadmap<H, T>(velocity: bool, roadmap: H) -> String
+where
+    H: axum::handler::Handler<T, ()>,
+    T: 'static,
+{
+    let mut app = Router::new()
+        .route("/tracker/{project}", get(queue_view))
+        .route("/tracker/{project}/roadmap", get(roadmap));
+    if velocity {
+        app = app.route("/tracker/{project}/velocity", get(velocity_figures));
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+const ROADMAP_LINE: &str = "Roadmap: 2 planned · 45 frozen · planned out 6 days";
+const VELOCITY_LINE: &str = "Velocity (7 d): 43/day · 24 h: 2.4/day · ETA 2 days";
+
+#[tokio::test]
+async fn tracker_queue_ends_with_the_roadmap_line_after_the_velocity_line() {
+    let t = queue_text(&stand_in_roadmap(true, roadmap_figures).await).await;
+    let lines: Vec<&str> = t.lines().collect();
+    assert_eq!(
+        lines[lines.len() - 2..],
+        [VELOCITY_LINE, ROADMAP_LINE],
+        "{t}"
+    );
+    assert!(lines[lines.len() - 3].starts_with("Not shown:"), "{t}");
+    // Without velocity it still follows the footer.
+    let t = queue_text(&stand_in_roadmap(false, roadmap_figures).await).await;
+    let lines: Vec<&str> = t.lines().collect();
+    assert_eq!(lines[lines.len() - 1], ROADMAP_LINE, "{t}");
+    assert!(lines[lines.len() - 2].starts_with("Not shown:"), "{t}");
+    // Nothing planned or frozen: no line, the rest as it was.
+    let t = queue_text(&stand_in_roadmap(true, empty_roadmap).await).await;
+    assert!(t.ends_with(VELOCITY_LINE), "{t}");
+    assert!(!t.contains("Roadmap"), "{t}");
+    // A failed read leaves it out: this stand-in has no roadmap route.
+    let t = queue_text(&stand_in_with(true).await).await;
+    assert!(t.ends_with(VELOCITY_LINE), "{t}");
+    assert!(!t.contains("Roadmap"), "{t}");
+}
+
+#[tokio::test]
+async fn tracker_next_is_unchanged_by_the_roadmap() {
+    let with = next_text(&stand_in_roadmap(true, roadmap_figures).await).await;
+    let without = next_text(&stand_in_with(true).await).await;
+    assert_eq!(with, without);
+    assert!(!with.contains("Roadmap"), "{with}");
 }

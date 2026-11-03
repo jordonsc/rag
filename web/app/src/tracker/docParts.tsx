@@ -1,7 +1,7 @@
 /**
  * The small pieces the documents pages (m04) are drawn from: a rendered
  * document whose links to other documents stay in the application, a line
- * diff, the Queue / Documents / History switch, and a record's state.
+ * diff, the Queue / Roadmap / Documents / History switch, and a record's state.
  */
 
 import type { MouseEvent } from 'react';
@@ -12,7 +12,7 @@ import { Markdown } from '../markdown/Markdown';
 import { cx } from '../util';
 import type { DiffRow } from './diff';
 import styles from './docs.module.css';
-import { docsPath, historyPath, projectPath } from './paths';
+import { docsPath, historyPath, projectPath, roadmapPath } from './paths';
 import { RETURN_STATE } from './scrollMemory';
 import { recordStateLabel, recordStateTone } from './vocab';
 
@@ -117,9 +117,9 @@ export function LineDiff({
 }
 
 /** Which of a project's pages the switch marks as the current one. */
-export type ProjectPage = 'queue' | 'docs' | 'history';
+export type ProjectPage = 'queue' | 'roadmap' | 'docs' | 'history';
 
-/** The Queue / Documents / History switch at the head of a project's pages. */
+/** The Queue / Roadmap / Documents / History switch at the head of a project's pages. */
 export function ProjectTabs({ project, active }: { project: string; active: ProjectPage }) {
   const tab = (page: ProjectPage, to: string, icon: string, label: string) => (
     <Link
@@ -137,6 +137,7 @@ export function ProjectTabs({ project, active }: { project: string; active: Proj
   return (
     <nav className={styles.projectTabs} aria-label={`${project} pages`}>
       {tab('queue', projectPath(project), 'list-todo', 'Queue')}
+      {tab('roadmap', roadmapPath(project), 'map', 'Roadmap')}
       {tab('docs', docsPath(project), 'file-text', 'Documents')}
       {tab('history', historyPath(project), 'history', 'History')}
     </nav>

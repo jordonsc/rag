@@ -62,7 +62,7 @@ so when researching code you can query the corpus instead of reading through fil
 **Using results:** cite sources as `repo/rel_path:start-end` (the portable provenance) and read the actual file at that
 range before relying on it — a chunk is a pointer, not the whole truth. Filters: `corpus` (code|wiki|ledger|tracker),
 `repo`, `language`, `path_prefix`. A tracker hit cites itself: its `citation` is `<project>:<path>@r<revision>` (read
-it with `tracker_doc_get`) or a ticket id (`tracker_get`).
+it with `tracker_doc_get`) or a ticket or phase id (`tracker_get`).
 
 # Ledger (decision / incident record)
 
@@ -140,8 +140,8 @@ with `tracker_list`.
 
 **Search it before re-planning work.** Before writing a new spec, concept or queue ticket — or briefing work that
 sounds familiar — run `search_corpus` with `corpus: "tracker"` (and `repo` set to the project to narrow it): every
-project's specs, milestones, concepts and tickets (with their notes, done and cancelled ones included) are indexed
-there, usually within seconds of a write. If it was planned, specced or tried before, build on that record rather
+project's specs, milestones, concepts, phases and tickets (with their notes; done, cancelled and frozen ones included)
+are indexed there, usually within seconds of a write. If it was planned, specced or tried before, build on that record rather
 than starting a second one.
 
 **Who writes what.** Writes to the **queue** (creating tickets and gates, status, blocking, approval, assignee,
@@ -152,11 +152,41 @@ concepts) when its task says so, and adds **notes to the task it was given** (`t
 write records its `agent`.
 
 **The write tools.** `tracker_create` creates a queue ticket or a gate (`type: "gate"` with an `intensity`);
-`tracker_create_record` a spec (with its milestones), a milestone, a concept or a free document. `tracker_update`
-changes a ticket (or adds a note to it); `tracker_update_record` a spec, milestone or concept. Every write replies
+`tracker_create_record` a spec (with its milestones), a milestone, a concept, a free document or a roadmap phase.
+`tracker_update` changes a ticket (or adds a note to it); `tracker_update_record` a spec, milestone, concept or phase.
+Every write replies
 with **one line**: `ok`, the record, what changed from → to, and the event id (`ok ubu-t0042 status: in_progress →
 done (#13950)`, `ok created ubu-t0043 [dev] "Title" after ubu-t0042 (#13951)`); read the record with `tracker_get`
 if you need more.
+
+**The roadmap.** A project's **phases** are planned work, written up, ordered and reviewed out of the queue. A ticket
+in a planned phase is **frozen**: `tracker_next` and a gate's batch never see it, `tracker_queue` lists none of them
+and ends with one line for the lot (`Roadmap: 2 planned · 45 frozen · planned out 6 days`: durations of active work
+from live velocity, never dates), and planning it wakes no monitor. It is the manager's to write; a sub-agent reads it
+and notes on its own task, as for the queue.
+- **Write it up.** `tracker_create_record` with `kind: "phase"` makes a phase at the roadmap's bottom;
+  `tracker_move phase:<id>` places it. `tracker_create` with `phase: "<id>"` adds a ticket, frozen at the phase's tail
+  (or at a place in it, `before`, `after`, `top`); in a released phase it goes straight into the queue, linked.
+- **Move what exists.** `tracker_update` with `phase: "<id>"` puts a ticket in a phase (into a planned one only if it is
+  `pending`), `phase: ""` takes it out, and `frozen: false` pulls it to the queue's tail, keeping the link. Each is
+  written alone, with at most a note. `tracker_move` moves a frozen ticket within its phase.
+- **See it.** `tracker_list` with `what: "phases"` is the forward look, a line each with its ETA; with `what: "items",
+  phase: "<id>"` the tickets of one, frozen ones too.
+- **Review it, when the owner asks.** `tracker_get phase:<id>` is the phase and every ticket in full in one call, with
+  `would_wait`: what its next release or recall would leave waiting across the boundary. Flag and clean up what needs
+  it.
+- **Release when the owner says, not before.** `tracker_update_record phase:<id>`, `state: "released"`, joins its
+  tickets to the queue (the bottom, unless `before`, `after` or `top`); `state: "planned"` recalls it, freezing again
+  the tickets still `pending` and leaving the rest where they are. `archived` and `unarchived` as they read. The reply
+  says how many moved and names what is left waiting: `ok phase:ubu-p0001 released: 40 tickets, at the bottom; waiting
+  across the boundary: ubu-t0090 on ubu-t0101 (#14001)`.
+- **On the feed**, a release or a recall is **one frame**, never one a ticket: `#14001 ubu web release phase:ubu-p0001
+  "Creatures" {state: planned → released; tickets: 40; placed: bottom}: Phase released. [Owner]`. Re-read `tracker_next`:
+  the tickets are there. Every other roadmap change is left out unless you ask with `roadmap=true`, which you want
+  only to watch planning itself.
+- **In search**, frozen tickets stay findable, so search before planning: `search_corpus` with `corpus: "tracker"`
+  gives them with `Phase: Creatures · frozen` in their text (`Phase: Creatures` once released), and a phase is a hit of
+  its own, citing its id (`ubu-p0001`): read it with `tracker_get`.
 
 **Rules on every write:**
 - **Always pass `agent`**, your own model name, as for the ledger. Absent, the write is recorded as `Unknown`.
@@ -273,8 +303,8 @@ publish a draft unless the owner asks.
 `?surface=any` adds the agents' writes, `kinds=approve,status` narrows the events (`all` for every kind; the
 default leaves out `link`, `rename` and `acknowledge`), `coalesce=<seconds>` sets the burst window (0 to 60; `0` for a frame per
 event), `format=json` sends the whole event, one frame each, never coalesced (`fields` the new values, `before`
-the old ones), `drafts=true` includes the owner's draft events (marked `(draft)`), and the project `*` watches
-every project. Keep it narrow: a monitor that floods is stopped.
+the old ones), `drafts=true` includes the owner's draft events (marked `(draft)`), `roadmap=true` includes the
+roadmap's planning events (a frozen draft's need both), and the project `*` watches every project. Keep it narrow: a monitor that floods is stopped.
 
 Over the stdio binary the project defaults to the current git repository; over the shared HTTP gateway pass
 `project` on every call. Decisions and incidents still go in the ledger; link them to tickets with

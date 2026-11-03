@@ -133,12 +133,14 @@ pub struct LedgerPoint {
     pub payload: LedgerPayload,
 }
 
-/// Whether a tracker point is a chunk of a document or a whole queue item.
+/// Whether a tracker point is a chunk of a document, a whole queue item or a
+/// whole roadmap phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TrackerPointKind {
     Document,
     Item,
+    Phase,
 }
 
 impl TrackerPointKind {
@@ -146,6 +148,7 @@ impl TrackerPointKind {
         match self {
             TrackerPointKind::Document => "document",
             TrackerPointKind::Item => "item",
+            TrackerPointKind::Phase => "phase",
         }
     }
 }
@@ -153,8 +156,9 @@ impl TrackerPointKind {
 /// The payload stored alongside a tracker vector in Qdrant, in the same
 /// `rag_corpus` collection, distinguished by `corpus = tracker`.
 ///
-/// A *unit* is what is replaced together: one document (all its chunks) or one
-/// item (one point). `tracker_id` names the unit (`ubu-d0007`, `ubu-t0042`) and
+/// A *unit* is what is replaced together: one document (all its chunks), one
+/// item or one phase (one point each, unless it outgrows a chunk). `tracker_id`
+/// names the unit (`ubu-d0007`, `ubu-t0042`, `ubu-p0001`) and
 /// `tracker_hash` is its whole content hash, which drives the reconcile diff, as
 /// `topic_id`/`topic_hash` do for the ledger. There is deliberately **no `path` or
 /// `file_hash`**: those are the corpus sync's keys, and a point carrying them would
@@ -166,28 +170,29 @@ pub struct TrackerPayload {
     /// The project (a repository name), so `repo` filters work across corpora.
     pub repo: String,
     /// The document's path within its project (`specs/tracker/master.md`), or an
-    /// item's id. Cited, and what `path_prefix` filters on.
+    /// item's or phase's id. Cited, and what `path_prefix` filters on.
     pub rel_path: String,
     /// Always `markdown`: documents and item bodies are markdown.
     pub language: String,
-    /// The unit: a document id (`ubu-d0007`) or an item id (`ubu-t0042`).
+    /// The unit: a document id (`ubu-d0007`), an item id (`ubu-t0042`) or a phase
+    /// id (`ubu-p0001`).
     pub tracker_id: String,
-    /// `document` | `item`.
+    /// `document` | `item` | `phase`.
     pub point_kind: String,
-    /// A document's kind (`spec`, `milestone`, `concept`, `doc`), or `item`.
+    /// A document's kind (`spec`, `milestone`, `concept`, `doc`), `item` or `phase`.
     pub kind: String,
     /// An item's type (`dev`, `design`, …); absent on documents.
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub item_type: Option<String>,
-    /// An item's status; absent on documents.
+    /// An item's status or a phase's state; absent on documents.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    /// The document's or item's title.
+    /// The document's, item's or phase's title.
     pub title: String,
     /// The document revision this chunk is from; absent on items.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision: Option<i64>,
-    /// `<project>:<path>@r<revision>` for a document, the item id for an item.
+    /// `<project>:<path>@r<revision>` for a document, the id for an item or phase.
     pub citation: String,
     /// Ordinal of this chunk within its unit.
     pub chunk_index: u32,

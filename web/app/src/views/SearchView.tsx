@@ -36,7 +36,7 @@ import {
   typeOptions,
 } from '../ledger/vocab';
 import { searchTracker } from '../tracker/api';
-import { docPath, itemPath } from '../tracker/paths';
+import { docPath, itemPath, phasePath } from '../tracker/paths';
 import type { TrackerHit, TrackerSearchResponse } from '../tracker/types';
 import { docKindIcon, docKindLabel, itemTypeIcon } from '../tracker/vocab';
 import { snippet } from '../util';
@@ -59,7 +59,7 @@ const CORPUS_OPTIONS = [
   { value: 'tracker', label: 'Tracker' },
 ];
 
-/** Where a tracker hit opens: its item, or its document. */
+/** Where a tracker hit opens: its item, its phase, or its document. */
 function trackerHref(hit: TrackerHit): string | null {
   if (hit.repo === '') {
     return null;
@@ -67,6 +67,11 @@ function trackerHref(hit: TrackerHit): string | null {
   if (hit.kind === 'item') {
     const id = hit.tracker_id ?? hit.rel_path;
     return id === '' ? null : itemPath(hit.repo, id);
+  }
+  // A phase is a record, not a document: routed as one it would 404.
+  if (hit.kind === 'phase') {
+    const id = hit.tracker_id ?? hit.rel_path;
+    return id === '' ? null : phasePath(hit.repo, id);
   }
   return hit.rel_path === '' ? null : docPath(hit.repo, hit.rel_path);
 }

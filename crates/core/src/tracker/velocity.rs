@@ -5,8 +5,8 @@
 //! Every figure is computed on request (D25: no counters, no rollups) from three
 //! range reads: the project's items as they are now (`idx_items_project`), the
 //! `done` spans started in the last 7 days (`idx_item_spans_project_started`),
-//! and the `ts` of the window's events (`idx_events_project_ts`). The statements
-//! are constants so a test can pin their query plans (D30).
+//! and the `ts` of the window's events (`idx_events_activity`), joined into one
+//! row. The statements are constants so a test can pin their query plans (D30).
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use serde::Serialize;
@@ -120,15 +120,19 @@ pub fn eta_days(remaining: i64, velocity_per_day: f64) -> Option<f64> {
 }
 
 /// The project's counted tickets as they are now, by status and block (D1, D2,
-/// D4): not requests, not drafts, and only the statuses some count holds.
+/// D4): not requests, not drafts, not frozen in a phase (spec:roadmap D20), and
+/// only the statuses some count holds.
 pub(super) const COUNTS_SQL: &str = "SELECT status, blocked, COUNT(*) FROM items \
      WHERE project = ? AND status IN ('pending', 'in_progress', 'failed', 'review', 'deferred') \
-     AND type <> 'request' AND draft = 0 GROUP BY status, blocked";
+     AND type <> 'request' AND draft = 0 AND frozen = 0 GROUP BY status, blocked";
 
 /// Each ticket that reached `done` in `[?, ?]` (D3), with the latest time it
 /// did: a `done` span on the `status` track started in the window, of a ticket
 /// that is not a request (D1), is not a draft now, and was not one at the time
-/// (D2: no `draft` span open over the event that started it).
+/// (D2: no `draft` span open over the event that started it). A ticket taken
+/// straight from frozen to done is no completion (spec:roadmap D22): no `frozen`
+/// span ended into it. Whether the ticket is frozen **now** is not asked: a
+/// recalled ticket's past is true (D21).
 pub(super) const DONE_SQL: &str = "SELECT s.item_id, MAX(s.started_at) FROM item_spans s \
      JOIN items i ON i.id = s.item_id \
      WHERE s.project = ? AND s.started_at >= ? AND s.started_at <= ? \
@@ -136,12 +140,20 @@ pub(super) const DONE_SQL: &str = "SELECT s.item_id, MAX(s.started_at) FROM item
      AND NOT EXISTS (SELECT 1 FROM item_spans d WHERE d.item_id = s.item_id \
        AND d.track = 'draft' AND d.started_event <= s.started_event \
        AND (d.ended_event IS NULL OR d.ended_event > s.started_event)) \
+     AND NOT EXISTS (SELECT 1 FROM item_spans f WHERE f.item_id = s.item_id \
+       AND f.track = 'status' AND f.state = 'frozen' AND f.ended_event = s.started_event) \
      GROUP BY s.item_id";
 
-/// The times of the project's events in `[?, ?]`, oldest first (D6): every
-/// target kind and surface, draft events left out.
-pub(super) const ACTIVITY_SQL: &str = "SELECT ts FROM events \
-     WHERE project = ? AND draft = 0 AND ts >= ? AND ts <= ? ORDER BY ts";
+/// The times of the project's events in `[?, ?]` (D6): every target kind and
+/// surface, draft events and roadmap events (spec:roadmap D23: planning is not
+/// work the fleet did) left out. **One row**, the times joined by commas (`NULL`
+/// with none), in no promised order: [`read`] splits and sorts them. A row per
+/// event is the read's largest cost at D30's size, thousands of rows handed one
+/// by one from the connection's thread to the caller's, and it grows with the
+/// box's load. `idx_events_activity` covers it, so no event row is read
+/// (rag-l0107).
+pub(super) const ACTIVITY_SQL: &str = "SELECT group_concat(ts) FROM events \
+     WHERE project = ? AND draft = 0 AND roadmap = 0 AND ts >= ? AND ts <= ?";
 
 /// Every statement [`TrackerStore::velocity`] runs, for the plan test.
 #[cfg(test)]
@@ -227,13 +239,19 @@ pub(super) async fn read(
     let done_week = done.len() as i64;
     let done_day = done.iter().filter(|(_, at)| *at >= day_s).count() as i64;
 
-    let events: Vec<String> = sqlx::query_scalar(ACTIVITY_SQL)
+    let events: Option<String> = sqlx::query_scalar(ACTIVITY_SQL)
         .bind(project)
         .bind(&week_s)
         .bind(&now_s)
-        .fetch_all(&mut *conn)
+        .fetch_one(&mut *conn)
         .await?;
-    let week_times: Vec<i64> = events.iter().filter_map(|ts| unix(ts)).collect();
+    let mut week_times: Vec<i64> = events
+        .as_deref()
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(unix)
+        .collect();
+    week_times.sort_unstable();
     // The window's own events only: its start counts as the end of its first
     // gap (D6), whatever came before it.
     let day_times: Vec<i64> = week_times

@@ -51,6 +51,7 @@ import type {
   DocumentsResponse,
   Item,
   ItemCreate,
+  ItemPhaseChange,
   ItemStatus,
   ItemUpdate,
   ItemsResponse,
@@ -58,10 +59,15 @@ import type {
   Milestone,
   MilestoneCreate,
   MilestoneUpdate,
+  PhaseCreate,
+  PhaseOutcome,
+  PhaseRecord,
+  PhaseUpdate,
   Place,
   ProjectsResponse,
   QueueView,
   RevisionsResponse,
+  Roadmap,
   Spec,
   SpecCreate,
   SpecUpdate,
@@ -368,12 +374,25 @@ export async function ackDone(
 
 // ---- Items ------------------------------------------------------------------
 
+/** What {@link listItems} narrows by: a status, or a status and a phase. */
+export type ItemFilter = ItemStatus | { status?: ItemStatus; phase?: string | null };
+
+/**
+ * A project's tickets, frozen ones left out; with `phase`, that phase's linked
+ * tickets instead, frozen ones included (spec:roadmap D20). No phase, or a
+ * blank one, sends no parameter: `?phase=` is a 404, not "no filter" (rag-l0099).
+ */
 export function listItems(
   project: string,
-  status?: ItemStatus,
+  filter?: ItemFilter,
   signal?: AbortSignal,
 ): Promise<ItemsResponse> {
-  return request<ItemsResponse>(`/tracker/${enc(project)}/items${query({ status })}`, { signal });
+  const { status, phase } =
+    typeof filter === 'string' ? { status: filter, phase: null } : (filter ?? {});
+  return request<ItemsResponse>(
+    `/tracker/${enc(project)}/items${query({ status, phase: phase?.trim() ?? undefined })}`,
+    { signal },
+  );
 }
 
 /**
@@ -478,6 +497,167 @@ export async function moveItem(
   return request<Item>(`/tracker/items/${enc(id)}/move`, {
     signal,
     json: { ...place, ...(blank(note) ? {} : { note }), ...author(fields) },
+  });
+}
+
+/**
+ * A ticket's phase, on its own (spec:roadmap D8, D9): `phase` or `frozen`, and
+ * at most a note. Kept apart from {@link updateItem} because the server refuses
+ * anything beside them, and the body is built field by field here so that a
+ * caller's spread cannot put anything there.
+ */
+export async function setItemPhase(
+  id: string,
+  change: ItemPhaseChange,
+  fields: TrackerAuthor,
+  signal?: AbortSignal,
+): Promise<Item> {
+  const which = 'phase' in change ? { phase: change.phase.trim() } : { frozen: change.frozen };
+  return request<Item>(`/tracker/items/${enc(id)}`, {
+    signal,
+    json: { ...which, ...noted(change.note), ...author(fields) },
+  });
+}
+
+// ---- The roadmap (spec:roadmap; api.md § Phases and the roadmap) ---------------
+
+function phaseUrl(project: string, id: string): string {
+  return `/tracker/${enc(project)}/phases/${enc(id)}`;
+}
+
+/** An optional note, as a body's field: a blank one is not sent. */
+function noted(note: string | undefined): { note?: string } {
+  return note === undefined || blank(note) ? {} : { note };
+}
+
+/** The forward look (D24): durations of active work over one window, never dates. */
+export function getRoadmap(
+  project: string,
+  window: VelocityWindow,
+  signal?: AbortSignal,
+): Promise<Roadmap> {
+  return request<Roadmap>(`/tracker/${enc(project)}/roadmap?window=${enc(window)}`, { signal });
+}
+
+/** Create a phase, planned; it joins the roadmap's bottom unless `place` says otherwise. */
+export async function createPhase(
+  project: string,
+  body: PhaseCreate,
+  fields: TrackerAuthor,
+  signal?: AbortSignal,
+): Promise<PhaseRecord> {
+  if (body.title.trim() === '') {
+    refuse('A phase needs a title.');
+  }
+  const { place, ...rest } = withoutBlankNote(body);
+  return request<PhaseRecord>(`/tracker/${enc(project)}/phases`, {
+    signal,
+    json: { ...rest, ...placeFields(place), ...author(fields) },
+  });
+}
+
+/** A phase; a phase of another project is a 404, as one that does not exist is. */
+export function getPhase(
+  project: string,
+  id: string,
+  read: { tickets?: boolean; history?: boolean } = {},
+  signal?: AbortSignal,
+): Promise<PhaseRecord> {
+  return request<PhaseRecord>(
+    `${phaseUrl(project, id)}${query({ tickets: read.tickets, history: read.history })}`,
+    { signal },
+  );
+}
+
+/** A phase's title and body, in any state; a note alone is a note. */
+export async function updatePhase(
+  project: string,
+  id: string,
+  body: PhaseUpdate,
+  fields: TrackerAuthor,
+  signal?: AbortSignal,
+): Promise<PhaseRecord> {
+  if (body.title !== undefined && body.title.trim() === '') {
+    refuse('A phase needs a title.');
+  }
+  const sent = updateBody(body);
+  return request<PhaseRecord>(phaseUrl(project, id), {
+    signal,
+    json: { ...sent, ...author(fields) },
+  });
+}
+
+/** Move a planned phase on the roadmap. Never by position: before, after, top or bottom. */
+export async function movePhase(
+  project: string,
+  id: string,
+  place: Place,
+  fields: TrackerAuthor,
+  note?: string,
+  signal?: AbortSignal,
+): Promise<PhaseRecord> {
+  return request<PhaseRecord>(`${phaseUrl(project, id)}/move`, {
+    signal,
+    json: { ...place, ...noted(note), ...author(fields) },
+  });
+}
+
+/**
+ * Release a planned phase: its tickets join the queue, at the bottom unless
+ * `place` says otherwise, in one write and one notice (D11, D18).
+ */
+export async function releasePhase(
+  project: string,
+  id: string,
+  body: { place?: Place; note?: string },
+  fields: TrackerAuthor,
+  signal?: AbortSignal,
+): Promise<PhaseOutcome> {
+  return request<PhaseOutcome>(`${phaseUrl(project, id)}/release`, {
+    signal,
+    json: { ...placeFields(body.place), ...noted(body.note), ...author(fields) },
+  });
+}
+
+/** Recall a released phase: its pending tickets go back to it, out of the queue (D12). */
+export async function recallPhase(
+  project: string,
+  id: string,
+  body: { note?: string },
+  fields: TrackerAuthor,
+  signal?: AbortSignal,
+): Promise<PhaseOutcome> {
+  return request<PhaseOutcome>(`${phaseUrl(project, id)}/recall`, {
+    signal,
+    json: { ...noted(body.note), ...author(fields) },
+  });
+}
+
+/** Archive a phase; a planned one with an open ticket is refused (D14). */
+export async function archivePhase(
+  project: string,
+  id: string,
+  body: { note?: string },
+  fields: TrackerAuthor,
+  signal?: AbortSignal,
+): Promise<PhaseRecord> {
+  return request<PhaseRecord>(`${phaseUrl(project, id)}/archive`, {
+    signal,
+    json: { ...noted(body.note), ...author(fields) },
+  });
+}
+
+/** Back to released if it has been released, else to the roadmap's bottom (D14). */
+export async function unarchivePhase(
+  project: string,
+  id: string,
+  body: { note?: string },
+  fields: TrackerAuthor,
+  signal?: AbortSignal,
+): Promise<PhaseRecord> {
+  return request<PhaseRecord>(`${phaseUrl(project, id)}/unarchive`, {
+    signal,
+    json: { ...noted(body.note), ...author(fields) },
   });
 }
 

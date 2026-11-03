@@ -4,26 +4,27 @@ import { useMatch, useNavigate } from 'react-router';
 
 import { asApiError } from '../api';
 import { getDoc } from '../tracker/api';
-import { docPath, itemPath, itemProject } from '../tracker/paths';
+import { docPath, itemPath, itemProject, phasePath, phaseProject } from '../tracker/paths';
 import { isTopicId, topicPath } from './ids';
 import styles from './openTopic.module.css';
 
 /**
  * What the box opens (2026-10-30, owner): a ledger topic (`demo-l0001`, or a
- * legacy `demo-0001`), a tracker ticket (`demo-t0001`) or a tracker document
- * (`demo-d0001`). The three are told apart by the letter after the last dash.
+ * legacy `demo-0001`), a tracker ticket (`demo-t0001`), a tracker document
+ * (`demo-d0001`) or a phase of the roadmap (`demo-p0001`). They are told apart by
+ * the letter after the last dash.
  */
 export const OPEN_ID_ERROR =
-  'That is not an id. A ledger topic looks like demo-l0001 (older ones: demo-0001), a ticket demo-t0001, a document demo-d0001.';
+  'That is not an id. A ledger topic looks like demo-l0001 (older ones: demo-0001), a ticket demo-t0001, a document demo-d0001, a phase demo-p0001.';
 
 /**
  * A short id, on a project's pages (owner, 2026-10-31): `t1630` there means
- * `<project>-t1630`, and likewise `d0003` and `l0077`. The digits pad to the
+ * `<project>-t1630`, and likewise `d0003`, `l0077` and `p0002`. The digits pad to the
  * four an id is minted with, so `t42` is `-t0042`. Anything else, and anything
  * with no project in hand, comes back as it was typed.
  */
 export function expandShortId(value: string, project: string | null): string {
-  const short = /^([tdl])([0-9]+)$/i.exec(value);
+  const short = /^([tdlp])([0-9]+)$/i.exec(value);
   if (short === null || project === null) {
     return value;
   }
@@ -54,7 +55,7 @@ export interface OpenTopicProps {
 }
 
 /**
- * Open a topic, a ticket or a document by the id an agent quoted.
+ * Open a topic, a ticket, a document or a phase by the id an agent quoted.
  *
  * **The journey this whole viewer exists for.** Somebody is handed `demo-0001`
  * in a chat log or a commit message and wants to read it; everything else here
@@ -66,7 +67,8 @@ export interface OpenTopicProps {
  *
  * * **A topic id** navigates to `/topic/{id}`, which either renders the
  *   topic or — for an id retired by a move — follows the server's pointer.
- *   **A ticket id** navigates to its ticket page. **A document id** is looked
+ *   **A ticket id** navigates to its ticket page, **a phase id** to its phase
+ *   page, which answers for one that does not exist. **A document id** is looked
  *   up first (a document's page is addressed by its path), and a document
  *   that does not exist says so here.
  * * **An id that does not parse** says so here, before a request. A round trip
@@ -105,6 +107,11 @@ export function OpenTopic({
       navigate(itemPath(ticketProject, trimmed));
       return;
     }
+    const ofPhase = phaseProject(trimmed);
+    if (ofPhase !== null) {
+      navigate(phasePath(ofPhase, trimmed));
+      return;
+    }
     if (docProject(trimmed) !== null) {
       setLooking(true);
       getDoc(trimmed, { history: false })
@@ -136,7 +143,11 @@ export function OpenTopic({
               setError(null);
             }
           }}
-          placeholder={project === null ? 'demo-l0001 · -t0001 · -d0001' : 't0001 · d0001 · l0001'}
+          placeholder={
+            project === null
+              ? 'demo-l0001 · -t0001 · -d0001 · -p0001'
+              : 't0001 · d0001 · l0001 · p0001'
+          }
           aria-label={label}
           aria-describedby={error === null ? undefined : errorId}
           invalid={error !== null}

@@ -11,11 +11,13 @@ import { Link } from 'react-router';
 import { cx } from '../util';
 import { linkKey, linkTooltip, useLinkTitles } from './linkTitles';
 import { itemPath, linkHref, projectPath } from './paths';
+import { PhaseChip } from './phaseTitles';
 import styles from './tracker.module.css';
 import type { Approval, Item, Link as ItemLink } from './types';
 import {
   approvalLabel,
   approvalTone,
+  blockReasonLabel,
   itemStatusLabel,
   itemTypeHint,
   itemTypeIcon,
@@ -295,6 +297,22 @@ export function DraftBadge() {
   );
 }
 
+/** What a Frozen badge's tooltip says (spec:roadmap R6). */
+export const FROZEN_HINT =
+  'Frozen in a planned phase: out of the queue, seen by no worker and in no queue figure, until the phase is released or the ticket is pulled to the queue.';
+
+/**
+ * The **Frozen** badge (spec:roadmap R6, RM-48): beside a Draft badge, since a
+ * ticket can be both. In `--rag-teal`, the colour of work put aside on purpose.
+ */
+export function FrozenBadge() {
+  return (
+    <span className={styles.frozenBadge} title={FROZEN_HINT}>
+      <Badge tone="neutral">Frozen</Badge>
+    </span>
+  );
+}
+
 /**
  * What an item blocked with reason `dependency` waits on (rag-t0018), each a
  * link to its item page, its title the tooltip (owner, 2026-11-01). Nothing
@@ -326,6 +344,57 @@ export function WaitsOn({ project, ids }: { project: string; ids: readonly strin
   );
 }
 
+export interface PageNoticeProps {
+  tone?: 'warn' | 'crit' | 'info';
+  children: ReactNode;
+  /** Given, the notice has an X. */
+  onDismiss?: () => void;
+}
+
+/**
+ * A notice at a page's head, as the dashboard draws its own: a refused write or
+ * an interrupted drag (an alert), a failed refresh or what a write moved (a status).
+ */
+export function PageNotice({ tone = 'info', children, onDismiss }: PageNoticeProps) {
+  return (
+    <div
+      className={cx(styles.notice, tone !== 'info' && styles[`notice_${tone}`])}
+      role={onDismiss !== undefined && tone !== 'info' ? 'alert' : 'status'}
+    >
+      <Icon
+        name={tone === 'crit' ? 'octagon-alert' : tone === 'warn' ? 'triangle-alert' : 'info'}
+        size={14}
+      />
+      <div>{children}</div>
+      {onDismiss !== undefined && (
+        <button
+          type="button"
+          className={styles.noticeClose}
+          aria-label="Dismiss"
+          onClick={onDismiss}
+        >
+          <Icon name="x" size={12} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** A blocked item's reason (or the bare word) and what it waits on. */
+export function BlockDetail({ project, item }: { project: string; item: Item }) {
+  if (!item.blocked) {
+    return null;
+  }
+  return (
+    <>
+      <Badge tone="warn">
+        {item.block_reason === null ? 'Blocked' : blockReasonLabel(item.block_reason)}
+      </Badge>
+      <WaitsOn project={project} ids={item.depends_on ?? []} />
+    </>
+  );
+}
+
 export interface SecondLineProps {
   project: string;
   item: Item;
@@ -334,9 +403,9 @@ export interface SecondLineProps {
 }
 
 /**
- * A row's second line (rag-t0026): the type, the assignee and whatever the
- * section adds on the left (a badge, what a blocked item waits on), the
- * labels (rag-t0027) on the right. The first line is the status, the id, the
+ * A row's second line (rag-t0026): the type, the assignee, its phase
+ * (spec:roadmap RM-47) and whatever the section adds on the left (a badge, what
+ * a blocked item waits on), the labels (rag-t0027) on the right. The first line is the status, the id, the
  * title (taking the free width), the approval and the section's own actions.
  *
  * No link chips (rag-t0031): an item's ledger, spec, milestone, concept and
@@ -362,6 +431,9 @@ export function SecondLine({ project, item, children }: SecondLineProps) {
             </span>
           )}
         </span>
+        {item.phase !== undefined && item.phase !== null && item.phase !== '' && (
+          <PhaseChip project={project} phase={item.phase} />
+        )}
         {children}
       </span>
       {labels.length > 0 && (

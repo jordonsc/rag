@@ -15,6 +15,8 @@
  * | a document (m04) | `/projects/{project}/doc/{path…}` |
  * | the history: done, cancelled and failed tickets (rag-t0008) | `/projects/{project}/history` |
  * | the velocity report (spec:velocity m03) | `/projects/{project}/report?window=7d` |
+ * | the roadmap (spec:roadmap D29) | `/projects/{project}/roadmap` |
+ * | a phase (spec:roadmap D29) | `/projects/{project}/roadmap/{id}` |
  *
  * Every segment is encoded, as `topicPath` encodes a topic id: a project or an
  * id this application did not mint may carry a character that changes what
@@ -76,6 +78,16 @@ export function historyPath(project: string): string {
  */
 export function reportPath(project: string, window: VelocityWindow): string {
   return `${projectPath(project)}/report?window=${window}`;
+}
+
+/** The roadmap: a project's phases and how far out they are planned (spec:roadmap D29). */
+export function roadmapPath(project: string): string {
+  return `${projectPath(project)}/roadmap`;
+}
+
+/** One phase of the roadmap (spec:roadmap D29). */
+export function phasePath(project: string, id: string): string {
+  return `${roadmapPath(project)}/${enc(id)}`;
 }
 
 /** A document by its path within the project (m04); `/` is kept as `/`. */
@@ -220,6 +232,15 @@ export function isDocPath(path: string): boolean {
  */
 export function itemProject(id: string): string | null {
   const match = /^(.+)-t[0-9]{4,}$/.exec(id);
+  return match === null ? null : match[1]!;
+}
+
+/**
+ * The project a phase id belongs to: everything before the final `-p`, as
+ * {@link itemProject} splits a ticket's. Phase ids are `<project>-p<seq:04>`.
+ */
+export function phaseProject(id: string): string | null {
+  const match = /^(.+)-p[0-9]{4,}$/.exec(id);
   return match === null ? null : match[1]!;
 }
 

@@ -278,7 +278,7 @@ describe('the History tab', () => {
       within(tabs)
         .getAllByRole('link')
         .map((link) => link.textContent),
-    ).toEqual(['Queue', 'Documents', 'History']);
+    ).toEqual(['Queue', 'Roadmap', 'Documents', 'History']);
 
     await user.click(within(tabs).getByRole('link', { name: 'History' }));
     expect(screen.getByTestId('address')).toHaveTextContent('/projects/demo/history');

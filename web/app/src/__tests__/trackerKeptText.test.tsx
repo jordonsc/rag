@@ -18,7 +18,12 @@ const PATH = `/tracker/items/${ID}`;
 let server: TrackerServer;
 
 function open() {
-  const record = item(ID, { title: 'Next up', status: 'review', body: 'The brief.', events: EVENTS });
+  const record = item(ID, {
+    title: 'Next up',
+    status: 'review',
+    body: 'The brief.',
+    events: EVENTS,
+  });
   server = new TrackerServer();
   server.on(PATH, { body: record }, 'GET');
   server.on(PATH, { body: record }, 'POST');

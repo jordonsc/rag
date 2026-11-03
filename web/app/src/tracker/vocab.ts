@@ -22,6 +22,7 @@ import type {
   ItemType,
   LinkKind,
   MilestoneState,
+  PhaseState,
   SpecState,
   Surface,
   TrackerEventKind,
@@ -145,6 +146,20 @@ const TRANSITIONS: Record<ItemStatus, readonly ItemStatus[]> = {
 
 export function nextStatuses(status: ItemStatus): readonly ItemStatus[] {
   return lookup(TRANSITIONS, status) ?? [];
+}
+
+/**
+ * All a frozen ticket's status may move to (spec:roadmap D5): anything else is
+ * refused until it is pulled to the queue.
+ */
+export const FROZEN_STATUSES: readonly ItemStatus[] = ['done', 'cancelled'];
+
+/** What to offer a ticket: {@link FROZEN_STATUSES} while it is frozen, whatever its status says. */
+export function offeredStatuses(item: {
+  status: ItemStatus;
+  frozen?: boolean;
+}): readonly ItemStatus[] {
+  return item.frozen === true ? FROZEN_STATUSES : nextStatuses(item.status);
 }
 
 /** How a transition reads on a button or an option. */
@@ -285,6 +300,8 @@ const EVENT_LABEL: Record<TrackerEventKind, string> = {
   assign: 'Assigned',
   acknowledge: 'Acknowledged',
   rename: 'Renamed',
+  release: 'Phase released',
+  recall: 'Phase recalled',
 };
 
 const EVENT_ICON: Record<TrackerEventKind, string> = {
@@ -300,6 +317,8 @@ const EVENT_ICON: Record<TrackerEventKind, string> = {
   assign: 'user',
   acknowledge: 'check-check',
   rename: 'pencil',
+  release: 'rocket',
+  recall: 'rotate-ccw',
 };
 
 export function eventKindLabel(kind: string): string {
@@ -382,18 +401,21 @@ export function recordStateTone(state: string): Tone {
   );
 }
 
-const DOC_KIND_LABEL: Record<DocumentKind, string> = {
+// A tracker search hit's `kind` is a document's, or `phase` (spec:roadmap D28).
+const DOC_KIND_LABEL: Record<DocumentKind | 'phase', string> = {
   spec: 'Spec',
   milestone: 'Milestone',
   concept: 'Concept',
   doc: 'Document',
+  phase: 'Phase',
 };
 
-const DOC_KIND_ICON: Record<DocumentKind, string> = {
+const DOC_KIND_ICON: Record<DocumentKind | 'phase', string> = {
   spec: 'file-text',
   milestone: 'milestone',
   concept: 'sparkles',
   doc: 'file-text',
+  phase: 'map',
 };
 
 export function docKindLabel(kind: string): string {
@@ -402,6 +424,28 @@ export function docKindLabel(kind: string): string {
 
 export function docKindIcon(kind: string): string {
   return lookup(DOC_KIND_ICON, kind) ?? 'file-text';
+}
+
+// ---- Phases (spec:roadmap) ----------------------------------------------------
+
+const PHASE_STATE_LABEL: Record<PhaseState, string> = {
+  planned: 'Planned',
+  released: 'Released',
+  archived: 'Archived',
+};
+
+const PHASE_STATE_TONE: Record<PhaseState, Tone> = {
+  planned: 'acc',
+  released: 'good',
+  archived: 'neutral',
+};
+
+export function phaseStateLabel(state: string): string {
+  return lookup(PHASE_STATE_LABEL, state) ?? state;
+}
+
+export function phaseStateTone(state: string): Tone {
+  return lookup(PHASE_STATE_TONE, state) ?? 'neutral';
 }
 
 /** A size in bytes as a person reads it: `512 B`, `47.1 KB`, `3.2 MB`. */

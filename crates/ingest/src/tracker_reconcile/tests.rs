@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 
 use rag_core::error::Error;
 use rag_core::tracker::{
-    Actor, Approval, Edit, ItemStatus, ItemType, ItemUpdate, NewConcept, NewDocument, NewItem,
-    Place, Surface, TrackerStore,
+    Actor, Approval, Edit, ItemPhase, ItemStatus, ItemType, ItemUpdate, NewConcept, NewDocument,
+    NewItem, NewPhase, PhaseState, PhaseUpdate, Place, Surface, TrackerStore,
 };
 use uuid::Uuid;
 
@@ -473,6 +473,7 @@ fn item_text_carries_what_the_item_is() {
         title: "Standard gate".into(),
         body: String::new(),
         labels: Vec::new(),
+        phase: None,
         notes: vec!["clippy red".into()],
     };
     assert_eq!(
@@ -491,6 +492,7 @@ fn item_text_carries_its_labels_only_when_it_has_some() {
         title: "Gas buoyancy".into(),
         body: "Parcels rise.".into(),
         labels: vec!["Gases".into(), "Physics".into()],
+        phase: None,
         notes: Vec::new(),
     };
     assert_eq!(
@@ -506,4 +508,275 @@ fn item_text_carries_its_labels_only_when_it_has_some() {
         "Gas buoyancy\nubu ubu-t0050 · dev · pending\n\nParcels rise."
     );
     assert_ne!(item_hash(&item_text(&i)), labelled);
+}
+
+// ---- The roadmap (spec:roadmap D28) ----------------------------------------------------
+
+fn a_ticket() -> ItemForIndex {
+    ItemForIndex {
+        id: "ubu-t0050".into(),
+        project: "ubu".into(),
+        item_type: ItemType::Dev,
+        status: ItemStatus::Pending,
+        title: "Wolves".into(),
+        body: "Pack hunting.".into(),
+        labels: vec!["Creatures".into()],
+        phase: None,
+        notes: Vec::new(),
+    }
+}
+
+/// No `Phase:` line for a ticket with no phase, so its hash stands and
+/// `INDEX_FORMAT` needs no bump: the text and the hash are pinned literally, as
+/// they were before phases existed, so every such ticket's point is left alone.
+#[test]
+fn a_ticket_with_no_phase_reads_and_hashes_as_it_always_did() {
+    let i = a_ticket();
+    let text = "Wolves\nubu ubu-t0050 · dev · pending\nLabels: Creatures\n\nPack hunting.";
+    assert_eq!(item_text(&i), text);
+    assert_eq!(
+        item_hash(&item_text(&i)),
+        hash_str(&format!("tracker-item v1\u{0}{text}"))
+    );
+    assert_eq!(INDEX_FORMAT, 1, "phases must not re-index the whole corpus");
+}
+
+#[test]
+fn a_tickets_header_says_its_phase_and_whether_it_is_frozen() {
+    let mut i = a_ticket();
+    let bare = item_hash(&item_text(&i));
+    i.phase = Some(ItemPhase {
+        title: "Creatures".into(),
+        frozen: true,
+    });
+    assert_eq!(
+        item_text(&i),
+        "Wolves\nubu ubu-t0050 · dev · pending\nLabels: Creatures\nPhase: Creatures · frozen\n\n\
+         Pack hunting."
+    );
+    let frozen = item_hash(&item_text(&i));
+    i.phase = Some(ItemPhase {
+        title: "Creatures".into(),
+        frozen: false,
+    });
+    assert_eq!(
+        item_text(&i),
+        "Wolves\nubu ubu-t0050 · dev · pending\nLabels: Creatures\nPhase: Creatures\n\n\
+         Pack hunting."
+    );
+    let released = item_hash(&item_text(&i));
+    assert_ne!(frozen, released, "a release changes the ticket's hash");
+    assert_ne!(released, bare, "and a link alone does");
+    // After the labels when it has them, and in their place when it has none.
+    i.labels.clear();
+    assert_eq!(
+        item_text(&i),
+        "Wolves\nubu ubu-t0050 · dev · pending\nPhase: Creatures\n\nPack hunting."
+    );
+}
+
+fn a_phase() -> PhaseForIndex {
+    PhaseForIndex {
+        id: "my-proj-p0001".into(),
+        project: "my-proj".into(),
+        title: "Creatures".into(),
+        body: "\nAll of them.\n".into(),
+        state: PhaseState::Planned,
+    }
+}
+
+#[test]
+fn a_phases_text_has_a_body_only_when_it_has_one() {
+    let mut p = a_phase();
+    assert_eq!(
+        phase_text(&p),
+        "Creatures\nmy-proj my-proj-p0001 · phase · planned\n\nAll of them."
+    );
+    let with_body = phase_hash(&phase_text(&p));
+    p.body = "  \n".into();
+    assert_eq!(
+        phase_text(&p),
+        "Creatures\nmy-proj my-proj-p0001 · phase · planned"
+    );
+    assert_ne!(phase_hash(&phase_text(&p)), with_body);
+    // Its hash is not a ticket's with the same text.
+    let t = phase_text(&p);
+    assert_ne!(phase_hash(&t), item_hash(&t));
+}
+
+impl Fx {
+    async fn phase(&self, title: &str, body: &str) -> String {
+        self.store
+            .create_phase(
+                NewPhase {
+                    project: "ubu".into(),
+                    title: title.into(),
+                    body: body.into(),
+                    place: Place::Bottom,
+                    note: None,
+                },
+                &actor(),
+            )
+            .await
+            .unwrap()
+            .phase
+            .id
+    }
+
+    async fn item_in(&self, title: &str, phase: &str) -> String {
+        self.store
+            .create_item_in_phase(
+                NewItem {
+                    draft: false,
+                    project: "ubu".into(),
+                    item_type: ItemType::Dev,
+                    title: title.into(),
+                    body: "Build the solar film.".into(),
+                    assignee: None,
+                    approval: Approval::Unapproved,
+                    links: Vec::new(),
+                    intensity: None,
+                    release: false,
+                    parallel: false,
+                    labels: Vec::new(),
+                    place: Place::Bottom,
+                    note: None,
+                },
+                phase,
+                &actor(),
+            )
+            .await
+            .unwrap()
+            .item
+            .id
+    }
+}
+
+#[tokio::test]
+async fn a_phase_is_a_point_cited_by_its_id_and_kept_in_every_state() {
+    let f = fx().await;
+    let id = f.phase("Creatures", "All of them.").await;
+    let plan = f.reconcile().await.unwrap();
+    assert_eq!((plan.units, plan.changed.len()), (1, 1));
+
+    let p = f.index.of(&id);
+    assert_eq!(p.len(), 1, "a phase is one point");
+    let p = &p[0];
+    assert_eq!(p.corpus, Corpus::Tracker);
+    assert_eq!(p.repo, "ubu");
+    assert_eq!(p.kind, "phase");
+    assert_eq!(p.point_kind, "phase");
+    assert_eq!(p.citation, id);
+    assert_eq!(p.rel_path, id);
+    assert_eq!(p.language, "markdown");
+    assert_eq!(p.title, "Creatures");
+    assert_eq!(p.item_type, None);
+    assert_eq!(p.status.as_deref(), Some("planned"));
+    assert_eq!(p.revision, None);
+    assert!(p.text.contains("All of them."), "{}", p.text);
+
+    // Settled: nothing to do, and it counts as a unit, never as one to remove.
+    let plan = f.reconcile().await.unwrap();
+    assert_eq!((plan.units, plan.unchanged), (1, 1));
+    assert!(plan.changed.is_empty() && plan.removed.is_empty());
+
+    // A body edit changes its hash and rewrites the same point.
+    let before = f.index.of(&id)[0].tracker_hash.clone();
+    let keys = f.index.points.borrow().keys().copied().collect::<Vec<_>>();
+    f.store
+        .update_phase(
+            &id,
+            PhaseUpdate {
+                body: Some("Only the wolves.".into()),
+                ..Default::default()
+            },
+            &actor(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(f.reconcile().await.unwrap().changed.len(), 1);
+    let after = f.index.of(&id);
+    assert_eq!(after.len(), 1);
+    assert_ne!(after[0].tracker_hash, before);
+    assert!(after[0].text.contains("Only the wolves."));
+    assert_eq!(
+        f.index.points.borrow().keys().copied().collect::<Vec<_>>(),
+        keys
+    );
+
+    // Archived, it is still in the store, so it stays in the index with its state.
+    f.store.archive_phase(&id, None, &actor()).await.unwrap();
+    let plan = f.reconcile().await.unwrap();
+    assert!(plan.removed.is_empty());
+    assert_eq!(f.index.of(&id)[0].status.as_deref(), Some("archived"));
+}
+
+#[tokio::test]
+async fn a_phase_gone_from_the_store_is_purged() {
+    let f = fx().await;
+    let id = f.phase("Creatures", "").await;
+    f.reconcile().await.unwrap();
+    // A phase the store does not hold: phases are never deleted, so it is another
+    // store's, and it goes as any unit the store does not hold does.
+    let stray = TrackerPayload {
+        tracker_id: "ubu-p0099".into(),
+        ..f.index.of(&id)[0].clone()
+    };
+    f.index
+        .points
+        .borrow_mut()
+        .insert(ids::tracker_point_id("ubu-p0099", 0), stray);
+    let plan = f.reconcile().await.unwrap();
+    assert_eq!(plan.removed, vec!["ubu-p0099".to_string()]);
+    assert!(f.index.of("ubu-p0099").is_empty());
+    assert_eq!(f.index.of(&id).len(), 1);
+}
+
+#[tokio::test]
+async fn a_release_and_a_rename_reindex_the_linked_tickets_and_no_other() {
+    let f = fx().await;
+    let id = f.phase("Creatures", "").await;
+    let frozen = f.item_in("Wolves", &id).await;
+    let other = f.item("Fit the solar film").await;
+    let plan = f.reconcile().await.unwrap();
+    assert_eq!(plan.units, 3);
+    // Frozen tickets stay in the corpus, saying so.
+    let text = |t: &str| f.index.of(t)[0].text.clone();
+    assert!(text(&frozen).contains("\nPhase: Creatures · frozen\n"));
+    assert!(!text(&other).contains("Phase:"), "{}", text(&other));
+    let untouched = f.index.of(&other);
+
+    f.store
+        .release_phase(&id, Place::Bottom, None, &actor())
+        .await
+        .unwrap();
+    let plan = f.reconcile().await.unwrap();
+    let changed: HashSet<&str> = plan.changed.iter().map(|u| u.tracker_id.as_str()).collect();
+    assert_eq!(
+        changed,
+        HashSet::from([frozen.as_str(), id.as_str()]),
+        "the ticket and the phase, whose state moved"
+    );
+    assert!(text(&frozen).contains("\nPhase: Creatures\n"));
+    assert!(!text(&frozen).contains("· frozen"));
+    assert_eq!(f.index.of(&id)[0].status.as_deref(), Some("released"));
+
+    f.store
+        .update_phase(
+            &id,
+            PhaseUpdate {
+                title: Some("Beasts".into()),
+                ..Default::default()
+            },
+            &actor(),
+        )
+        .await
+        .unwrap();
+    f.reconcile().await.unwrap();
+    assert!(text(&frozen).contains("\nPhase: Beasts\n"));
+    assert_eq!(
+        f.index.of(&other),
+        untouched,
+        "a ticket with no phase is left alone"
+    );
 }

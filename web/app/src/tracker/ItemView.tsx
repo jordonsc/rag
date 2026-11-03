@@ -13,6 +13,7 @@ import { LinkTitleText, linkKey, linkTooltip, useLinkTitles } from './linkTitles
 import {
   ApprovalBadge,
   DraftBadge,
+  FrozenBadge,
   LabelChips,
   ParallelBadge,
   StatusDot,
@@ -20,10 +21,11 @@ import {
   WaitsOn,
 } from './parts';
 import { itemPath, linkHref, projectPath } from './paths';
+import { PhaseChip, PhaseTitlesProvider } from './phaseTitles';
 import { RETURN_STATE } from './scrollMemory';
 import styles from './item.module.css';
 import type { FeedEvent, Item, Link as ItemLink, TrackerEvent } from './types';
-import { useProjectFeed } from './useFeed';
+import { LIVE_SETTLE_MS, useProjectFeed } from './useFeed';
 import {
   approvalLabel,
   blockReasonLabel,
@@ -35,17 +37,12 @@ import {
   itemTypeHint,
   linkKindIcon,
   linkKindLabel,
+  phaseStateLabel,
   surfaceLabel,
 } from './vocab';
 
 type Loaded =
   { kind: 'loading' } | { kind: 'ready'; item: Item } | { kind: 'error'; error: LedgerApiError };
-
-/**
- * How long the page waits after a feed event before re-reading, so that a
- * burst (a drag reorder, an agent's run of writes) costs one read.
- */
-export const LIVE_SETTLE_MS = 250;
 
 /** Whether two reads of an item say the same thing (so the page need not re-render). */
 function sameItem(a: Item, b: Item): boolean {
@@ -141,6 +138,23 @@ function EventFields({ event }: { event: TrackerEvent }) {
   if (typeof f.unblocked_by === 'string') {
     rows.push(['Done', f.unblocked_by]);
   }
+  // A ticket's phase (spec:roadmap D8, D9): the link, and whether it is frozen.
+  if (typeof f.phase === 'string' || f.phase === null) {
+    rows.push(['Phase', f.phase === null || f.phase === '' ? 'removed' : f.phase]);
+  }
+  if (typeof f.frozen === 'boolean') {
+    rows.push(['Frozen', f.frozen ? 'yes' : 'no']);
+  }
+  // A phase's own events (spec:roadmap D18). A create says planned; only a change is news.
+  if (typeof f.state === 'string' && !created) {
+    rows.push(['State', phaseStateLabel(f.state)]);
+  }
+  if (typeof f.tickets === 'number') {
+    rows.push(['Tickets moved', String(f.tickets)]);
+  }
+  if (typeof f.placed === 'string') {
+    rows.push(['Placed', f.placed]);
+  }
   const place = placeText(f.place);
   if (place !== null) {
     rows.push(['Placed', place]);
@@ -188,6 +202,61 @@ function EventAuthor({ event, self }: { event: TrackerEvent; self: string | null
       <span className={timeline.qualifier}> · {qualifier}</span>
       <span className={styles.surface}>{surfaceLabel(event.surface)}</span>
     </span>
+  );
+}
+
+/**
+ * A record's history, oldest first: who, when, the prose and what it set. The
+ * ticket page's, and a phase's (spec:roadmap RM-45).
+ */
+export function EventTimeline({ events }: { events: readonly TrackerEvent[] }) {
+  const format = useFormat();
+  const { email } = useIdentity();
+  return (
+    <ol className={timeline.timeline}>
+      {events.map((event) => (
+        <li key={event.event_id} className={timeline.event} data-kind={event.kind}>
+          <div className={timeline.rail}>
+            <span className={timeline.dot}>
+              <Icon name={eventKindIcon(event.kind)} size={13} />
+            </span>
+          </div>
+          <div className={timeline.body}>
+            <div className={timeline.eventHead}>
+              <span className={timeline.kind}>{eventKindLabel(event.kind)}</span>
+              <EventAuthor event={event} self={email} />
+              {/* Written while a draft (2026-10-30): the feed left it out. */}
+              {event.draft === true && (
+                <span
+                  className={styles.draftMark}
+                  title="Written while a draft: left out of the feed"
+                >
+                  draft
+                </span>
+              )}
+              {/* A roadmap event (spec:roadmap D17): out of the default feed too. */}
+              {event.roadmap === true && (
+                <span
+                  className={styles.draftMark}
+                  title="A roadmap change: left out of the default feed"
+                >
+                  roadmap
+                </span>
+              )}
+              <time className={timeline.when} dateTime={event.ts}>
+                {format.stamp(event.ts)}
+              </time>
+            </div>
+            {/* A note is Markdown, `att:` resolved and sanitised as the body is;
+                an attached image shows small and opens whole (rag-t0053). */}
+            {event.body.trim() !== '' && (
+              <Markdown source={event.body} attachments className={styles.note} />
+            )}
+            <EventFields event={event} />
+          </div>
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -254,6 +323,10 @@ function BecameList({
  * (*From request*), and a request lists what it became (rag-t0044); those
  * two kinds are not repeated under Links.
  *
+ * A ticket in a phase names it with a chip, kept when the ticket is done; a
+ * frozen one is badged, and says where it is in the phase's list rather than the
+ * queue's (spec:roadmap RM-48).
+ *
  * Live: the page follows its project's event feed (`useProjectFeed`) and
  * re-reads the item after any item event there, since an agent's write to
  * this ticket and a move of its neighbours both change what it shows. A read
@@ -262,7 +335,6 @@ function BecameList({
 export function ItemView() {
   const { id = '' } = useParams();
   const format = useFormat();
-  const { email } = useIdentity();
   const [loaded, setLoaded] = useState<Loaded>({ kind: 'loading' });
   const [becameTick, setBecameTick] = useState(0);
   // Only the newest read may land: one that set out before a write must not
@@ -393,224 +465,210 @@ export function ItemView() {
   const fromRequests = record.links.filter((link) => link.kind === 'from');
   const became = record.links.filter((link) => link.kind === 'became').map((link) => link.target);
   const otherLinks = record.links.filter((link) => link.kind !== 'from' && link.kind !== 'became');
+  const phase = record.phase === undefined || record.phase === '' ? null : record.phase;
+  const frozen = record.frozen === true;
+  const neighbours = (
+    <>
+      {record.prev_id === null ? (
+        'first'
+      ) : (
+        <>
+          after{' '}
+          <Link to={itemPath(project, record.prev_id)}>
+            <code>{record.prev_id}</code>
+          </Link>
+        </>
+      )}
+      {record.next_id !== null && (
+        <>
+          {', before '}
+          <Link to={itemPath(project, record.next_id)}>
+            <code>{record.next_id}</code>
+          </Link>
+        </>
+      )}
+    </>
+  );
 
   return (
-    <article className={styles.view}>
-      <p className={styles.crumbs}>
-        <Link to={projectPath(project)} state={RETURN_STATE}>
-          <Icon name="arrow-left" size={13} />
-          {project}
-        </Link>
-      </p>
-
-      <header className={styles.header}>
-        <div className={styles.identity}>
-          <TypeBadge type={record.type} />
-          <StatusDot state={dotState(record)} />
-          {dotState(record) === 'blocked' && (
-            <span className={styles.underlying}>({itemStatusLabel(record.status)})</span>
-          )}
-          <code className={styles.id}>{record.id}</code>
-          <CopyButton text={record.id} />
-          <ApprovalBadge approval={record.approval} always />
-          {record.type === 'gate' && record.intensity !== null && (
-            <Badge tone="neutral">{intensityLabel(record.intensity)} gate</Badge>
-          )}
-          {record.release && <Badge tone="acc">Release</Badge>}
-          {record.parallel === true && <ParallelBadge />}
-          {record.draft === true && <DraftBadge />}
-        </div>
-        <h1 className={styles.title}>{record.title}</h1>
-        {itemTypeHint(record.type) !== undefined && (
-          <p className={styles.hint}>{itemTypeHint(record.type)}</p>
-        )}
-        <dl className={styles.meta}>
-          <div>
-            <dt>Project</dt>
-            <dd>
-              <Link to={projectPath(project)} state={RETURN_STATE}>
-                {project}
-              </Link>
-            </dd>
-          </div>
-          {fromRequests.length > 0 && (
-            <div>
-              <dt>From request</dt>
-              <dd className={styles.neighbours}>
-                {fromRequests.map((link) => (
-                  <span key={link.target} className={styles.fromRequest}>
-                    <Link
-                      to={itemPath(project, link.target)}
-                      title={linkTooltip(titles[linkKey(link)])}
-                    >
-                      <code>{link.target}</code>
-                    </Link>
-                    <LinkTitleText title={titles[linkKey(link)]} />
-                  </span>
-                ))}
-              </dd>
-            </div>
-          )}
-          <div>
-            <dt>Assignee</dt>
-            <dd>{record.assignee === null || record.assignee === '' ? '—' : record.assignee}</dd>
-          </div>
-          <div>
-            <dt>Labels</dt>
-            <dd>
-              {(record.labels ?? []).length === 0 ? (
-                '—'
-              ) : (
-                <LabelChips project={project} labels={record.labels ?? []} />
-              )}
-            </dd>
-          </div>
-          <div>
-            <dt>Created</dt>
-            <dd>{format.stamp(record.created_at)}</dd>
-          </div>
-          <div>
-            <dt>Updated</dt>
-            <dd>{format.stamp(record.updated_at)}</dd>
-          </div>
-          {record.done_at !== null && (
-            <div>
-              <dt>Done</dt>
-              <dd>{format.stamp(record.done_at)}</dd>
-            </div>
-          )}
-          {record.acknowledged_at !== null && (
-            <div>
-              <dt>Acknowledged</dt>
-              <dd>{format.stamp(record.acknowledged_at)}</dd>
-            </div>
-          )}
-          {record.queued && (
-            <div>
-              <dt>In the queue</dt>
-              <dd className={styles.neighbours}>
-                {record.prev_id === null ? (
-                  'first'
-                ) : (
-                  <>
-                    after{' '}
-                    <Link to={itemPath(project, record.prev_id)}>
-                      <code>{record.prev_id}</code>
-                    </Link>
-                  </>
-                )}
-                {record.next_id !== null && (
-                  <>
-                    {', before '}
-                    <Link to={itemPath(project, record.next_id)}>
-                      <code>{record.next_id}</code>
-                    </Link>
-                  </>
-                )}
-              </dd>
-            </div>
-          )}
-        </dl>
-      </header>
-
-      {record.blocked && (
-        <p className={styles.blocked}>
-          <Icon name="lock" size={14} />
-          <span>
-            <strong>
-              {record.block_reason === null ? 'Blocked' : blockReasonLabel(record.block_reason)}
-            </strong>
-            {record.block_note !== null && record.block_note !== '' && <> — {record.block_note}</>}
-          </span>
-          <WaitsOn project={project} ids={record.depends_on ?? []} />
+    <PhaseTitlesProvider project={project} enabled={phase !== null}>
+      <article className={styles.view}>
+        <p className={styles.crumbs}>
+          <Link to={projectPath(project)} state={RETURN_STATE}>
+            <Icon name="arrow-left" size={13} />
+            {project}
+          </Link>
         </p>
-      )}
 
-      <ItemActions key={`actions:${record.id}`} item={record} onWritten={refetch} />
+        <header className={styles.header}>
+          <div className={styles.identity}>
+            <TypeBadge type={record.type} />
+            <StatusDot state={dotState(record)} />
+            {dotState(record) === 'blocked' && (
+              <span className={styles.underlying}>({itemStatusLabel(record.status)})</span>
+            )}
+            <code className={styles.id}>{record.id}</code>
+            <CopyButton text={record.id} />
+            <ApprovalBadge approval={record.approval} always />
+            {record.type === 'gate' && record.intensity !== null && (
+              <Badge tone="neutral">{intensityLabel(record.intensity)} gate</Badge>
+            )}
+            {record.release && <Badge tone="acc">Release</Badge>}
+            {record.parallel === true && <ParallelBadge />}
+            {record.draft === true && <DraftBadge />}
+            {frozen && <FrozenBadge />}
+            {phase !== null && <PhaseChip project={project} phase={phase} />}
+          </div>
+          <h1 className={styles.title}>{record.title}</h1>
+          {itemTypeHint(record.type) !== undefined && (
+            <p className={styles.hint}>{itemTypeHint(record.type)}</p>
+          )}
+          <dl className={styles.meta}>
+            <div>
+              <dt>Project</dt>
+              <dd>
+                <Link to={projectPath(project)} state={RETURN_STATE}>
+                  {project}
+                </Link>
+              </dd>
+            </div>
+            {fromRequests.length > 0 && (
+              <div>
+                <dt>From request</dt>
+                <dd className={styles.neighbours}>
+                  {fromRequests.map((link) => (
+                    <span key={link.target} className={styles.fromRequest}>
+                      <Link
+                        to={itemPath(project, link.target)}
+                        title={linkTooltip(titles[linkKey(link)])}
+                      >
+                        <code>{link.target}</code>
+                      </Link>
+                      <LinkTitleText title={titles[linkKey(link)]} />
+                    </span>
+                  ))}
+                </dd>
+              </div>
+            )}
+            <div>
+              <dt>Assignee</dt>
+              <dd>{record.assignee === null || record.assignee === '' ? '—' : record.assignee}</dd>
+            </div>
+            <div>
+              <dt>Labels</dt>
+              <dd>
+                {(record.labels ?? []).length === 0 ? (
+                  '—'
+                ) : (
+                  <LabelChips project={project} labels={record.labels ?? []} />
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>Created</dt>
+              <dd>{format.stamp(record.created_at)}</dd>
+            </div>
+            <div>
+              <dt>Updated</dt>
+              <dd>{format.stamp(record.updated_at)}</dd>
+            </div>
+            {record.done_at !== null && (
+              <div>
+                <dt>Done</dt>
+                <dd>{format.stamp(record.done_at)}</dd>
+              </div>
+            )}
+            {record.acknowledged_at !== null && (
+              <div>
+                <dt>Acknowledged</dt>
+                <dd>{format.stamp(record.acknowledged_at)}</dd>
+              </div>
+            )}
+            {record.queued && (
+              <div>
+                <dt>In the queue</dt>
+                <dd className={styles.neighbours}>{neighbours}</dd>
+              </div>
+            )}
+            {/* `queued` is false while frozen (m01): its neighbours are the phase's. */}
+            {frozen && phase !== null && (
+              <div>
+                <dt>In phase</dt>
+                <dd className={styles.neighbours}>
+                  <PhaseChip project={project} phase={phase} /> {neighbours}
+                </dd>
+              </div>
+            )}
+          </dl>
+        </header>
 
-      <Panel header="Body">
-        {record.body.trim() === '' ? (
-          <p className={styles.empty}>No body.</p>
-        ) : (
-          <Markdown source={record.body} attachments />
+        {record.blocked && (
+          <p className={styles.blocked}>
+            <Icon name="lock" size={14} />
+            <span>
+              <strong>
+                {record.block_reason === null ? 'Blocked' : blockReasonLabel(record.block_reason)}
+              </strong>
+              {record.block_note !== null && record.block_note !== '' && (
+                <> — {record.block_note}</>
+              )}
+            </span>
+            <WaitsOn project={project} ids={record.depends_on ?? []} />
+          </p>
         )}
-      </Panel>
 
-      {record.type === 'request' && (
-        <Panel header={`Became · ${became.length} ${became.length === 1 ? 'ticket' : 'tickets'}`}>
-          {became.length === 0 ? (
-            <p className={styles.empty}>Not broken down yet.</p>
+        <ItemActions key={`actions:${record.id}`} item={record} onWritten={refetch} />
+
+        <Panel header="Body">
+          {record.body.trim() === '' ? (
+            <p className={styles.empty}>No body.</p>
           ) : (
-            <BecameList project={project} ids={became} tick={becameTick} />
+            <Markdown source={record.body} attachments />
           )}
         </Panel>
-      )}
 
-      {otherLinks.length > 0 && (
-        <Panel header="Links">
-          <ul className={styles.links}>
-            {otherLinks.map((link) => {
-              const href = linkHref(project, link, milestonePath(link));
-              return (
-                <li key={`${link.kind}:${link.target}`} className={styles.link}>
-                  <Icon name={linkKindIcon(link.kind)} size={14} />
-                  <span className={styles.linkKind}>{linkKindLabel(link.kind)}</span>
-                  {href === null ? (
-                    <code title={linkTooltip(titles[linkKey(link)])}>{link.target}</code>
-                  ) : (
-                    <Link
-                      to={href}
-                      className={styles.linkTarget}
-                      title={linkTooltip(titles[linkKey(link)])}
-                    >
-                      {link.target}
-                    </Link>
-                  )}
-                  <LinkTitleText title={titles[linkKey(link)]} />
-                </li>
-              );
-            })}
-          </ul>
+        {record.type === 'request' && (
+          <Panel header={`Became · ${became.length} ${became.length === 1 ? 'ticket' : 'tickets'}`}>
+            {became.length === 0 ? (
+              <p className={styles.empty}>Not broken down yet.</p>
+            ) : (
+              <BecameList project={project} ids={became} tick={becameTick} />
+            )}
+          </Panel>
+        )}
+
+        {otherLinks.length > 0 && (
+          <Panel header="Links">
+            <ul className={styles.links}>
+              {otherLinks.map((link) => {
+                const href = linkHref(project, link, milestonePath(link));
+                return (
+                  <li key={`${link.kind}:${link.target}`} className={styles.link}>
+                    <Icon name={linkKindIcon(link.kind)} size={14} />
+                    <span className={styles.linkKind}>{linkKindLabel(link.kind)}</span>
+                    {href === null ? (
+                      <code title={linkTooltip(titles[linkKey(link)])}>{link.target}</code>
+                    ) : (
+                      <Link
+                        to={href}
+                        className={styles.linkTarget}
+                        title={linkTooltip(titles[linkKey(link)])}
+                      >
+                        {link.target}
+                      </Link>
+                    )}
+                    <LinkTitleText title={titles[linkKey(link)]} />
+                  </li>
+                );
+              })}
+            </ul>
+          </Panel>
+        )}
+
+        <Panel header={`History · ${events.length} ${events.length === 1 ? 'entry' : 'entries'}`}>
+          <EventTimeline events={events} />
         </Panel>
-      )}
-
-      <Panel header={`History · ${events.length} ${events.length === 1 ? 'entry' : 'entries'}`}>
-        <ol className={timeline.timeline}>
-          {events.map((event) => (
-            <li key={event.event_id} className={timeline.event} data-kind={event.kind}>
-              <div className={timeline.rail}>
-                <span className={timeline.dot}>
-                  <Icon name={eventKindIcon(event.kind)} size={13} />
-                </span>
-              </div>
-              <div className={timeline.body}>
-                <div className={timeline.eventHead}>
-                  <span className={timeline.kind}>{eventKindLabel(event.kind)}</span>
-                  <EventAuthor event={event} self={email} />
-                  {/* Written while a draft (2026-10-30): the feed left it out. */}
-                  {event.draft === true && (
-                    <span
-                      className={styles.draftMark}
-                      title="Written while a draft: left out of the feed"
-                    >
-                      draft
-                    </span>
-                  )}
-                  <time className={timeline.when} dateTime={event.ts}>
-                    {format.stamp(event.ts)}
-                  </time>
-                </div>
-                {/* A note is Markdown, `att:` resolved and sanitised as the body is;
-                    an attached image shows small and opens whole (rag-t0053). */}
-                {event.body.trim() !== '' && (
-                  <Markdown source={event.body} attachments className={styles.note} />
-                )}
-                <EventFields event={event} />
-              </div>
-            </li>
-          ))}
-        </ol>
-      </Panel>
-    </article>
+      </article>
+    </PhaseTitlesProvider>
   );
 }

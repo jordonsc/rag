@@ -40,7 +40,8 @@ pub const FEED_CAPACITY: usize = 1024;
 /// decisions and the queue's movements. `link`, `rename` and `acknowledge` are
 /// housekeeping and left out (`acknowledge`: owner, 2026-11-01, clearing done
 /// tickets asks nothing of a manager); `edit` is in, as label changes and the
-/// owner's corrections to an item or a document are edits.
+/// owner's corrections to an item or a document are edits. A phase's `release`
+/// and `recall` are its one frame each (spec:roadmap D18).
 pub const DEFAULT_FEED_KINDS: &[EventKind] = &[
     EventKind::Create,
     EventKind::Status,
@@ -51,6 +52,8 @@ pub const DEFAULT_FEED_KINDS: &[EventKind] = &[
     EventKind::Note,
     EventKind::Assign,
     EventKind::Edit,
+    EventKind::Release,
+    EventKind::Recall,
 ];
 
 /// One event as the feed carries it: the event itself, the record it belongs
@@ -77,6 +80,9 @@ pub struct FeedEvent {
     /// Written while its record was a draft (owner, 2026-10-30). Only a feed
     /// that asked for drafts ([`FeedFilter::drafts`]) carries one.
     pub draft: bool,
+    /// A roadmap change (spec:roadmap D17). Only a feed that asked for them
+    /// ([`FeedFilter::roadmap`]) carries one.
+    pub roadmap: bool,
 }
 
 /// The longest title and body a text line carries before it is cut with `…`.
@@ -119,7 +125,9 @@ impl FeedEvent {
 
     /// Each change a frame names, in a fixed order: `moved: after rag-t0010 →
     /// top`, `status: in_progress → done`, `state: draft → ready`,
-    /// `approval: agent → ratified`, `blocked: dependency → no`, `depends_on:
+    /// `approval: agent → ratified`, `frozen: yes → no`, `phase: none →
+    /// rag-p0001`, `blocked: dependency → no`, a release's `tickets: 40` and
+    /// `placed: bottom`, `depends_on:
     /// rag-t0003 → rag-t0003, rag-t0004`, `assignee: none → dev-3`, `labels:
     /// +Physics −Biomes`, `links: +item:rag-t0002 −ledger:rag-0033`, `title:
     /// Old → New`, `body: edited`, `intensity`, `release`, `parallel`,
@@ -140,7 +148,8 @@ impl FeedEvent {
 
     /// The text frame: one line, the event id first so a client can resume.
     /// A draft event (sent only to a feed that asked for drafts) says so after
-    /// its title: `rag-t0060 "Weather" (draft) {…}`.
+    /// its title: `rag-t0060 "Weather" (draft) {…}`, and a roadmap event (sent
+    /// only to a feed that asked for them) likewise: `(roadmap)`.
     ///
     /// `#13901 rag web approve rag-t0040 "Event feed" {approval: agent → ratified}: Ship it. [Owner]`
     pub fn line(&self) -> String {
@@ -149,7 +158,7 @@ impl FeedEvent {
             None => String::new(),
         };
         format!(
-            "#{} {} {} {} {}{}{}{}: {} [{}]",
+            "#{} {} {} {} {}{}{}{}{}: {} [{}]",
             self.event_id,
             self.project,
             self.surface,
@@ -157,6 +166,7 @@ impl FeedEvent {
             self.target_label(),
             title,
             if self.draft { " (draft)" } else { "" },
+            if self.roadmap { " (roadmap)" } else { "" },
             self.changed(),
             note_said(&self.body, self.event_id),
             clip(self.who(), LINE_TITLE_CHARS),
@@ -268,9 +278,17 @@ pub fn burst_line(events: &[FeedEvent]) -> String {
         if latest.draft {
             title.push_str(" (draft)");
         }
+        if latest.roadmap {
+            title.push_str(" (roadmap)");
+        }
         let what = if let [one] = es.as_slice() {
             let mut w = format!("{}{}", one.kind, one.changed());
-            if one.kind == EventKind::Note {
+            // A release's and a recall's body says what it is, so a burst
+            // cannot read as a build release (spec:roadmap D18).
+            if matches!(
+                one.kind,
+                EventKind::Note | EventKind::Release | EventKind::Recall
+            ) {
                 w.push_str(&format!(": {}", clip(&one.body, BURST_NOTE_CHARS)));
             }
             w
@@ -357,6 +375,8 @@ fn kind_counted(kind: EventKind, n: usize) -> String {
         EventKind::Assign => ("assignment", "assignments"),
         EventKind::Acknowledge => ("acknowledgement", "acknowledgements"),
         EventKind::Rename => ("rename", "renames"),
+        EventKind::Release => ("phase release", "phase releases"),
+        EventKind::Recall => ("phase recall", "phase recalls"),
     };
     counted(n, one, many)
 }
@@ -434,6 +454,11 @@ pub fn describe_changes(
             said.push(from_to(key, prior(key), to));
         }
     }
+    for key in ["frozen", "phase"] {
+        if let Some(to) = after.get(key) {
+            said.push(from_to(key, prior(key), to));
+        }
+    }
     // `blocked` and `block_reason` read as one: the reason while blocked,
     // `no` while not.
     if after.contains_key("blocked") || after.contains_key("block_reason") {
@@ -445,6 +470,11 @@ pub fn describe_changes(
             Some(from) if from != to => format!("blocked: {from} → {to}"),
             _ => format!("blocked: {to}"),
         });
+    }
+    for key in ["tickets", "placed"] {
+        if let Some(to) = after.get(key) {
+            said.push(from_to(key, prior(key), to));
+        }
     }
     for key in ["depends_on", "assignee"] {
         if let Some(to) = after.get(key) {
@@ -625,6 +655,10 @@ pub struct FeedFilter {
     /// record was a draft. Left out by default, so the owner's unfinished
     /// tickets and documents wake nobody.
     pub drafts: bool,
+    /// Include roadmap events (spec:roadmap D17, R8): a phase's changes and a
+    /// frozen ticket's. Left out by default, so planning wakes nobody; a phase's
+    /// release and recall are not among them.
+    pub roadmap: bool,
 }
 
 impl FeedFilter {
@@ -638,11 +672,15 @@ impl FeedFilter {
                 .is_none_or(|s| s.contains(&e.surface))
             && self.kinds.as_ref().is_none_or(|k| k.contains(&e.kind))
             && (self.drafts || !e.draft)
+            && (self.roadmap || !e.roadmap)
     }
 
     fn push_where(&self, q: &mut QueryBuilder<'_, Sqlite>) {
         if !self.drafts {
             q.push(" AND e.draft = 0");
+        }
+        if !self.roadmap {
+            q.push(" AND e.roadmap = 0");
         }
         if let Some(p) = &self.project {
             q.push(" AND e.project = ").push_bind(p.clone());
@@ -699,7 +737,8 @@ impl Feed {
 }
 
 const FEED_SELECT: &str = "SELECT e.event_id, e.ts, e.author_email, e.agent, e.surface, e.kind, \
-     e.body, e.fields, e.fields_before, e.draft, e.project, e.target_kind, e.target_id, \
+     e.body, e.fields, e.fields_before, e.draft, e.roadmap, e.project, e.target_kind, \
+     e.target_id, \
      CASE e.target_kind \
        WHEN 'item' THEN (SELECT title FROM items WHERE id = e.target_id) \
        WHEN 'spec' THEN (SELECT title FROM specs WHERE project = e.project AND slug = e.target_id) \
@@ -707,6 +746,7 @@ const FEED_SELECT: &str = "SELECT e.event_id, e.ts, e.author_email, e.agent, e.s
          AND spec_slug || '/' || code = e.target_id) \
        WHEN 'concept' THEN (SELECT title FROM concepts WHERE project = e.project AND slug = e.target_id) \
        WHEN 'document' THEN (SELECT title FROM documents WHERE id = e.target_id) \
+       WHEN 'phase' THEN (SELECT title FROM phases WHERE id = e.target_id) \
      END AS title \
      FROM events e WHERE e.event_id > ";
 
@@ -739,6 +779,7 @@ impl FeedRow {
             fields: e.fields,
             before: e.before,
             draft: e.draft,
+            roadmap: e.roadmap,
         })
     }
 }
@@ -787,6 +828,9 @@ impl TrackerStore {
         }
         let every = FeedFilter {
             drafts: true,
+            // Stamped events cross the channel too: a subscriber that asked for
+            // them would otherwise see them only in its replay (spec:roadmap D17).
+            roadmap: true,
             ..FeedFilter::default()
         };
         match self.events_after(&every, *last, None).await {

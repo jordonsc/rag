@@ -19,6 +19,16 @@ import {
   typeIcon,
   typeLabel,
 } from '../ledger/vocab';
+import {
+  docKindIcon,
+  docKindLabel,
+  eventKindIcon,
+  eventKindLabel,
+  FROZEN_STATUSES,
+  offeredStatuses,
+  phaseStateLabel,
+  phaseStateTone,
+} from '../tracker/vocab';
 
 describe('the display tables', () => {
   it('draws the vocabulary it knows', () => {
@@ -65,4 +75,34 @@ describe('the display tables', () => {
       expect(statusTone(inherited)).toBe('neutral');
     },
   );
+});
+
+describe('the roadmap’s words (spec:roadmap RM-40 to RM-49)', () => {
+  it('names a release and a recall as a phase’s, never a build’s', () => {
+    expect(eventKindLabel('release')).toBe('Phase released');
+    expect(eventKindLabel('recall')).toBe('Phase recalled');
+    expect(eventKindIcon('release')).toBe('rocket');
+    expect(eventKindIcon('recall')).toBe('rotate-ccw');
+  });
+
+  it('words a phase’s state, an unknown one as itself', () => {
+    expect(phaseStateLabel('planned')).toBe('Planned');
+    expect(phaseStateLabel('released')).toBe('Released');
+    expect(phaseStateLabel('archived')).toBe('Archived');
+    expect(phaseStateLabel('mothballed')).toBe('mothballed');
+    expect(phaseStateTone('mothballed')).toBe('neutral');
+    expect(phaseStateLabel('constructor')).toBe('constructor');
+  });
+
+  it('names a phase search hit', () => {
+    expect(docKindLabel('phase')).toBe('Phase');
+    expect(docKindIcon('phase')).toBe('map');
+  });
+
+  it('offers a frozen ticket only done and cancelled, whatever its status says', () => {
+    expect(FROZEN_STATUSES).toEqual(['done', 'cancelled']);
+    expect(offeredStatuses({ status: 'pending', frozen: true })).toEqual(['done', 'cancelled']);
+    expect(offeredStatuses({ status: 'pending', frozen: false })).toContain('deferred');
+    expect(offeredStatuses({ status: 'pending' })).toContain('in_progress');
+  });
 });

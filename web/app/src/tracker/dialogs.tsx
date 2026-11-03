@@ -1,14 +1,15 @@
 /**
  * The tracker's write dialogs: one with a note, the owner's approval of an
- * item, the two that add to the queue, Add request (rag-t0044), and Publish
- * and Make draft (2026-10-30).
+ * item, the two that add to the queue, Add request (rag-t0044), Publish and
+ * Make draft (2026-10-30), and the roadmap's: New phase, Release, Recall and
+ * Move to phase (spec:roadmap RM-46, RM-48).
  *
  * The ledger's write rules hold here unchanged: the identity gate prompts
  * rather than hides (`useTrackerGate`), nothing is optimistic (the caller
  * re-reads once `onDone` fires), and a failure is the server's own sentence.
  */
 
-import { useRef, useState, type ReactNode } from 'react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Button,
   Checkbox,
@@ -19,20 +20,50 @@ import {
   Icon,
   Input,
   Segmented,
+  Select,
   Toggle,
 } from '@rag/ui';
+import { Link } from 'react-router';
 
 import { asApiError, type LedgerApiError } from '../api';
 import writeStyles from '../writes/writes.module.css';
-import { createItem, updateItem } from './api';
+import {
+  TrackerApiError,
+  createItem,
+  createPhase,
+  recallPhase,
+  releasePhase,
+  setItemPhase,
+  updateItem,
+} from './api';
 import { useSaveShortcut } from './saveShortcut';
 import { AttachTextarea, useAttachments } from './attach';
 import { TRACKER_IDENTITY_NEEDED, useTrackerGate } from './gate';
 import { keptKey, useKeptText } from './keptText';
 import { LabelEditor, submittedLabels, useProjectLabels } from './LabelEditor';
-import type { Intensity, Item, TrackerAuthor, WorkType } from './types';
+import { itemPath } from './paths';
+import roadmapStyles from './roadmap.module.css';
+import type {
+  Intensity,
+  Item,
+  PhaseFigures,
+  PhaseOutcome,
+  PhaseRecord,
+  TrackerAuthor,
+  Waiting,
+  WorkType,
+} from './types';
 import { INTENSITIES, WORK_TYPES } from './types';
-import { approvalLabel, gateTitle, intensityLabel, itemTypeHint, itemTypeLabel } from './vocab';
+import { useRoadmap } from './useRoadmap';
+import { readVelocityWindow } from './velocity';
+import {
+  approvalLabel,
+  gateTitle,
+  intensityLabel,
+  itemTypeHint,
+  itemTypeLabel,
+  phaseStateLabel,
+} from './vocab';
 
 /** The item a dialog acts on, named at its top so the reader can check it. */
 export interface Subject {
@@ -298,8 +329,20 @@ export function ApprovalDialog({
 export interface AddDialogProps {
   open: boolean;
   project: string;
+  /**
+   * The phase it is created in (spec:roadmap D7), on a phase's page: it joins
+   * that phase's tail while planned, the queue's bottom once released.
+   */
+  phase?: string;
+  /** With `phase`: where it lands, on the main button. Defaults to the bottom. */
+  addLabel?: string;
   onCancel: () => void;
   onDone: () => void;
+}
+
+/** A create's `phase`, never blank: the server refuses that (spec:roadmap RM-23). */
+function inPhase(phase: string | undefined): { phase?: string } {
+  return phase === undefined || phase === '' ? {} : { phase };
 }
 
 const TYPE_OPTIONS = WORK_TYPES.map((type) => ({ value: type, label: itemTypeLabel(type) }));
@@ -343,11 +386,20 @@ export function asDraft(draft: boolean): { draft?: true } {
  * gates above it clear, rag-t0013); it joins the bottom of the queue, or
  * Drafts with **Save as draft**. Ctrl+S is the main button.
  */
-export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProps) {
+export function AddItemDialog({
+  open,
+  project,
+  phase,
+  addLabel = 'Add to the bottom',
+  onCancel,
+  onDone,
+}: AddDialogProps) {
   const gate = useTrackerGate();
   const [type, setType] = useState<WorkType>('dev');
-  const keptTitle = useKeptText(open ? keptKey(project, 'new-item', 'title') : null);
-  const keptBody = useKeptText(open ? keptKey(project, 'new-item', 'body') : null);
+  // What is typed for a phase stays with that phase, apart from the queue's.
+  const keptRecord = phase === undefined ? 'new-item' : `new-item-${phase}`;
+  const keptTitle = useKeptText(open ? keptKey(project, keptRecord, 'title') : null);
+  const keptBody = useKeptText(open ? keptKey(project, keptRecord, 'body') : null);
   const title = keptTitle.text;
   const body = keptBody.text;
   const [approved, setApproved] = useState(true);
@@ -416,6 +468,7 @@ export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProp
         ...(parallel ? { parallel: true } : {}),
         ...(chosen.labels.length > 0 ? { labels: chosen.labels } : {}),
         ...asDraft(draft),
+        ...inPhase(phase),
       },
       gate.fields,
     )
@@ -446,7 +499,7 @@ export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProp
           busy={busy}
           disabled={attacher.uploads > 0}
           ready={gate.ready}
-          label="Add to the bottom"
+          label={addLabel}
           onCancel={close}
           onSubmit={submit}
         />
@@ -466,7 +519,11 @@ export function AddItemDialog({ open, project, onCancel, onDone }: AddDialogProp
             label="Title"
             error={touched && title.trim() === '' ? 'A ticket needs a title.' : undefined}
           >
-            <Input value={title} onChange={keptTitle.set} invalid={touched && title.trim() === ''} />
+            <Input
+              value={title}
+              onChange={keptTitle.set}
+              invalid={touched && title.trim() === ''}
+            />
           </Field>
           <Field label="Body" help="Markdown: the brief, the scope, the acceptance. Optional.">
             <AttachTextarea value={body} onChange={keptBody.set} attacher={attacher} rows={8} />
@@ -642,7 +699,11 @@ export function AddRequestDialog({ open, project, onCancel, onDone }: AddDialogP
             label="Title"
             error={touched && title.trim() === '' ? 'A request needs a title.' : undefined}
           >
-            <Input value={title} onChange={keptTitle.set} invalid={touched && title.trim() === ''} />
+            <Input
+              value={title}
+              onChange={keptTitle.set}
+              invalid={touched && title.trim() === ''}
+            />
           </Field>
           <Field
             label="Request"
@@ -668,7 +729,14 @@ const INTENSITY_OPTIONS = INTENSITIES.map((value) => ({ value, label: intensityL
  * Add item's box and for the same reason; it joins the bottom. A gate carries
  * no version number (R7): its version falls where it falls in the queue.
  */
-export function AddGateDialog({ open, project, onCancel, onDone }: AddDialogProps) {
+export function AddGateDialog({
+  open,
+  project,
+  phase,
+  addLabel = 'Add to the bottom',
+  onCancel,
+  onDone,
+}: AddDialogProps) {
   const gate = useTrackerGate();
   const [intensity, setIntensity] = useState<Intensity>('standard');
   const [release, setRelease] = useState(false);
@@ -714,6 +782,7 @@ export function AddGateDialog({ open, project, onCancel, onDone }: AddDialogProp
         release,
         ...startApproval(approved),
         ...asDraft(draft),
+        ...inPhase(phase),
       },
       gate.fields,
     )
@@ -740,7 +809,7 @@ export function AddGateDialog({ open, project, onCancel, onDone }: AddDialogProp
           busy={busy}
           disabled={false}
           ready={gate.ready}
-          label="Add to the bottom"
+          label={addLabel}
           onCancel={close}
           onSubmit={submit}
         />
@@ -774,7 +843,7 @@ export function AddGateDialog({ open, project, onCancel, onDone }: AddDialogProp
 export interface DraftDialogProps {
   project: string;
   /** The ticket it acts on; `null` is closed. */
-  item: Pick<Item, 'id' | 'title' | 'type'> | null;
+  item: (Pick<Item, 'id' | 'title' | 'type'> & Pick<Partial<Item>, 'frozen'>) | null;
   onCancel: () => void;
   /** The write landed. The caller re-reads. */
   onDone: () => void;
@@ -794,11 +863,18 @@ export function PublishDialog({ project, item, onCancel, onDone }: DraftDialogPr
       title={`Publish this ${what}?`}
       {...(item === null ? {} : { subject: item })}
       message={
-        <p>
-          It leaves Drafts for{' '}
-          {what === 'request' ? 'Requests' : 'the queue, at the place it kept as a draft'}. Agents
-          watching the feed are told, once, with it as it now stands.
-        </p>
+        item?.frozen === true ? (
+          <p>
+            It stays frozen, in its place in the phase, and is no longer a draft. Agents are told
+            nothing until the phase is released.
+          </p>
+        ) : (
+          <p>
+            It leaves Drafts for{' '}
+            {what === 'request' ? 'Requests' : 'the queue, at the place it kept as a draft'}. Agents
+            watching the feed are told, once, with it as it now stands.
+          </p>
+        )
       }
       confirmLabel="Publish"
       onCancel={onCancel}
@@ -822,15 +898,397 @@ export function MakeDraftDialog({ project, item, onCancel, onDone }: DraftDialog
       title={`Make this ${what} a draft?`}
       {...(item === null ? {} : { subject: item })}
       message={
-        <p>
-          It moves to Drafts and keeps its place. Agents are told once; after that its changes stay
-          out of the feed and nothing picks it up until you publish it.
-        </p>
+        item?.frozen === true ? (
+          <p>
+            It stays frozen, in its place in the phase, and goes on being a draft when the phase is
+            released: nothing picks it up until you publish it.
+          </p>
+        ) : (
+          <p>
+            It moves to Drafts and keeps its place. Agents are told once; after that its changes
+            stay out of the feed and nothing picks it up until you publish it.
+          </p>
+        )
       }
       confirmLabel="Make draft"
       onCancel={onCancel}
       onSubmit={(note, fields) => updateItem(item!.id, { draft: true, note }, fields)}
       onDone={onDone}
     />
+  );
+}
+
+// ---- The roadmap (spec:roadmap RM-46, RM-48) ----------------------------------
+
+/** "1 ticket", "40 tickets". */
+function tickets(n: number): string {
+  return `${n} ${n === 1 ? 'ticket' : 'tickets'}`;
+}
+
+/**
+ * Who is left waiting on whom across the boundary (D13), each id a link. It warns:
+ * neither a release nor a recall is refused for it. Nothing when nobody is.
+ */
+export function WaitingList({ project, pairs }: { project: string; pairs: readonly Waiting[] }) {
+  if (pairs.length === 0) {
+    return null;
+  }
+  return (
+    <div className={roadmapStyles.waiting} role="note">
+      <Icon name="triangle-alert" size={14} />
+      <div>
+        <strong>Left waiting across the boundary</strong>
+        <ul className={roadmapStyles.waitingList}>
+          {pairs.map(({ ticket, on }) => (
+            <li key={`${ticket}:${on}`}>
+              <Link to={itemPath(project, ticket)}>
+                <code>{ticket}</code>
+              </Link>
+              {' waits on '}
+              <Link to={itemPath(project, on)}>
+                <code>{on}</code>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+export interface PhaseWriteDialogProps {
+  project: string;
+  /** The phase, read with its tickets; `null` is closed. */
+  phase: PhaseRecord | null;
+  onCancel: () => void;
+  /** The write landed: what it moved, and what it left waiting. The caller re-reads. */
+  onDone: (outcome: PhaseOutcome) => void;
+}
+
+type ReleasePlace = 'bottom' | 'top';
+
+const RELEASE_PLACES: readonly { value: ReleasePlace; label: string }[] = [
+  { value: 'bottom', label: 'At the bottom' },
+  { value: 'top', label: 'At the top' },
+];
+
+/**
+ * **Release** a planned phase (D11, D13, D18): it states what joins the queue,
+ * where, and who it leaves waiting, before it is pressed. It warns and never
+ * refuses. A queued ticket's before and after are not offered here: move the
+ * tickets afterwards. The counts are from the tickets on the page, so a draft is
+ * stated apart: a released draft stays one, undispatched.
+ */
+export function ReleaseDialog({ project, phase, onCancel, onDone }: PhaseWriteDialogProps) {
+  const [place, setPlace] = useState<ReleasePlace>('bottom');
+  const outcome = useRef<PhaseOutcome | null>(null);
+  const frozen = (phase?.tickets ?? []).filter((ticket) => ticket.frozen === true);
+  const drafts = frozen.filter((ticket) => ticket.draft === true).length;
+  const joining = frozen.length - drafts;
+  const where = place === 'top' ? 'at the top' : 'at the bottom';
+  return (
+    <NoteDialog
+      project={project}
+      open={phase !== null}
+      title="Release this phase?"
+      {...(phase === null ? {} : { subject: phase })}
+      message={
+        <>
+          <p>
+            {`Release “${phase?.title ?? ''}”? `}
+            {joining === 0 && drafts === 0
+              ? 'It has no frozen tickets, so nothing joins the queue: it is simply marked released.'
+              : `${tickets(joining)} ${joining === 1 ? 'joins' : 'join'} the queue, ${where}. ` +
+                `${joining === 1 ? 'It becomes' : 'They become'} visible to agents, and one notice is sent.`}
+          </p>
+          {drafts > 0 && (
+            <p>
+              {`${drafts} ${drafts === 1 ? 'draft goes' : 'drafts go'} with ${joining === 1 ? 'it' : 'them'}: `}
+              they stay drafts, and nothing picks them up until you publish them.
+            </p>
+          )}
+          <WaitingList project={project} pairs={phase?.would_wait ?? []} />
+        </>
+      }
+      noteHelp="Why, when it is not obvious. It follows “Phase released.” in the phase’s history and in the notice."
+      confirmLabel="Release"
+      onCancel={onCancel}
+      onSubmit={(note, fields) =>
+        releasePhase(
+          project,
+          phase!.id,
+          { place: place === 'top' ? { top: true } : { bottom: true }, note },
+          fields,
+        ).then((answer) => {
+          outcome.current = answer;
+        })
+      }
+      onDone={() => {
+        setPlace('bottom');
+        onDone(outcome.current!);
+      }}
+    >
+      <Field label="Where in the queue">
+        <Segmented
+          value={place}
+          onChange={(value) => setPlace(value as ReleasePlace)}
+          options={RELEASE_PLACES}
+          label="Where in the queue"
+        />
+      </Field>
+    </NoteDialog>
+  );
+}
+
+/**
+ * **Recall** a released phase (D12, D13): its pending tickets go back to it,
+ * whatever their block or draft, and the rest stay where they are. The counts are
+ * from the tickets on the page, as what the server will do is by status.
+ */
+export function RecallDialog({ project, phase, onCancel, onDone }: PhaseWriteDialogProps) {
+  const outcome = useRef<PhaseOutcome | null>(null);
+  const linked = phase?.tickets ?? [];
+  const back = linked.filter((ticket) => ticket.status === 'pending').length;
+  const working = linked.filter(
+    (ticket) => ticket.status === 'in_progress' || ticket.status === 'review',
+  ).length;
+  const aside = linked.filter(
+    (ticket) => ticket.status === 'failed' || ticket.status === 'deferred',
+  ).length;
+  return (
+    <NoteDialog
+      project={project}
+      open={phase !== null}
+      title="Recall this phase?"
+      {...(phase === null ? {} : { subject: phase })}
+      message={
+        <>
+          <p>
+            {`Recall “${phase?.title ?? ''}”? `}
+            {`${back} pending ${back === 1 ? 'ticket goes' : 'tickets go'} back to the phase, out of the queue. `}
+            {`${tickets(working)} in progress or review ${working === 1 ? 'stays' : 'stay'} where ${working === 1 ? 'it is' : 'they are'}.`}
+            {aside > 0 &&
+              ` ${aside} failed or deferred ${aside === 1 ? 'ticket stays' : 'tickets stay'} too.`}
+          </p>
+          <p>The phase goes to the top of the roadmap, as it is next.</p>
+          <WaitingList project={project} pairs={phase?.would_wait ?? []} />
+        </>
+      }
+      noteHelp="Why, when it is not obvious. It follows “Phase recalled.” in the phase’s history and in the notice."
+      confirmLabel="Recall"
+      onCancel={onCancel}
+      onSubmit={(note, fields) =>
+        recallPhase(project, phase!.id, { note }, fields).then((answer) => {
+          outcome.current = answer;
+        })
+      }
+      onDone={() => onDone(outcome.current!)}
+    />
+  );
+}
+
+export interface NewPhaseDialogProps {
+  open: boolean;
+  project: string;
+  onCancel: () => void;
+  /** It was created: the caller goes to it, or re-reads. */
+  onDone: (phase: PhaseRecord) => void;
+}
+
+/**
+ * **New phase**: a title and what it is for. It joins the bottom of the roadmap,
+ * planned, and nothing in it reaches the queue until it is released. A click
+ * away, Esc or the X keeps what was written; Cancel discards it. Ctrl+S is the
+ * main button.
+ */
+export function NewPhaseDialog({ open, project, onCancel, onDone }: NewPhaseDialogProps) {
+  const gate = useTrackerGate();
+  const keptTitle = useKeptText(open ? keptKey(project, 'new-phase', 'title') : null);
+  const keptBody = useKeptText(open ? keptKey(project, 'new-phase', 'body') : null);
+  const title = keptTitle.text;
+  const body = keptBody.text;
+  const [touched, setTouched] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<LedgerApiError | null>(null);
+  const attacher = useAttachments(project, keptBody.update);
+  const root = useRef<HTMLDivElement>(null);
+
+  const dismiss = () => {
+    setTouched(false);
+    setError(null);
+    attacher.clearError();
+    onCancel();
+  };
+
+  const close = () => {
+    keptTitle.set('');
+    keptBody.set('');
+    dismiss();
+  };
+
+  const submit = () => {
+    if (gate.fields === null) {
+      gate.prompt();
+      return;
+    }
+    setTouched(true);
+    if (title.trim() === '' || busy || attacher.uploads > 0) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    createPhase(project, { title: title.trim(), body }, gate.fields)
+      .then((phase) => {
+        setBusy(false);
+        keptTitle.set('');
+        keptBody.set('');
+        setTouched(false);
+        attacher.clearError();
+        onDone(phase);
+      })
+      .catch((cause: unknown) => {
+        setBusy(false);
+        setError(asApiError(cause));
+      });
+  };
+  useSaveShortcut(open, gate.ready && !busy && attacher.uploads === 0 ? submit : null, root);
+
+  return (
+    <Dialog
+      open={open}
+      onClose={dismiss}
+      title="New phase"
+      width={600}
+      footer={
+        <>
+          <Button onClick={close} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" loading={busy} disabled={attacher.uploads > 0} onClick={submit}>
+            {gate.ready ? 'Add to the roadmap' : 'Set your email'}
+          </Button>
+        </>
+      }
+    >
+      <Form onSubmit={submit}>
+        <div className={writeStyles.dialogBody} ref={root}>
+          <Field
+            label="Title"
+            error={touched && title.trim() === '' ? 'A phase needs a title.' : undefined}
+          >
+            <Input
+              value={title}
+              onChange={keptTitle.set}
+              invalid={touched && title.trim() === ''}
+            />
+          </Field>
+          <Field
+            label="Body"
+            help="Markdown: what this phase is for. Optional. Its tickets stay frozen, out of the queue, until it is released."
+          >
+            <AttachTextarea value={body} onChange={keptBody.set} attacher={attacher} rows={8} />
+          </Field>
+          {!gate.ready && <p className={writeStyles.gate}>{TRACKER_IDENTITY_NEEDED}</p>}
+          <Failure error={error} />
+        </div>
+      </Form>
+    </Dialog>
+  );
+}
+
+/**
+ * Why a ticket cannot move to a phase, or `null` when it can (D4, D8): the
+ * server's rules, read here only to decide what to offer.
+ */
+export function phaseMoveRefusal(
+  item: Pick<Item, 'status'> & Pick<Partial<Item>, 'phase' | 'frozen'>,
+  target: Pick<PhaseFigures, 'id' | 'state'>,
+): string | null {
+  const same = item.phase === target.id;
+  const frozen = item.frozen === true;
+  if (target.state === 'planned') {
+    if (frozen && same) {
+      return 'already frozen here';
+    }
+    return !frozen && item.status !== 'pending' ? 'only a pending ticket can be frozen' : null;
+  }
+  return !frozen && same ? 'already its phase' : null;
+}
+
+/** What a move to `target` will do, said before it is pressed (D8). */
+function moveEffect(frozen: boolean, target: PhaseFigures): string {
+  if (target.state === 'planned') {
+    return 'It is frozen at the bottom of that phase: out of the queue, and out of every agent’s sight until the phase is released.';
+  }
+  return frozen
+    ? 'That phase is released, so this one joins the bottom of the queue, unfrozen, linked to it.'
+    : 'That phase is released, so only the link is written: it keeps its place in the queue.';
+}
+
+export interface MovePhaseDialogProps {
+  item: Item;
+  onCancel: () => void;
+  onDone: () => void;
+}
+
+/**
+ * **Move to phase** (D8), drawn only while open: the project's planned and
+ * released phases from `useRoadmap`, each one the ticket's status rules out
+ * offered disabled with the reason, so the choice explains itself.
+ */
+export function MovePhaseDialog({ item, onCancel, onDone }: MovePhaseDialogProps) {
+  const [window] = useState(readVelocityWindow);
+  const { roadmap, error } = useRoadmap(item.project, window, null);
+  const [chosen, setChosen] = useState('');
+  const phases = useMemo(
+    () => (roadmap === null ? [] : [...roadmap.planned, ...roadmap.released, ...roadmap.complete]),
+    [roadmap],
+  );
+  const options = phases.map((phase) => {
+    const refusal = phaseMoveRefusal(item, phase);
+    return {
+      value: phase.id,
+      label: `${phase.title} (${phaseStateLabel(phase.state).toLowerCase()})${
+        refusal === null ? '' : `: ${refusal}`
+      }`,
+      disabled: refusal !== null,
+    };
+  });
+  const target = phases.find((phase) => phase.id === chosen);
+  return (
+    <NoteDialog
+      project={item.project}
+      open
+      title="Move this ticket to a phase"
+      subject={item}
+      {...(target === undefined
+        ? {}
+        : { message: <p>{moveEffect(item.frozen === true, target)}</p> })}
+      confirmLabel="Move to phase"
+      onCancel={onCancel}
+      onSubmit={(note, fields) =>
+        chosen === ''
+          ? Promise.reject(new TrackerApiError(0, 'Choose a phase.'))
+          : setItemPhase(item.id, { phase: chosen, note }, fields)
+      }
+      onDone={onDone}
+    >
+      {roadmap === null && error !== null && <Failure error={error} />}
+      <Field label="Phase">
+        {roadmap !== null && phases.length === 0 ? (
+          <p>This project has no planned or released phase. Add one on its Roadmap tab.</p>
+        ) : (
+          <Select
+            value={chosen}
+            onChange={setChosen}
+            options={options}
+            aria-label="Phase"
+            placeholder={
+              roadmap === null && error === null ? 'Loading the phases…' : 'Choose a phase'
+            }
+          />
+        )}
+      </Field>
+    </NoteDialog>
   );
 }

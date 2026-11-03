@@ -2,7 +2,8 @@
  * The tracker's pages: the dashboard and the item page (specs/tracker m03),
  * the documents page, a document with its editor and history, and New concept
  * (m04), the History page of finished items (rag-t0008), the velocity report
- * (spec:velocity m03), and the client every tracker page builds on.
+ * (spec:velocity m03), the Roadmap tab and a phase's page (spec:roadmap m04), and
+ * the client every tracker page builds on.
  *
  * The routes are `/projects/…`, never `/tracker/…` (the API's prefix): see
  * `paths.ts`.
@@ -13,17 +14,21 @@ export { DocView } from './DocView';
 export { HistoryView } from './HistoryView';
 export { ItemView } from './ItemView';
 export { NewConceptView } from './NewConceptView';
+export { PhaseView } from './PhaseView';
 export { ProjectsView } from './ProjectsView';
 export { QueueView } from './QueueView';
 export { ReportView } from './ReportView';
+export { RoadmapView } from './RoadmapView';
 export {
   PROJECTS_PATH,
   docPath,
   docsPath,
   historyPath,
   itemPath,
+  phasePath,
   projectPath,
   readLastProject,
   reportPath,
+  roadmapPath,
   storeLastProject,
 } from './paths';

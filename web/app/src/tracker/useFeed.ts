@@ -15,9 +15,12 @@
  *   coming back reconnects, which resyncs.
  *
  * `null` for the project opens nothing (the page does not know it yet).
+ *
+ * {@link useFeedRefresh} is the plainer way to follow it: re-read on any event,
+ * settled so that a burst costs one read (the roadmap and phase pages).
  */
 
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 
 import type { FeedEvent } from './types';
 
@@ -29,15 +32,23 @@ const RECONNECT_FIRST_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 
 /**
+ * How long a page waits after a feed event before re-reading, so that a burst
+ * (a drag reorder, a release of forty, an agent's run of writes) costs one read.
+ */
+export const LIVE_SETTLE_MS = 250;
+
+/**
  * The feed's address on this origin: every surface, every kind, one JSON frame
- * per event, drafts included (2026-10-30): the feed leaves a draft's writes
- * out by default, and the owner's own page must still follow them.
+ * per event, drafts and roadmap events included. The feed leaves a draft's
+ * writes (2026-10-30) and a frozen ticket's or a phase's (spec:roadmap D19) out
+ * by default, and the owner's own page must still follow them. A frozen draft's
+ * events carry both flags, so this needs both.
  */
 export function feedUrl(project: string): string {
   const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return (
     `${scheme}//${window.location.host}/tracker/${encodeURIComponent(project)}/events/ws` +
-    '?surface=any&kinds=all&format=json&drafts=true'
+    '?surface=any&kinds=all&format=json&drafts=true&roadmap=true'
   );
 }
 
@@ -170,4 +181,36 @@ export function useProjectFeed(
       shut();
     };
   }, [project]);
+}
+
+/**
+ * Re-read on any event in the project, {@link LIVE_SETTLE_MS} after the first
+ * of a burst, and at once on each resync.
+ */
+export function useFeedRefresh(project: string | null, refresh: () => void): void {
+  const latest = useRef(refresh);
+  latest.current = refresh;
+  const settle = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clear = useCallback(() => {
+    if (settle.current !== null) {
+      clearTimeout(settle.current);
+      settle.current = null;
+    }
+  }, []);
+  const onEvent = useCallback(() => {
+    if (settle.current === null) {
+      settle.current = setTimeout(() => {
+        settle.current = null;
+        latest.current();
+      }, LIVE_SETTLE_MS);
+    }
+  }, []);
+  const onResync = useCallback(() => {
+    clear();
+    latest.current();
+  }, [clear]);
+
+  useEffect(() => clear, [clear]);
+  useProjectFeed(project, onEvent, onResync);
 }

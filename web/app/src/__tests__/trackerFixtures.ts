@@ -7,7 +7,15 @@
  * values only, as in `fixtures.ts`: this is a public repository.
  */
 
-import type { Item, QueueView, TrackerEvent } from '../tracker/types';
+import type {
+  Item,
+  PhaseFigures,
+  PhaseRecord,
+  PhaseSize,
+  QueueView,
+  Roadmap,
+  TrackerEvent,
+} from '../tracker/types';
 
 export const STAMP = '2026-01-02T03:04:05Z';
 
@@ -88,6 +96,83 @@ export function queueView(overrides: Partial<QueueView> = {}): QueueView {
         title: 'Held for review',
       }),
     ],
+    ...overrides,
+  };
+}
+
+/** A ticket frozen in a phase (spec:roadmap R6): not queued, its neighbours the phase's. */
+export function frozenItem(id: string, overrides: Partial<Item> = {}): Item {
+  return item(id, { frozen: true, queued: false, phase: 'demo-p0001', ...overrides });
+}
+
+export function phaseSize(overrides: Partial<PhaseSize> = {}): PhaseSize {
+  return {
+    frozen: 0,
+    open: 0,
+    done: 0,
+    cancelled: 0,
+    drafts: 0,
+    blocked: 0,
+    total: 0,
+    complete: false,
+    ...overrides,
+  };
+}
+
+/** A planned phase, read with its tickets, as a phase's page asks for it. */
+export function phaseRecord(id: string, overrides: Partial<PhaseRecord> = {}): PhaseRecord {
+  return {
+    id,
+    project: 'demo',
+    title: 'Creatures',
+    body: 'What this phase is for.',
+    state: 'planned',
+    prev_id: null,
+    next_id: null,
+    head_id: null,
+    tail_id: null,
+    released_at: null,
+    created_at: STAMP,
+    updated_at: STAMP,
+    size: phaseSize(),
+    events: [],
+    tickets: [],
+    would_wait: [],
+    ...overrides,
+  };
+}
+
+/** One phase in the forward look. */
+export function phaseFigures(id: string, overrides: Partial<PhaseFigures> = {}): PhaseFigures {
+  return {
+    id,
+    project: 'demo',
+    title: `Phase ${id}`,
+    state: 'planned',
+    released_at: null,
+    created_at: STAMP,
+    updated_at: STAMP,
+    size: phaseSize(),
+    ahead: 0,
+    eta_days: null,
+    ...overrides,
+  };
+}
+
+/** The forward look: an empty roadmap, with whatever the test overrides. */
+export function roadmap(overrides: Partial<Roadmap> = {}): Roadmap {
+  return {
+    project: 'demo',
+    window: '7d',
+    now: STAMP,
+    velocity_per_day: 8,
+    queue: { remaining: 48, eta_days: 6 },
+    frozen: 0,
+    planned_out_days: 6,
+    released: [],
+    planned: [],
+    complete: [],
+    archived: [],
     ...overrides,
   };
 }

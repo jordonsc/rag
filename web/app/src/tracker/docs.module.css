@@ -6,10 +6,14 @@
  * has one (dark) theme and this sheet adds none.
  */
 
-/* ---- Queue / Documents ---- */
+/* ---- Queue / Roadmap / Documents / History ---- */
 
+/* It wraps, and never outgrows its column: a track that holds its one line is
+   as wide as its labels, and on a phone that scrolls the whole page sideways. */
 .projectTabs {
   display: inline-flex;
+  flex-wrap: wrap;
+  max-width: 100%;
   gap: var(--rag-space-1);
   padding: 2px;
   border: 1px solid var(--rag-border);
@@ -37,6 +41,17 @@
 .projectTabActive {
   background: var(--rag-surface2);
   color: var(--rag-bright);
+}
+
+/* A phone's width: closer, narrower tabs keep the four on one line at 360 px. */
+@media (max-width: 40rem) {
+  .projectTabs {
+    gap: var(--rag-space-1) 0;
+  }
+
+  .projectTab {
+    padding: 0 var(--rag-space-1);
+  }
 }
 
 .state {

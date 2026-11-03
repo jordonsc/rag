@@ -29,6 +29,12 @@
 //! ticket was a draft counts from the publication, and not at all if it ended
 //! under that draft; a stretch as a draft in the middle of a span is taken out
 //! of its length.
+//!
+//! **A frozen ticket** (spec:roadmap D21, D22) reads state `frozen` on its
+//! `status` track, which no block names, so its frozen time is in no figure and
+//! a figure over any past moment stays right, a recall included. It is `added`
+//! at its first entry into a counted state, and a `done` span a `frozen` span
+//! ended into is no completion.
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -37,7 +43,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 use sqlx::SqliteConnection;
 
-use super::spans::{BLOCKED, DRAFT, STATUS};
+use super::spans::{BLOCKED, DRAFT, FROZEN, STATUS};
 use super::velocity::{self, iso, unix, VelocityWindow};
 use super::{validate_project, TResult, TrackerError, TrackerStore};
 
@@ -125,9 +131,12 @@ pub struct Bucket {
     pub start: String,
     /// Tickets remaining (D5) at the bucket's end: after everything in it.
     pub remaining: i64,
-    /// Tickets created in it, or first published from a draft in it.
+    /// Tickets that first entered a counted state in it: created, or first
+    /// released or pulled from a phase (spec:roadmap D22); one that was also a
+    /// draft, at the later of that and its publication.
     pub added: i64,
-    /// Tickets that reached `done` in it, each once (D3).
+    /// Tickets that reached `done` in it, each once (D3), other than straight
+    /// from frozen (spec:roadmap D22).
     pub done: i64,
 }
 
@@ -199,16 +208,24 @@ macro_rules! draft_until {
     };
 }
 
-/// Whether the span `s` began with its ticket: no `status` span of the ticket
-/// started before it. `added` reads it of the spans started in the window and
-/// of every `draft` span (a ticket created a draft before the window may be
-/// published in it); the rest get `NULL` and cost nothing. Binds the window's
-/// start.
+/// Whether the span `s` is its ticket's first entry into a counted state
+/// (spec:roadmap D22): no `status` span in a state other than `frozen`, `done` or
+/// `cancelled` started before it, and it is not one of those itself. A `draft`
+/// span also needs such a span to exist at all, or a draft published while frozen
+/// and never thawed would count as added. `added` reads it of the spans started
+/// in the window and of every `draft` span (a ticket created a draft before the
+/// window may be published in it); the rest get `NULL` and cost nothing. Binds
+/// the window's start, once: `read_spans` binds by position.
 macro_rules! first {
     () => {
-        "CASE WHEN s.track = 'draft' OR s.started_at >= ? THEN NOT EXISTS (SELECT 1 \
-         FROM item_spans p WHERE p.item_id = s.item_id AND p.track = 'status' \
-         AND p.started_event < s.started_event) END"
+        "CASE WHEN s.track = 'draft' OR s.started_at >= ? THEN \
+         (s.track <> 'status' OR s.state NOT IN ('frozen', 'done', 'cancelled')) \
+         AND NOT EXISTS (SELECT 1 FROM item_spans p WHERE p.item_id = s.item_id \
+         AND p.track = 'status' AND p.state NOT IN ('frozen', 'done', 'cancelled') \
+         AND p.started_event < s.started_event) \
+         AND (s.track <> 'draft' OR EXISTS (SELECT 1 FROM item_spans q \
+         WHERE q.item_id = s.item_id AND q.track = 'status' \
+         AND q.state NOT IN ('frozen', 'done', 'cancelled'))) END"
     };
 }
 
@@ -442,6 +459,18 @@ fn draft_stretches(spans: &[Span]) -> Stretches<'_> {
     drafts
 }
 
+/// The `(ticket, event)` of each `frozen` span's end. A `done` span started by
+/// one of these events was taken straight from frozen, which is no completion
+/// (spec:roadmap D22). A `done` span in a window has its `frozen` span among the
+/// spans read: it ended in that window.
+fn frozen_completions(spans: &[Span]) -> HashSet<(&str, i64)> {
+    spans
+        .iter()
+        .filter(|s| s.on_status() && s.state == FROZEN)
+        .filter_map(|s| s.ended_event.map(|e| (s.item.as_str(), e)))
+        .collect()
+}
+
 /// The burn-down's series (D16), one figure an hour of [`Hours`].
 pub(super) struct BurnDown {
     pub remaining: Vec<i64>,
@@ -512,8 +541,8 @@ pub(super) fn burn_down(spans: &[Span], hours: &Hours, start: i64, end: i64) -> 
         remaining.push(running);
     }
 
-    // Added (D16): when a ticket was created or, created a draft, first
-    // published.
+    // Added (D16, spec:roadmap D22): a ticket's first entry into a counted
+    // state or, when it was also a draft, the later of that and its publication.
     let mut creation_draft: HashMap<&str, &Span> = HashMap::new();
     let mut first_status: HashMap<&str, &Span> = HashMap::new();
     for s in spans.iter().filter(|s| s.first) {
@@ -530,20 +559,28 @@ pub(super) fn burn_down(spans: &[Span], hours: &Hours, start: i64, end: i64) -> 
         .copied()
         .collect();
     for item in tickets {
-        let at = match creation_draft.get(item) {
-            Some(d) => d.end,
-            None => first_status.get(item).map(|s| s.start),
+        let at = match (creation_draft.get(item), first_status.get(item)) {
+            (Some(d), Some(s)) => d.end.map(|e| e.max(s.start)),
+            (Some(d), None) => d.end,
+            (None, Some(s)) => Some(s.start),
+            (None, None) => None,
         };
         if let Some(at) = at.filter(|&t| within(t)) {
             added[hours.after(at)] += 1;
         }
     }
 
-    // Done (D3), each ticket once a bucket.
+    // Done (D3), each ticket once a bucket; straight from frozen is no
+    // completion (spec:roadmap D22).
+    let from_frozen = frozen_completions(spans);
     let mut done = vec![0i64; n];
     let mut done_in: HashSet<(usize, &str)> = HashSet::new();
     for s in spans.iter().filter(|s| {
-        s.on_status() && s.state == "done" && within(s.start) && s.draft == DraftAtStart::No
+        s.on_status()
+            && s.state == "done"
+            && within(s.start)
+            && s.draft == DraftAtStart::No
+            && !from_frozen.contains(&(s.item.as_str(), s.started_event))
     }) {
         let bucket = hours.after(s.start);
         if done_in.insert((bucket, s.item.as_str())) {
@@ -570,10 +607,16 @@ pub(super) fn figures(spans: &[Span], history: &[Span], start: i64, end: i64) ->
         by_start.insert((s.item.as_str(), s.started_event), s);
     }
 
-    // The window's completion of each ticket (its latest), for MTTC.
+    // The window's completion of each ticket (its latest), for MTTC. Straight
+    // from frozen is none (spec:roadmap D22).
+    let from_frozen = frozen_completions(spans);
     let mut completion: HashMap<&str, &Span> = HashMap::new();
     for s in spans.iter().filter(|s| {
-        s.on_status() && s.state == "done" && within(s.start) && s.draft == DraftAtStart::No
+        s.on_status()
+            && s.state == "done"
+            && within(s.start)
+            && s.draft == DraftAtStart::No
+            && !from_frozen.contains(&(s.item.as_str(), s.started_event))
     }) {
         let latest = completion.entry(s.item.as_str()).or_insert(s);
         if s.started_event > latest.started_event {

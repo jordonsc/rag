@@ -29,7 +29,15 @@ import type { Item, QueueView as QueueViewRecord } from '../tracker/types';
 import { mountAt } from './harness';
 import { QueueList, gateOwnTitle } from '../tracker/QueueList';
 import { summary } from '../tracker/ProjectPicker';
-import { TrackerServer, gateItem, item, queueRoute, queueView } from './trackerFixtures';
+import {
+  TrackerServer,
+  gateItem,
+  item,
+  phaseFigures,
+  queueRoute,
+  queueView,
+  roadmap,
+} from './trackerFixtures';
 
 const QUEUE = /^\/tracker\/demo$/;
 const PROJECTS = '/tracker/projects';
@@ -1855,5 +1863,126 @@ describe('the row polish (rag-t0023, rag-t0025, rag-t0026)', () => {
     fireEvent.pointerUp(window, { pointerId: 1, clientY: 4 });
     await waitFor(() => expect(server.matching(/\/move$/)).toHaveLength(1));
     expect(server.last(/\/move$/).body).toMatchObject({ before: 'demo-t0001' });
+  });
+});
+
+describe('the phase on the queue (spec:roadmap RM-47)', () => {
+  const ROADMAP = /^\/tracker\/demo\/roadmap/;
+
+  function withPhases() {
+    const [a, b, c, d, e] = view.queue;
+    view = {
+      ...view,
+      queue: [
+        a!,
+        { ...b!, phase: 'demo-p0001' },
+        c!,
+        { ...d!, phase: 'demo-p0002' },
+        { ...e!, phase: 'demo-p0001' },
+      ],
+    };
+    server.on(ROADMAP, {
+      body: roadmap({
+        planned: [phaseFigures('demo-p0001', { title: 'Creatures' })],
+        released: [phaseFigures('demo-p0002', { title: 'Birds', state: 'released' })],
+      }),
+    });
+  }
+
+  const row = (name: string) => screen.getByRole('listitem', { name });
+
+  it('names the phase on the row, by title, linked to its page', async () => {
+    withPhases();
+    open();
+    await screen.findByRole('heading', { name: 'demo' });
+    const chip = await within(row('Ticket demo-t0002: Next up')).findByRole('link', {
+      name: 'Creatures',
+    });
+    expect(chip).toHaveAttribute('href', '/projects/demo/roadmap/demo-p0001');
+  });
+
+  it('reads the id when the title is unknown, with one read for the page, not one a row', async () => {
+    const [a, b, ...rest] = view.queue;
+    view = {
+      ...view,
+      queue: [{ ...a!, phase: 'demo-p0404' }, { ...b!, phase: 'demo-p0404' }, ...rest],
+    };
+    server.on(ROADMAP, { body: roadmap() });
+    open();
+    await screen.findByRole('heading', { name: 'demo' });
+    await waitFor(() => expect(server.matching(ROADMAP)).toHaveLength(1));
+    expect(
+      within(row('Ticket demo-t0001: Being built')).getByRole('link', { name: 'demo-p0404' }),
+    ).toHaveAttribute('href', '/projects/demo/roadmap/demo-p0404');
+  });
+
+  it('keeps the id when the roadmap cannot be read', async () => {
+    const [a, ...rest] = view.queue;
+    view = { ...view, queue: [{ ...a!, phase: 'demo-p0001' }, ...rest] };
+    server.on(ROADMAP, { status: 500, body: { error: 'Down.' } });
+    open();
+    await screen.findByRole('heading', { name: 'demo' });
+    await waitFor(() => expect(server.matching(ROADMAP)).toHaveLength(1));
+    expect(
+      within(row('Ticket demo-t0001: Being built')).getByRole('link', { name: 'demo-p0001' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Down.')).toBeNull();
+  });
+
+  it('reads no roadmap and draws no filter for a queue with no phase', async () => {
+    open();
+    await screen.findByRole('heading', { name: 'demo' });
+    expect(screen.queryByRole('combobox', { name: 'Phase' })).toBeNull();
+    expect(server.matching(ROADMAP)).toHaveLength(0);
+  });
+
+  it('filters by phase in the URL, keeping the gates, and clears', async () => {
+    const user = userEvent.setup();
+    withPhases();
+    open();
+    await screen.findByRole('heading', { name: 'demo' });
+    const filter = screen.getByRole('combobox', { name: 'Phase' });
+    await within(filter).findByRole('option', { name: 'Creatures' });
+    expect(
+      within(filter)
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual(['All phases', 'Creatures', 'Birds']);
+
+    await user.selectOptions(filter, 'demo-p0001');
+    expect(screen.getByTestId('address')).toHaveTextContent('/projects/demo?phase=demo-p0001');
+    expect(queueIds()).toEqual(['demo-t0002', 'demo-t0003', 'demo-t0005']);
+
+    await user.selectOptions(filter, '');
+    expect(screen.getByTestId('address').textContent).toBe('/projects/demo');
+    expect(queueIds()).toHaveLength(5);
+  });
+
+  it('reads the filter from the URL, and still offers one nothing in view carries', async () => {
+    withPhases();
+    mountAt('/projects/:project', <QueueView />, { route: '/projects/demo?phase=demo-p0009' });
+    await screen.findByRole('heading', { name: 'demo' });
+    expect(screen.getByRole('combobox', { name: 'Phase' })).toHaveValue('demo-p0009');
+    expect(screen.getByText('No ticket of this phase in the queue')).toBeInTheDocument();
+  });
+
+  it('turns reordering off while filtered, and says why', async () => {
+    withPhases();
+    mountAt('/projects/:project', <QueueView />, { route: '/projects/demo?phase=demo-p0001' });
+    await screen.findByRole('heading', { name: 'demo' });
+    const grip = screen.getByRole('button', { name: 'Drag demo-t0002 to reorder' });
+    expect(grip).toBeDisabled();
+    expect(grip).toHaveAttribute('title', expect.stringContaining('Reordering is off'));
+    fireEvent.keyDown(row('Ticket demo-t0002: Next up'), { key: 'ArrowDown', altKey: true });
+    expect(server.matching(/\/move$/)).toHaveLength(0);
+  });
+
+  it('never draws a frozen ticket: the server’s lists leave it out, and only its count says so', async () => {
+    view = { ...view, frozen: 45 };
+    open();
+    await screen.findByRole('heading', { name: 'demo' });
+    expect(queueIds()).toHaveLength(5);
+    expect(screen.queryByText(/frozen/i)).toBeNull();
+    expect(screen.queryByText('45')).toBeNull();
   });
 });

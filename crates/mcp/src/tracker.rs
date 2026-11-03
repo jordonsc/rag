@@ -66,7 +66,9 @@ A request is the owner's idea, never dispatched (its feed frame says {type: requ
 tickets with links from:<request id> (approval defaults to agent), place them as it says (else the \
 bottom), then set it done with a note listing them.
 A draft is the owner's, unfinished: never dispatched and out of the feed; leave it until its \
-publish frame ({draft: yes → no}).";
+publish frame ({draft: yes → no}).
+A phase's tickets are frozen, out of the queue and the feed, until the owner has it released: \
+release it when told to, after a review.";
 
 /// Replace `body_path` with the file's contents in `body`, so the request builders
 /// see an ordinary body. Over the HTTP gateway a path is refused: it cannot read the
@@ -224,10 +226,33 @@ enum Target {
     Spec(String),
     Milestone(String, String),
     Concept(String),
+    /// A roadmap phase, by its id (`ubu-p0001`).
+    Phase(String),
 }
 
 const TARGET_FORMS: &str = "a ticket id (ubu-t0042), a document id (ubu-d0007), a document path \
-     (specs/audio/master.md), spec:<slug>, milestone:<slug>/<code> or concept:<slug>";
+     (specs/audio/master.md), spec:<slug>, milestone:<slug>/<code>, concept:<slug> or phase:<id>";
+
+fn all_digits(t: &str) -> bool {
+    !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// The project a phase's id names, the part before its last `-` (`my-proj-p0001`
+/// is `my-proj`'s). A ticket's route needs no project and a phase's does, so a
+/// phase reads it from its own id: `tracker_move` has no `project` to give, and
+/// an id read in another project's session still reaches its phase.
+fn phase_project(id: &str) -> Result<&str, String> {
+    match id.rsplit_once('-') {
+        Some((project, tail))
+            if !project.is_empty() && tail.strip_prefix('p').is_some_and(all_digits) =>
+        {
+            Ok(project)
+        }
+        _ => Err(format!(
+            "`{id}` is not a phase id: give phase:<project>-p<number>, e.g. phase:ubu-p0001"
+        )),
+    }
+}
 
 fn parse_target(raw: &str) -> Result<Target, String> {
     let s = raw.trim();
@@ -257,16 +282,21 @@ fn parse_target(raw: &str) -> Result<Target, String> {
     if let Some(slug) = s.strip_prefix("concept:") {
         return Ok(Target::Concept(nonblank(slug, "concept")?));
     }
+    if let Some(id) = s.strip_prefix("phase:") {
+        return Ok(Target::Phase(nonblank(id, "phase")?));
+    }
     if s.ends_with(".md") {
         return Ok(Target::Path(s.to_string()));
     }
     if let Some((_, tail)) = s.rsplit_once('-') {
-        let digits = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
-        if tail.strip_prefix('t').is_some_and(digits) {
+        if tail.strip_prefix('t').is_some_and(all_digits) {
             return Ok(Target::Item(s.to_string()));
         }
-        if tail.strip_prefix('d').is_some_and(digits) {
+        if tail.strip_prefix('d').is_some_and(all_digits) {
             return Ok(Target::Doc(s.to_string()));
+        }
+        if tail.strip_prefix('p').is_some_and(all_digits) {
+            return Ok(Target::Phase(s.to_string()));
         }
     }
     // A ledger topic (`ubu-l1652`, or a legacy `ubu-1592`) is the commonest
@@ -388,7 +418,7 @@ struct TrackerNextArgs {
 
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 struct TrackerListArgs {
-    /// projects|items|labels|specs|concepts|docs|attachments
+    /// projects|items|labels|specs|concepts|docs|attachments|phases
     what: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     project: Option<String>,
@@ -398,6 +428,9 @@ struct TrackerListArgs {
     /// items
     #[serde(default, skip_serializing_if = "Option::is_none")]
     label: Option<String>,
+    /// items: of this phase
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    phase: Option<String>,
     /// concepts
     #[serde(default, skip_serializing_if = "Option::is_none")]
     state: Option<String>,
@@ -419,7 +452,7 @@ fn history_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 struct TrackerGetArgs {
-    /// Ticket id, doc id or path, spec:<slug>, milestone:<slug>/<code>, concept:<slug>
+    /// Ticket id, doc id or path, spec:<slug>, milestone:<slug>/<code>, concept:<slug>, phase:<id>
     id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     project: Option<String>,
@@ -497,6 +530,9 @@ struct CreateItemArgs {
     /// Reuse the project's (tracker_list what=labels)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     labels: Option<Vec<String>>,
+    /// A phase id
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    phase: Option<String>,
     /// Gate: quick|standard|full
     #[serde(default, skip_serializing_if = "Option::is_none")]
     intensity: Option<String>,
@@ -524,10 +560,10 @@ struct CreateItemArgs {
     agent: Option<String>,
 }
 
-// `tracker_create_record`: a spec, a milestone, a concept or a document.
+// `tracker_create_record`: a spec, a milestone, a concept, a document or a phase.
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 struct CreateRecordArgs {
-    /// spec|milestone|concept|doc
+    /// spec|milestone|concept|doc|phase
     kind: String,
     title: String,
     /// spec, concept
@@ -605,6 +641,8 @@ struct TrackerCreateArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     labels: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    phase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     before: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     after: Option<String>,
@@ -654,6 +692,7 @@ impl TryFrom<CreateItemArgs> for TrackerCreateArgs {
             release: a.release,
             parallel: a.parallel,
             labels: a.labels,
+            phase: a.phase,
             before: a.before,
             after: a.after,
             top: a.top,
@@ -742,6 +781,12 @@ struct UpdateItemArgs {
     /// false publishes the owner's draft; true makes it one
     #[serde(default, skip_serializing_if = "Option::is_none")]
     draft: Option<bool>,
+    /// A phase id; "" removes it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    phase: Option<String>,
+    /// false pulls it to the queue
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    frozen: Option<bool>,
     /// Why; alone, a note on the history
     #[serde(default, skip_serializing_if = "Option::is_none")]
     note: Option<String>,
@@ -749,17 +794,29 @@ struct UpdateItemArgs {
     agent: Option<String>,
 }
 
-// `tracker_update_record`: a spec, a milestone or a concept.
+// `tracker_update_record`: a spec, a milestone, a concept or a phase.
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 struct UpdateRecordArgs {
-    /// spec:<slug>, milestone:<slug>/<code> or concept:<slug>
+    /// spec:<slug>, milestone:<slug>/<code>, concept:<slug> or phase:<id>
     id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     project: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    body: Option<String>,
+    /// phase: released|planned (recall)|archived|unarchived
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     state: Option<String>,
+    /// With state released
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    before: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    after: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    top: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bottom: Option<bool>,
     /// unapproved|agent|ratified|owner
     #[serde(default, skip_serializing_if = "Option::is_none")]
     approval: Option<String>,
@@ -820,6 +877,18 @@ struct TrackerUpdateArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     draft: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    phase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frozen: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    before: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    after: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bottom: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
 }
 
@@ -834,7 +903,7 @@ impl TryFrom<UpdateItemArgs> for TrackerUpdateArgs {
             }
             _ => {
                 return Err(
-                    "tracker_update changes tickets; a spec, milestone or concept is \
+                    "tracker_update changes tickets; a spec, milestone, concept or phase is \
                      changed with tracker_update_record"
                         .into(),
                 )
@@ -858,6 +927,8 @@ impl TryFrom<UpdateItemArgs> for TrackerUpdateArgs {
             parallel: a.parallel,
             labels: a.labels,
             draft: a.draft,
+            phase: a.phase,
+            frozen: a.frozen,
             agent: a.agent,
             ..Default::default()
         })
@@ -881,7 +952,12 @@ impl TryFrom<UpdateRecordArgs> for TrackerUpdateArgs {
             id: a.id,
             project: a.project,
             title: a.title,
+            body: a.body,
             state: a.state,
+            before: a.before,
+            after: a.after,
+            top: a.top,
+            bottom: a.bottom,
             approval: a.approval,
             add_links: links_of(a.add_links)?,
             remove_links: links_of(a.remove_links)?,
@@ -895,7 +971,7 @@ impl TryFrom<UpdateRecordArgs> for TrackerUpdateArgs {
 
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 struct TrackerMoveArgs {
-    /// The queued item to move
+    /// A ticket, or phase:<id>
     id: String,
     /// Just before this id
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1016,6 +1092,7 @@ const ITEM_CREATE: &[&str] = &[
     "release",
     "parallel",
     "labels",
+    "phase",
     "before",
     "after",
     "top",
@@ -1037,6 +1114,8 @@ const CONCEPT_CREATE: &[&str] = &[
     "slug", "title", "state", "approval", "body", "links", "draft", "note",
 ];
 const DOC_CREATE: &[&str] = &["path", "title", "body", "message", "draft"];
+/// A new phase joins the roadmap's bottom; `tracker_move` places it.
+const PHASE_CREATE: &[&str] = &["title", "body", "note"];
 
 const ITEM_UPDATE: &[&str] = &[
     "status",
@@ -1054,6 +1133,8 @@ const ITEM_UPDATE: &[&str] = &[
     "parallel",
     "labels",
     "draft",
+    "phase",
+    "frozen",
     "note",
 ];
 const SPEC_UPDATE: &[&str] = &["title", "state", "approval", "note"];
@@ -1066,6 +1147,9 @@ const CONCEPT_UPDATE: &[&str] = &[
     "remove_links",
     "note",
 ];
+const PHASE_UPDATE: &[&str] = &["title", "body", "note"];
+const PHASE_RELEASE: &[&str] = &["before", "after", "top", "bottom", "note"];
+const PHASE_NOTE: &[&str] = &["note"];
 
 fn queue_req(project: Option<&str>) -> Result<Req, String> {
     Ok(Req::get(format!(
@@ -1082,6 +1166,15 @@ fn velocity_req(project: Option<&str>) -> Result<Req, String> {
     )))
 }
 
+/// The forward look (spec:roadmap D24): `tracker_list what=phases` and the
+/// `tracker_queue` roadmap line, in the default window.
+fn roadmap_req(project: Option<&str>) -> Result<Req, String> {
+    Ok(Req::get(format!(
+        "/tracker/{}/roadmap",
+        enc(need_project(project)?)
+    )))
+}
+
 fn list_req(args: &TrackerListArgs, project: Option<&str>) -> Result<Req, String> {
     let mut f = present(args);
     let what = args.what.trim().to_ascii_lowercase();
@@ -1092,11 +1185,19 @@ fn list_req(args: &TrackerListArgs, project: Option<&str>) -> Result<Req, String
         "projects" => (&[], "/tracker/projects".to_string()),
         "items" => {
             let p = enc(need_project(project)?);
+            let phase = args.phase.as_deref().map(|v| {
+                let v = v.trim();
+                v.strip_prefix("phase:").unwrap_or(v).to_string()
+            });
             (
-                &["status", "label"],
+                &["status", "label", "phase"],
                 format!(
                     "/tracker/{p}/items{}",
-                    query(&[("status", args.status.clone()), ("label", args.label.clone())])
+                    query(&[
+                        ("status", args.status.clone()),
+                        ("label", args.label.clone()),
+                        ("phase", phase),
+                    ])
                 ),
             )
         }
@@ -1132,9 +1233,15 @@ fn list_req(args: &TrackerListArgs, project: Option<&str>) -> Result<Req, String
             &[],
             format!("/tracker/{}/attachments", enc(need_project(project)?)),
         ),
+        // There is no list of phases but the roadmap read (api.md), so a row has no body.
+        "phases" => (
+            &[],
+            format!("/tracker/{}/roadmap", enc(need_project(project)?)),
+        ),
         other => {
             return Err(format!(
-                "cannot list `{other}`: give projects, items, labels, specs, concepts, docs or attachments"
+                "cannot list `{other}`: give projects, items, labels, specs, concepts, docs, \
+                 attachments or phases"
             ))
         }
     };
@@ -1162,6 +1269,17 @@ fn record_get_req(target: &Target, project: Option<&str>, history: bool) -> Resu
             "/tracker/{}/concepts/{}{q}",
             enc(need_project(project)?),
             enc(slug)
+        ),
+        // The phase and every ticket in full: the manager's review pass in one call
+        // (spec:roadmap D27). The tickets carry no history, whatever `history` says.
+        Target::Phase(id) => format!(
+            "/tracker/{}/phases/{}{}",
+            enc(phase_project(id)?),
+            enc(id),
+            query(&[
+                ("tickets", Some("true".to_string())),
+                ("history", history_param(history)),
+            ])
         ),
         Target::Doc(_) | Target::Path(_) => {
             return doc_get_req(target, project, None, history);
@@ -1252,9 +1370,11 @@ fn create_req(
         }
         "concept" => (CONCEPT_CREATE, format!("/tracker/{p}/concepts")),
         "doc" => (DOC_CREATE, format!("/tracker/{p}/docs")),
+        "phase" => (PHASE_CREATE, format!("/tracker/{p}/phases")),
         other => {
             return Err(format!(
-                "cannot create `{other}`: kind is item, gate, spec, milestone, concept or doc"
+                "cannot create `{other}`: kind is item, gate, spec, milestone, concept, doc or \
+                 phase"
             ))
         }
     };
@@ -1318,6 +1438,7 @@ fn update_req(
             ),
             "a concept",
         ),
+        Target::Phase(id) => return phase_update_req(&id, f, who),
         Target::Doc(_) | Target::Path(_) => {
             return Err(
                 "documents are changed with tracker_doc_edit (content and renames)".to_string(),
@@ -1329,17 +1450,82 @@ fn update_req(
     Ok(Req::post(path, f))
 }
 
-fn move_req(args: &TrackerMoveArgs, who: &Author) -> Result<Req, String> {
-    let id = match parse_target(&args.id)? {
-        Target::Item(id) => id,
-        _ => return Err("only tickets move: give a ticket id (ubu-t0042)".to_string()),
+/// A write to a phase, whose project is in its id (so `project` is ignored). A
+/// `state` picks the route it is really a request for and leaves the body; with
+/// none it is the phase's title, body or a note.
+fn phase_update_req(id: &str, mut f: Map<String, Value>, who: &Author) -> Result<Req, String> {
+    let base = format!("/tracker/{}/phases/{}", enc(phase_project(id)?), enc(id));
+    let (allowed, path, what): (&[&str], String, &str) = match f.remove("state") {
+        Some(state) => {
+            let state = state
+                .as_str()
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            match state.as_str() {
+                "released" => (PHASE_RELEASE, format!("{base}/release"), "a release"),
+                "planned" => (PHASE_NOTE, format!("{base}/recall"), "a recall"),
+                "archived" => (PHASE_NOTE, format!("{base}/archive"), "archiving"),
+                "unarchived" => (PHASE_NOTE, format!("{base}/unarchive"), "unarchiving"),
+                other => {
+                    return Err(format!(
+                        "a phase's state is released, planned (a recall), archived or \
+                         unarchived, not `{other}`"
+                    ))
+                }
+            }
+        }
+        None => {
+            if ["before", "after", "top", "bottom"]
+                .iter()
+                .any(|k| f.contains_key(*k))
+            {
+                return Err(
+                    "a phase moves with tracker_move; before, after, top and bottom \
+                            go with state released"
+                        .to_string(),
+                );
+            }
+            (PHASE_UPDATE, base, "a phase")
+        }
     };
+    only(&f, allowed, what)?;
+    who.stamp(&mut f);
+    Ok(Req::post(path, f))
+}
+
+fn move_req(args: &TrackerMoveArgs, who: &Author) -> Result<Req, String> {
+    let target = parse_target(&args.id)?;
     let mut f = present(args);
     for k in ["id", "agent"] {
         f.remove(k);
     }
+    let path = match target {
+        Target::Item(id) => format!("/tracker/items/{}/move", enc(&id)),
+        Target::Phase(id) => {
+            // Its anchor is a phase too, which an agent will write as it wrote `id`.
+            for k in ["before", "after"] {
+                if let Some(Value::String(anchor)) = f.get_mut(k) {
+                    if let Some(bare) = anchor.trim().strip_prefix("phase:") {
+                        *anchor = bare.to_string();
+                    }
+                }
+            }
+            format!(
+                "/tracker/{}/phases/{}/move",
+                enc(phase_project(&id)?),
+                enc(&id)
+            )
+        }
+        _ => {
+            return Err(
+                "only tickets and phases move: give a ticket id (ubu-t0042) or phase:<id>"
+                    .to_string(),
+            )
+        }
+    };
     who.stamp(&mut f);
-    Ok(Req::post(format!("/tracker/items/{}/move", enc(&id)), f))
+    Ok(Req::post(path, f))
 }
 
 fn doc_edit_req(doc_id: &str, args: &TrackerDocEditArgs, who: &Author) -> Result<Req, String> {
@@ -1609,10 +1795,18 @@ fn labels_text(it: &Value) -> Option<String> {
     (!labels.is_empty()).then(|| format!("[{}]", labels.join(", ")))
 }
 
-/// The assignee, labels, approval (when there is one) and links of an item or marker.
+/// The assignee, labels, approval (when there is one) and links of an item or
+/// marker, after its draft and frozen flags and its phase (spec:roadmap D27).
 fn item_extras(it: &Value, parts: &mut Vec<String>) {
     if it.get("draft").and_then(Value::as_bool) == Some(true) {
         parts.push("draft".into());
+    }
+    if it.get("frozen").and_then(Value::as_bool) == Some(true) {
+        parts.push("frozen".into());
+    }
+    let phase = s(it, "phase");
+    if !phase.is_empty() {
+        parts.push(format!("phase: {phase}"));
     }
     let assignee = s(it, "assignee");
     if !assignee.is_empty() {
@@ -1953,6 +2147,29 @@ fn velocity_line(v: &Value) -> Option<String> {
         "Velocity (7 d): {}/day · 24 h: {}/day · {eta}",
         rate(per_day(week)?),
         rate(per_day(day)?)
+    ))
+}
+
+/// `tracker_queue`'s line after velocity (spec:roadmap D27), from `GET
+/// /tracker/{project}/roadmap` in its default window: `Roadmap: 2 planned · 45
+/// frozen · planned out 6 days`, worded by [`format_eta`] (`done` with nothing left
+/// ahead, `unknown` with no velocity). `None` with no planned phase and nothing
+/// frozen, and for an answer missing a figure.
+fn roadmap_line(v: &Value) -> Option<String> {
+    let planned = v.get("planned")?.as_array()?.len();
+    let frozen = v.get("frozen")?.as_i64()?;
+    if planned == 0 && frozen == 0 {
+        return None;
+    }
+    let out = match v.get("planned_out_days")? {
+        Value::Null => "unknown".to_string(),
+        d => match d.as_f64()? {
+            d if d <= 0.0 => "done".to_string(),
+            d => format_eta(d),
+        },
+    };
+    Some(format!(
+        "Roadmap: {planned} planned · {frozen} frozen · planned out {out}"
     ))
 }
 
@@ -2339,11 +2556,15 @@ fn render_diff(v: &Value) -> String {
 }
 
 /// The name a write reply gives the record the server returned: an item's id,
-/// a document's id, `spec:<slug>`, `milestone:<slug>/<code>` or
-/// `concept:<slug>`, and its kind for [`describe_changes`].
+/// a document's id, `spec:<slug>`, `milestone:<slug>/<code>`, `concept:<slug>` or
+/// `phase:<id>`, and its kind for [`describe_changes`]. `released_at` is first: a
+/// phase always serialises it (`null` included) and no other record has it, and
+/// without this a phase falls through to the last arm and reads `concept:`.
 fn record_of(v: &Value) -> (String, TargetKind) {
     let has = |k: &str| v.get(k).is_some();
-    if has("status") && has("type") {
+    if has("released_at") {
+        (format!("phase:{}", s(v, "id")), TargetKind::Phase)
+    } else if has("status") && has("type") {
         (s(v, "id").to_string(), TargetKind::Item)
     } else if has("revision") && has("path") && has("id") {
         (s(v, "id").to_string(), TargetKind::Document)
@@ -2362,6 +2583,39 @@ fn record_of(v: &Value) -> (String, TargetKind) {
 /// `(ubu-d0007 specs/audio/master.md)`: where a record's document is.
 fn doc_of(v: &Value) -> String {
     format!("({} {})", s(v, "doc_id"), s(v, "path"))
+}
+
+/// The most tickets a release's or a recall's reply names as waiting.
+const WAITING_NAMED: usize = 5;
+
+/// A release's or a recall's outcome (spec:roadmap D13): `released: 40 tickets, at
+/// the bottom`, then, when the write left any, `; waiting across the boundary:
+/// ubu-t0090 on ubu-t0101, …`, at most [`WAITING_NAMED`] and `+N more`. A recall's
+/// `placed` is `null`.
+fn phase_outcome(v: &Value, done: &str) -> String {
+    let moved = v.get("moved").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let mut out = format!("{done}: {}", plural(moved, "ticket", "tickets"));
+    match s(v, "placed") {
+        "" => {}
+        end @ ("top" | "bottom") => out.push_str(&format!(", at the {end}")),
+        anchor => out.push_str(&format!(", {anchor}")),
+    }
+    let waiting = arr(v, "waiting");
+    if !waiting.is_empty() {
+        let mut named: Vec<String> = waiting
+            .iter()
+            .take(WAITING_NAMED)
+            .map(|w| format!("{} on {}", s(w, "ticket"), s(w, "on")))
+            .collect();
+        if waiting.len() > WAITING_NAMED {
+            named.push(format!("+{} more", waiting.len() - WAITING_NAMED));
+        }
+        out.push_str(&format!(
+            "; waiting across the boundary: {}",
+            named.join(", ")
+        ));
+    }
+    out
 }
 
 /// A write's answer as one line (rag-t0039): `ok`, the record, what changed
@@ -2408,10 +2662,19 @@ fn write_line(v: &Value) -> String {
             } else {
                 s(v, "type").to_string()
             };
+            // A frozen ticket's neighbours are in its phase, so it says that first.
+            let frozen = if v.get("frozen").and_then(Value::as_bool) == Some(true) {
+                format!(" frozen in {}", s(v, "phase"))
+            } else {
+                String::new()
+            };
             return format!(
-                "ok created {label} [{ty}] \"{}\"{place}{tag}",
+                "ok created {label} [{ty}] \"{}\"{frozen}{place}{tag}",
                 s(v, "title")
             );
+        }
+        (Some(EventKind::Create), TargetKind::Phase) => {
+            return format!("ok created {label} \"{}\"{tag}", s(v, "title"));
         }
         (Some(EventKind::Create), TargetKind::Document) => {
             return format!(
@@ -2435,6 +2698,8 @@ fn write_line(v: &Value) -> String {
             return format!("ok created {label} {}{tag}", doc_of(v));
         }
         (Some(EventKind::Note), _) => "note".to_string(),
+        (Some(EventKind::Release), _) => phase_outcome(v, "released"),
+        (Some(EventKind::Recall), _) => phase_outcome(v, "recalled"),
         (Some(k), _) => {
             let e = event.expect("a kind comes from an event");
             let said = describe_changes(
@@ -2539,14 +2804,49 @@ fn approval_tag(v: &Value) -> String {
     format!("approval {}", s(v, "approval"))
 }
 
+/// One phase of the forward look (`what=phases`), under the name of its list (a
+/// complete phase's `state` is `released`): `ubu-p0001 · planned · Creatures · 40
+/// frozen · ETA 6 days`, `ubu-p0002 · released · Birds · 3 of 12 done · ETA 1.6
+/// days`, `ubu-p0003 · complete · Fish · 9 of 9 done`, `ubu-p0004 · archived · Old`.
+/// The roadmap's figures have no body. A null ETA reads `unknown` where there is
+/// still work to speak of, and is left out on a complete or archived phase.
+fn phase_row(p: &Value, list: &str) -> String {
+    let n = |k: &str| {
+        p.get("size")
+            .and_then(|size| size.get(k))
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+    };
+    let mut parts = vec![
+        s(p, "id").to_string(),
+        list.to_string(),
+        s(p, "title").to_string(),
+    ];
+    match list {
+        "planned" => parts.push(format!("{} frozen", n("frozen"))),
+        "released" | "complete" => parts.push(format!("{} of {} done", n("done"), n("total"))),
+        _ => {}
+    }
+    match p.get("eta_days").and_then(Value::as_f64) {
+        Some(d) => parts.push(format!("ETA {}", format_eta(d))),
+        None if matches!(list, "planned" | "released") => parts.push("ETA unknown".into()),
+        None => {}
+    }
+    parts.join(" · ")
+}
+
 fn render_list(what: &str, v: &Value) -> String {
     let rows: Vec<String> = match what {
         "projects" => arr(v, "projects")
             .iter()
             .map(|p| {
                 let n = |k: &str| p.get(k).and_then(Value::as_i64).unwrap_or(0);
+                let frozen = match n("frozen") {
+                    0 => String::new(),
+                    f => format!(" · {f} frozen"),
+                };
                 format!(
-                    "{} · {} · {} in review · {} in the queue · {} blocked · {} deferred · {} done not acknowledged",
+                    "{} · {} · {} in review · {} in the queue · {} blocked · {} deferred · {} done not acknowledged{frozen}",
                     s(p, "name"),
                     plural(n("requests") as usize, "request", "requests"),
                     n("review"),
@@ -2642,6 +2942,11 @@ fn render_list(what: &str, v: &Value) -> String {
                 )
             })
             .collect(),
+        // The answer's order: what is under way, then the plan, then what is over.
+        "phases" => ["released", "planned", "complete", "archived"]
+            .into_iter()
+            .flat_map(|list| arr(v, list).iter().map(move |p| phase_row(p, list)))
+            .collect(),
         _ => Vec::new(),
     };
     if rows.is_empty() {
@@ -2715,6 +3020,16 @@ impl TrackerServer {
         Ok(text(write_line(&v)))
     }
 
+    /// A line beside the queue, from a second read: when the read fails or has
+    /// nothing to say, the queue is still the answer, without the line.
+    async fn side_line(
+        &self,
+        req: Result<Req, String>,
+        line: fn(&Value) -> Option<String>,
+    ) -> Option<String> {
+        line(&self.call(req.ok()?).await.ok()?)
+    }
+
     /// The id of the document a reference names (a record's reference reads the
     /// record for its `doc_id`; a path reads the document for its id).
     async fn doc_id(&self, target: &Target, project: Option<&str>) -> Result<String, McpError> {
@@ -2733,6 +3048,7 @@ impl TrackerServer {
                 id_of(&v, "id")
             }
             Target::Item(_) => Err(bad("a ticket is not a document: read it with tracker_get")),
+            Target::Phase(_) => Err(bad("a phase is not a document: read it with tracker_get")),
             _ => {
                 let v = self
                     .call(record_get_req(target, project, false).map_err(bad)?)
@@ -2775,14 +3091,16 @@ impl TrackerServer {
             .call(queue_req(project.as_deref()).map_err(bad)?)
             .await?;
         let mut out = render_queue(&v, &opts);
-        // The velocity line (spec:velocity D32) is a second read; when it fails,
-        // the queue is still the answer, without the line.
+        // The velocity line (spec:velocity D32), then the roadmap's (spec:roadmap D27).
         if unknown_project(&v).is_none() {
-            if let Ok(req) = velocity_req(project.as_deref()) {
-                if let Some(line) = self.call(req).await.ok().as_ref().and_then(velocity_line) {
-                    out.push('\n');
-                    out.push_str(&line);
-                }
+            let p = project.as_deref();
+            let lines = [
+                self.side_line(velocity_req(p), velocity_line).await,
+                self.side_line(roadmap_req(p), roadmap_line).await,
+            ];
+            for line in lines.into_iter().flatten() {
+                out.push('\n');
+                out.push_str(&line);
             }
         }
         Ok(text(out))
@@ -2804,7 +3122,7 @@ impl TrackerServer {
     }
 
     #[tool(
-        description = "One line per record: projects, items, labels, specs (with milestones), concepts, docs or attachments."
+        description = "One line per record: projects, items, labels, specs (with milestones), concepts, docs, attachments or phases."
     )]
     async fn tracker_list(
         &self,
@@ -2849,7 +3167,7 @@ impl TrackerServer {
     }
 
     #[tool(
-        description = "Create a spec (its master document, optional milestones), a milestone on a spec, a concept, or a free document (kind doc, at path)."
+        description = "Create a spec (its master document, optional milestones), a milestone on a spec, a concept, a free document (kind doc, at path), or a roadmap phase."
     )]
     async fn tracker_create_record(
         &self,
@@ -2869,7 +3187,7 @@ impl TrackerServer {
     }
 
     #[tool(
-        description = "Change a spec, milestone or concept: title, state, approval, links (concept), order (milestone); or note on it."
+        description = "Change a spec, milestone, concept or phase: title, state, approval, links (concept), order (milestone), body (phase); or note on it."
     )]
     async fn tracker_update_record(
         &self,
@@ -2879,7 +3197,7 @@ impl TrackerServer {
     }
 
     #[tool(
-        description = "Move a queued ticket just before or after another, or to the top or bottom (exactly one). Manager only."
+        description = "Move a queued ticket just before or after another, or to the top or bottom (exactly one); a frozen ticket within its phase, or a phase on the roadmap. Manager only."
     )]
     async fn tracker_move(
         &self,

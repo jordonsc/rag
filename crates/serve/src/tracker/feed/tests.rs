@@ -8,7 +8,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use rag_core::tracker::{
     Actor, Approval, FeedFilter, ItemType, ItemUpdate, Link, LinkKind, NewItem, NewMilestone,
-    NewSpec, Place, Surface, TrackerStore, DEFAULT_FEED_KINDS,
+    NewPhase, NewSpec, PhaseChange, Place, Surface, TrackerStore, DEFAULT_FEED_KINDS,
 };
 use serde_json::{json, Value};
 use tokio::net::TcpStream;
@@ -238,6 +238,7 @@ async fn a_feed_resumed_by_id_loses_and_repeats_nothing_under_concurrent_writes(
                 surfaces: Some(vec![Surface::Web]),
                 kinds: Some(DEFAULT_FEED_KINDS.to_vec()),
                 drafts: false,
+                roadmap: false,
             },
             0,
             None,
@@ -448,6 +449,12 @@ async fn bad_feed_requests_are_refused_before_the_upgrade() {
         ("p/events/ws?since=-1", 400, "since"),
         ("p/events/ws?limit=5", 400, "limit is for the one-shot read"),
         ("p/events/ws?sinse=3", 400, "invalid query string"),
+        ("p/events/ws?roadmap=maybe", 400, "invalid query string"),
+        (
+            "p/events?since=0&roadmaps=true",
+            400,
+            "invalid query string",
+        ),
         ("Bad!/events/ws", 400, "invalid project name"),
         ("p/events?format=text", 400, "format is for the feed"),
         ("p/events?limit=0", 400, "limit is 1 to"),
@@ -960,4 +967,222 @@ async fn acknowledging_done_tickets_is_left_out_of_the_default_feed() {
 
     assert!(next_text(&mut named).await.contains(" web acknowledge "));
     quiet(&mut ws, 150).await;
+}
+
+// ---- The roadmap (spec:roadmap R8, D17, D18) ---------------------------------------------
+
+async fn planned(store: &TrackerStore, title: &str) -> String {
+    store
+        .create_phase(
+            NewPhase {
+                project: "p".into(),
+                title: title.into(),
+                body: String::new(),
+                place: Place::Bottom,
+                note: None,
+            },
+            &web(),
+        )
+        .await
+        .unwrap()
+        .phase
+        .id
+}
+
+async fn frozen(store: &TrackerStore, phase: &str, title: &str, draft: bool) -> String {
+    store
+        .create_item_in_phase(
+            NewItem {
+                draft,
+                ..new_item("p", title)
+            },
+            phase,
+            &web(),
+        )
+        .await
+        .unwrap()
+        .item
+        .id
+}
+
+/// The one-shot read's events after 0, with `query` beside it.
+async fn read_events(s: &Server, query: &str) -> Vec<Value> {
+    let v: Value = reqwest::Client::new()
+        .get(http(s, &format!("p/events?since=0{query}")))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    v["events"].as_array().unwrap().clone()
+}
+
+fn targets(events: &[Value]) -> Vec<&str> {
+    events
+        .iter()
+        .map(|e| e["target_id"].as_str().unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn the_read_leaves_stamped_events_out_unless_it_asks_for_them() {
+    let s = server().await;
+    let ph = planned(&s.store, "Creatures").await;
+    let t = frozen(&s.store, &ph, "Wolf", false).await;
+    s.store
+        .set_item_phase(&t, PhaseChange::Frozen(false), None, &web())
+        .await
+        .unwrap();
+    let q = add(&s.store, "p", "In the queue", &web()).await;
+
+    let default = read_events(&s, "").await;
+    assert_eq!(targets(&default), [q.as_str()], "{default:?}");
+    assert_eq!(default[0]["roadmap"], json!(false));
+
+    let asked = read_events(&s, "&roadmap=true").await;
+    // The phase's create, the ticket's, its pull (a `move`), the queue ticket's.
+    assert_eq!(
+        targets(&asked),
+        [ph.as_str(), t.as_str(), t.as_str(), q.as_str()],
+        "{asked:?}"
+    );
+    for e in &asked[..3] {
+        assert_eq!(e["roadmap"], json!(true), "{e}");
+    }
+    assert_eq!(asked[3]["roadmap"], json!(false));
+}
+
+#[tokio::test]
+async fn a_frozen_drafts_events_need_both_drafts_and_roadmap() {
+    let s = server().await;
+    let ph = planned(&s.store, "Creatures").await;
+    let t = frozen(&s.store, &ph, "Half written", true).await;
+    let has = |events: &[Value]| events.iter().any(|e| e["target_id"] == json!(t));
+
+    assert!(!has(&read_events(&s, "").await));
+    assert!(!has(&read_events(&s, "&drafts=true").await));
+    assert!(!has(&read_events(&s, "&roadmap=true").await));
+    let both = read_events(&s, "&drafts=true&roadmap=true").await;
+    let e = both.iter().find(|e| e["target_id"] == json!(t)).unwrap();
+    assert_eq!((&e["draft"], &e["roadmap"]), (&json!(true), &json!(true)));
+
+    let mut ws = connect(
+        &s,
+        "p/events/ws?since=0&drafts=true&roadmap=true&kinds=create",
+    )
+    .await;
+    assert!(next_text(&mut ws).await.contains(&ph));
+    let line = next_text(&mut ws).await;
+    assert!(
+        line.contains("\"Half written\" (draft) (roadmap)"),
+        "{line}"
+    );
+}
+
+#[tokio::test]
+async fn planning_wakes_no_default_feed_and_a_feed_that_asks_hears_it_live() {
+    let s = server().await;
+    let mut ws = connect(&s, "p/events/ws").await;
+    let mut asked = connect(&s, "p/events/ws?roadmap=true").await;
+    quiet(&mut ws, 200).await;
+    quiet(&mut asked, 1).await;
+
+    let ph = planned(&s.store, "Creatures").await;
+    let line = next_text(&mut asked).await;
+    assert!(
+        line.contains(&format!("create phase:{ph} \"Creatures\" (roadmap)")),
+        "{line}"
+    );
+    let t = frozen(&s.store, &ph, "Wolf", false).await;
+    let line = next_text(&mut asked).await;
+    assert!(
+        line.contains(&format!("create {t} \"Wolf\" (roadmap)")),
+        "{line}"
+    );
+    quiet(&mut ws, 150).await;
+
+    // The socket is alive: a queue ticket reaches it, and was the first thing to.
+    add(&s.store, "p", "In the queue", &web()).await;
+    let line = next_text(&mut ws).await;
+    assert!(line.contains("\"In the queue\""), "{line}");
+    assert!(!line.contains("(roadmap)"), "{line}");
+}
+
+#[tokio::test]
+async fn a_release_and_a_recall_are_one_frame_each_on_a_default_feed() {
+    let s = server().await;
+    let ph = planned(&s.store, "Creatures").await;
+    let tickets = [
+        frozen(&s.store, &ph, "One", false).await,
+        frozen(&s.store, &ph, "Two", false).await,
+        frozen(&s.store, &ph, "Three", false).await,
+    ];
+    // The server's defaults, burst window included; the window turned off; and a
+    // feed asking for everything.
+    let mut given = connect_as_given(&s, "p/events/ws").await;
+    let mut single = connect(&s, "p/events/ws").await;
+    let mut all = connect(&s, "p/events/ws?roadmap=true&kinds=all").await;
+    quiet(&mut given, 200).await;
+    quiet(&mut single, 1).await;
+    quiet(&mut all, 1).await;
+
+    let out = s
+        .store
+        .release_phase(&ph, Place::Bottom, None, &web())
+        .await
+        .unwrap();
+    let last = out.record.events.last().unwrap().event_id;
+    let want = format!(
+        "#{last} p web release phase:{ph} \"Creatures\" {{state: planned → released; \
+         tickets: 3; placed: bottom}}: Phase released. [Owner]"
+    );
+    assert_eq!(next_text(&mut given).await, want);
+    assert_eq!(next_text(&mut single).await, want);
+    quiet(&mut given, 150).await;
+    quiet(&mut single, 1).await;
+
+    for t in &tickets {
+        let line = next_text(&mut all).await;
+        assert!(line.contains(&format!(" web move {t} \"")), "{line}");
+        assert!(line.contains("(roadmap) {frozen: yes → no}"), "{line}");
+    }
+    assert_eq!(next_text(&mut all).await, want, "the phase's event is last");
+
+    let out = s.store.recall_phase(&ph, None, &web()).await.unwrap();
+    let last = out.record.events.last().unwrap().event_id;
+    let want = format!(
+        "#{last} p web recall phase:{ph} \"Creatures\" {{state: released → planned; \
+         tickets: 3}}: Phase recalled. [Owner]"
+    );
+    assert_eq!(next_text(&mut given).await, want);
+    assert_eq!(next_text(&mut single).await, want);
+    quiet(&mut single, 150).await;
+}
+
+#[tokio::test]
+async fn stamped_events_do_not_count_against_a_default_feeds_replay() {
+    let s = server().await;
+    let ph = planned(&s.store, "Creatures").await;
+    for i in 0..MAX_REPLAY {
+        frozen(&s.store, &ph, &format!("T {i}"), false).await;
+    }
+    // Nothing matches by default, so the feed opens, and replays nothing.
+    let mut ws = connect(&s, "p/events/ws?since=0").await;
+    quiet(&mut ws, 100).await;
+    // Asked for, they are more than it replays: the phase's create and every ticket's.
+    let r = reqwest::Client::new()
+        .get(http(&s, "p/events/ws?since=0&roadmap=true"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 400);
+    let v: Value = r.json().await.unwrap();
+    assert!(
+        v["error"]
+            .as_str()
+            .unwrap()
+            .contains("more than the feed replays"),
+        "{v}"
+    );
 }

@@ -141,6 +141,8 @@ async fn every_route_answers_503_without_a_store() {
         "/tracker/p/check",
         "/tracker/p/velocity",
         "/tracker/p/report",
+        "/tracker/p/roadmap",
+        "/tracker/p/phases/p-p0001",
         "/tracker/p/labels",
         "/tracker/p/events",
         "/tracker/p/events/ws",
@@ -158,6 +160,18 @@ async fn every_route_answers_503_without_a_store() {
     )
     .await;
     assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE);
+    for (uri, body) in [
+        ("/tracker/p/phases", json!({ "title": "x" })),
+        ("/tracker/p/phases/p-p0001", json!({ "title": "x" })),
+        ("/tracker/p/phases/p-p0001/move", json!({ "top": true })),
+        ("/tracker/p/phases/p-p0001/release", json!({})),
+        ("/tracker/p/phases/p-p0001/recall", json!({})),
+        ("/tracker/p/phases/p-p0001/archive", json!({})),
+        ("/tracker/p/phases/p-p0001/unarchive", json!({})),
+    ] {
+        let r = post(&app, uri, w(body)).await;
+        assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE, "{uri}");
+    }
 }
 
 // ---- Projects, the queue view, check, ack -------------------------------------------
@@ -1886,4 +1900,955 @@ async fn request_writes_are_refused_where_they_do_not_belong() {
     .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
     assert!(r.error().contains("written by the server"), "{}", r.error());
+}
+
+// ---- The roadmap (spec:roadmap m02) ---------------------------------------------------
+
+/// A new planned phase's id.
+async fn phase(app: &Router, project: &str, title: &str) -> String {
+    let r = ok(post(
+        app,
+        &format!("/tracker/{project}/phases"),
+        w(json!({ "title": title })),
+    )
+    .await)
+    .await;
+    r["id"].as_str().unwrap().to_string()
+}
+
+/// A new ticket's id, created in `phase_id`.
+async fn in_phase(app: &Router, project: &str, phase_id: &str, title: &str) -> String {
+    let r = ok(post(
+        app,
+        &format!("/tracker/{project}/items"),
+        w(json!({ "type": "dev", "title": title, "phase": phase_id })),
+    )
+    .await)
+    .await;
+    r["id"].as_str().unwrap().to_string()
+}
+
+async fn ticket(app: &Router, id: &str) -> Value {
+    ok(get(app, &format!("/tracker/items/{id}")).await).await
+}
+
+/// The integrity check, which must pass.
+async fn sound(app: &Router, project: &str) -> Value {
+    let v = ok(get(app, &format!("/tracker/{project}/check")).await).await;
+    assert_eq!(v["ok"], true, "{v}");
+    v
+}
+
+fn last_event(v: &Value) -> &Value {
+    v["events"].as_array().unwrap().last().unwrap()
+}
+
+#[tokio::test]
+async fn every_phase_route_answers() {
+    let t = app().await;
+    let a = phase(&t.app, "p", "Creatures").await;
+    let b = phase(&t.app, "p", "Weather").await;
+    assert_eq!((a.as_str(), b.as_str()), ("p-p0001", "p-p0002"));
+    let uri = |tail: &str| format!("/tracker/p/phases/{a}{tail}");
+
+    let v = ok(get(&t.app, "/tracker/p/roadmap").await).await;
+    assert_eq!(ids(&v["planned"]), vec![a.clone(), b.clone()]);
+
+    let v = ok(get(&t.app, &uri("")).await).await;
+    assert_eq!(v["title"], "Creatures");
+
+    let v = ok(post(
+        &t.app,
+        &uri(""),
+        w(json!({ "title": "Beasts", "body": "Big ones." })),
+    )
+    .await)
+    .await;
+    assert_eq!(
+        (&v["title"], &v["body"]),
+        (&json!("Beasts"), &json!("Big ones."))
+    );
+    assert_eq!(last_event(&v)["kind"], "edit");
+
+    let v = ok(post(&t.app, &uri("/move"), w(json!({ "after": b }))).await).await;
+    assert_eq!(v["prev_id"], json!(b));
+    assert_eq!(v["next_id"], Value::Null);
+    assert_eq!(last_event(&v)["kind"], "move");
+
+    let v = ok(post(&t.app, &uri("/release"), w(json!({ "note": "Go." }))).await).await;
+    assert_eq!(v["state"], "released");
+    assert!(v["released_at"].is_string(), "{v}");
+    assert_eq!(v["moved"], 0);
+    assert_eq!(v["placed"], "bottom");
+    assert_eq!(v["waiting"], json!([]));
+    assert_eq!(last_event(&v)["kind"], "release");
+    assert_eq!(last_event(&v)["body"], "Phase released. Go.");
+
+    let v = ok(post(&t.app, &uri("/recall"), w(json!({}))).await).await;
+    assert_eq!(v["state"], "planned");
+    assert!(v["released_at"].is_null(), "{v}");
+    assert_eq!(v["moved"], 0);
+    assert!(v["placed"].is_null(), "{v}");
+    assert_eq!(v["next_id"], json!(b), "a recall joins the roadmap's top");
+    assert_eq!(last_event(&v)["kind"], "recall");
+    assert_eq!(last_event(&v)["body"], "Phase recalled.");
+
+    let v = ok(post(&t.app, &uri("/archive"), w(json!({}))).await).await;
+    assert_eq!(v["state"], "archived");
+    assert_eq!(last_event(&v)["fields"]["state"], "archived");
+
+    let v = ok(post(&t.app, &uri("/unarchive"), w(json!({}))).await).await;
+    assert_eq!(v["state"], "planned");
+    assert_eq!(v["prev_id"], json!(b), "unarchived, it joins the bottom");
+    sound(&t.app, "p").await;
+}
+
+#[tokio::test]
+async fn a_phase_of_another_project_or_none_is_a_404_on_every_route() {
+    let t = app().await;
+    let a = phase(&t.app, "p", "Creatures").await;
+    phase(&t.app, "q", "Theirs").await;
+    let before = ok(get(&t.app, &format!("/tracker/p/phases/{a}")).await).await;
+    for (project, id) in [("q", a.as_str()), ("nobody", a.as_str()), ("p", "p-p0099")] {
+        let uri = format!("/tracker/{project}/phases/{id}");
+        let want = format!("no phase {id:?} in project {project}");
+        let r = get(&t.app, &uri).await;
+        assert_eq!(r.status, StatusCode::NOT_FOUND, "{uri}");
+        assert_eq!(r.error(), want);
+        for (tail, body) in [
+            ("", json!({ "title": "Stolen" })),
+            ("/move", json!({ "top": true })),
+            ("/release", json!({})),
+            ("/recall", json!({})),
+            ("/archive", json!({})),
+            ("/unarchive", json!({})),
+        ] {
+            let r = post(&t.app, &format!("{uri}{tail}"), w(body)).await;
+            assert_eq!(r.status, StatusCode::NOT_FOUND, "{uri}{tail}");
+            assert_eq!(r.error(), want, "{uri}{tail}");
+        }
+    }
+    let after = ok(get(&t.app, &format!("/tracker/p/phases/{a}")).await).await;
+    assert_eq!(after, before, "a refused write changed the phase");
+}
+
+#[tokio::test]
+async fn phase_routes_validate_the_project_name() {
+    let t = app().await;
+    for uri in ["/tracker/Bad!/roadmap", "/tracker/Bad!/phases/x"] {
+        let r = get(&t.app, uri).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{uri}");
+    }
+    for (uri, body) in [
+        ("/tracker/Bad!/phases", json!({ "title": "x" })),
+        ("/tracker/Bad!/phases/x", json!({ "title": "x" })),
+        ("/tracker/Bad!/phases/x/move", json!({ "top": true })),
+        ("/tracker/Bad!/phases/x/release", json!({})),
+        ("/tracker/Bad!/phases/x/recall", json!({})),
+        ("/tracker/Bad!/phases/x/archive", json!({})),
+        ("/tracker/Bad!/phases/x/unarchive", json!({})),
+    ] {
+        let r = post(&t.app, uri, w(body)).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{uri}");
+        assert!(
+            r.error().contains("invalid project"),
+            "{uri}: {}",
+            r.error()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_phase_read_has_its_shape_and_tickets_only_when_asked() {
+    let t = app().await;
+    let r = ok(post(
+        &t.app,
+        "/tracker/p/phases",
+        w(json!({ "title": "Creatures", "body": "Many." })),
+    )
+    .await)
+    .await;
+    assert_eq!(r["id"], "p-p0001");
+    assert_eq!(r["project"], "p");
+    assert_eq!(r["state"], "planned");
+    assert_eq!(last_event(&r)["kind"], "create");
+
+    let v = ok(get(&t.app, "/tracker/p/phases/p-p0001").await).await;
+    // m03 tells a phase from a ticket by this key: it is there even while null.
+    assert!(v.as_object().unwrap().contains_key("released_at"), "{v}");
+    assert!(v["released_at"].is_null());
+    assert_eq!(
+        v["size"],
+        json!({ "frozen": 0, "open": 0, "done": 0, "cancelled": 0, "drafts": 0, "blocked": 0,
+                "total": 0, "complete": false })
+    );
+    assert_eq!(v["events"].as_array().unwrap().len(), 1);
+    assert!(v.get("tickets").is_none(), "{v}");
+    assert!(v.get("would_wait").is_none(), "{v}");
+
+    let f = in_phase(&t.app, "p", "p-p0001", "Wolf").await;
+    let v = ok(get(&t.app, "/tracker/p/phases/p-p0001?tickets=true").await).await;
+    assert_eq!(ids(&v["tickets"]), vec![f]);
+    assert_eq!(v["would_wait"], json!([]));
+    assert_eq!(v["size"]["frozen"], 1);
+    assert_eq!(v["size"]["total"], 1);
+    assert_eq!(v["head_id"], v["tail_id"]);
+
+    let v = ok(get(&t.app, "/tracker/p/phases/p-p0001?history=false").await).await;
+    assert_eq!(v["events"], json!([]));
+    for uri in [
+        "/tracker/p/phases/p-p0001?ticket=true",
+        "/tracker/p/phases/p-p0001?tickets=maybe",
+    ] {
+        let r = get(&t.app, uri).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn phase_writes_are_refused_when_wrong() {
+    let t = app().await;
+    for (body, says) in [
+        (json!({}), "title"),
+        (json!({ "title": "   " }), "title"),
+        (json!({ "title": "x", "colour": "red" }), "colour"),
+        (
+            json!({ "title": "x", "top": true, "bottom": true }),
+            "at most one",
+        ),
+        (json!({ "title": "x", "before": "p-p0099" }), "no phase"),
+    ] {
+        let r = post(&t.app, "/tracker/p/phases", w(body)).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{says}");
+        assert!(r.error().contains(says), "{says}: {}", r.error());
+    }
+    let r = post(&t.app, "/tracker/p/phases", json!({ "title": "x" })).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "the author fields");
+
+    // A refused create took no id.
+    let a = phase(&t.app, "p", "Creatures").await;
+    assert_eq!(a, "p-p0001");
+    let f = in_phase(&t.app, "p", &a, "Wolf").await;
+    let uri = |tail: &str| format!("/tracker/p/phases/{a}{tail}");
+
+    for (tail, body, says) in [
+        ("", json!({}), "nothing to update"),
+        ("", json!({ "title": "x", "state": "released" }), "state"),
+        ("/move", json!({}), "a move needs one of"),
+        ("/move", json!({ "after": a }), "relative to itself"),
+        ("/move", json!({ "before": "p-p0099" }), "no phase"),
+        ("/release", json!({ "colour": "red" }), "colour"),
+        (
+            "/release",
+            json!({ "top": true, "bottom": true }),
+            "at most one",
+        ),
+        ("/release", json!({ "before": "p-t0099" }), "no ticket"),
+        ("/recall", json!({ "top": true }), "top"),
+        ("/recall", json!({}), "only a released phase"),
+        ("/archive", json!({}), "1 open ticket"),
+        ("/unarchive", json!({}), "only an archived phase"),
+    ] {
+        let r = post(&t.app, &uri(tail), w(body)).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{tail}: {says}");
+        assert!(r.error().contains(says), "{tail} {says}: {}", r.error());
+    }
+
+    ok(post(&t.app, &uri("/release"), w(json!({}))).await).await;
+    for (tail, body, says) in [
+        ("/move", json!({ "top": true }), "only a planned phase"),
+        ("/release", json!({}), "only a planned phase"),
+    ] {
+        let r = post(&t.app, &uri(tail), w(body)).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{tail}");
+        assert!(r.error().contains(says), "{tail}: {}", r.error());
+    }
+    ok(post(&t.app, &uri("/archive"), w(json!({}))).await).await;
+    let r = post(&t.app, &uri("/archive"), w(json!({}))).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(r.error().contains("already archived"), "{}", r.error());
+    assert_eq!(ticket(&t.app, &f).await["queued"], true);
+    sound(&t.app, "p").await;
+}
+
+#[tokio::test]
+async fn every_phase_update_is_a_post_and_patch_is_a_405() {
+    let t = app().await;
+    let a = phase(&t.app, "p", "Creatures").await;
+    let req = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/tracker/p/phases/{a}"))
+        .header("content-type", "application/json")
+        .body(Body::from(w(json!({ "title": "x" })).to_string()))
+        .unwrap();
+    assert_eq!(
+        send(&t.app, req).await.status,
+        StatusCode::METHOD_NOT_ALLOWED
+    );
+}
+
+#[tokio::test]
+async fn each_phase_write_touches_the_reconcile_trigger_and_no_read_or_refusal_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = TrackerStore::open(dir.path().join("tracker.db"), dir.path().join("att"))
+        .await
+        .unwrap();
+    let trigger = dir.path().join("tracker-reindex");
+    let app = router(Some(store), Some(trigger.clone()));
+    // Whether it fired since the last look, ready for the next.
+    let fired = || {
+        let yes = trigger.exists();
+        if yes {
+            std::fs::remove_file(&trigger).unwrap();
+        }
+        yes
+    };
+
+    let r = post(&app, "/tracker/p/phases", w(json!({ "title": " " }))).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(!fired(), "a refused create");
+    ok(post(&app, "/tracker/p/phases", w(json!({ "title": "A" }))).await).await;
+    assert!(fired(), "a create");
+
+    let id = "p-p0001";
+    let uri = |tail: &str| format!("/tracker/p/phases/{id}{tail}");
+    for read in [
+        "/tracker/p/roadmap".to_string(),
+        uri(""),
+        uri("?tickets=true"),
+        "/tracker/p/items?phase=p-p0001".to_string(),
+    ] {
+        ok(get(&app, &read).await).await;
+        assert!(!fired(), "{read}");
+    }
+    let r = post(
+        &app,
+        &format!("/tracker/q/phases/{id}/release"),
+        w(json!({})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    assert!(!fired(), "a phase of another project");
+    let r = post(&app, &uri("/recall"), w(json!({}))).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(!fired(), "a refused recall");
+
+    for (tail, body) in [
+        ("", json!({ "title": "B" })),
+        ("/move", json!({ "top": true })),
+        ("/release", json!({})),
+        ("/recall", json!({})),
+        ("/archive", json!({})),
+        ("/unarchive", json!({})),
+    ] {
+        ok(post(&app, &uri(tail), w(body)).await).await;
+        assert!(fired(), "{tail}");
+    }
+}
+
+#[tokio::test]
+async fn a_release_and_a_recall_say_what_they_moved_and_where() {
+    let t = app().await;
+    let q1 = item(&t.app, "p", "q1").await;
+    let q2 = item(&t.app, "p", "q2").await;
+    let a = phase(&t.app, "p", "Creatures").await;
+    let f1 = in_phase(&t.app, "p", &a, "f1").await;
+    let f2 = in_phase(&t.app, "p", &a, "f2").await;
+    let f3 = in_phase(&t.app, "p", &a, "f3").await;
+    let release = format!("/tracker/p/phases/{a}/release");
+    let recall = format!("/tracker/p/phases/{a}/recall");
+
+    let v = ok(post(&t.app, &release, w(json!({ "top": true }))).await).await;
+    assert_eq!((&v["moved"], &v["placed"]), (&json!(3), &json!("top")));
+    assert_eq!(v["waiting"], json!([]));
+    assert_eq!(v["state"], "released");
+    let c = sound(&t.app, "p").await;
+    assert_eq!(c["order"], json!([f1, f2, f3, q1, q2]));
+    assert_eq!(c["frozen"], 0);
+    assert_eq!(ticket(&t.app, &f1).await["frozen"], false);
+    assert_eq!(ticket(&t.app, &f1).await["phase"], json!(a));
+
+    let v = ok(post(&t.app, &recall, w(json!({}))).await).await;
+    assert_eq!(v["moved"], 3);
+    assert!(v["placed"].is_null(), "{v}");
+    assert_eq!(v["waiting"], json!([]));
+    assert_eq!((&v["head_id"], &v["tail_id"]), (&json!(f1), &json!(f3)));
+    let c = sound(&t.app, "p").await;
+    assert_eq!(c["order"], json!([q1, q2]));
+    assert_eq!(c["frozen"], 3);
+
+    let v = ok(post(&t.app, &release, w(json!({ "before": q2 }))).await).await;
+    assert_eq!(v["placed"], json!(format!("before {q2}")));
+    let c = sound(&t.app, "p").await;
+    assert_eq!(c["order"], json!([q1, f1, f2, f3, q2]));
+    ok(post(&t.app, &recall, w(json!({}))).await).await;
+
+    // A frozen anchor is refused, and nothing changed.
+    let b = phase(&t.app, "p", "Weather").await;
+    let g = in_phase(&t.app, "p", &b, "g").await;
+    let before = sound(&t.app, "p").await;
+    let r = post(&t.app, &release, w(json!({ "before": g }))).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(r.error().contains("frozen"), "{}", r.error());
+    assert_eq!(sound(&t.app, "p").await, before);
+    let v = ok(get(&t.app, &format!("/tracker/p/phases/{a}")).await).await;
+    assert_eq!(v["state"], "planned");
+
+    // The default is the bottom, and a recall leaves what is under way.
+    let v = ok(post(&t.app, &release, w(json!({}))).await).await;
+    assert_eq!(v["placed"], "bottom");
+    assert_eq!(
+        sound(&t.app, "p").await["order"],
+        json!([q1, q2, f1, f2, f3])
+    );
+    ok(post(
+        &t.app,
+        &format!("/tracker/items/{f1}"),
+        w(json!({ "status": "in_progress" })),
+    )
+    .await)
+    .await;
+    let v = ok(post(&t.app, &recall, w(json!({}))).await).await;
+    assert_eq!(v["moved"], 2);
+    assert_eq!(sound(&t.app, "p").await["order"], json!([q1, q2, f1]));
+    let v = ok(get(&t.app, &format!("/tracker/p/phases/{a}?tickets=true")).await).await;
+    assert_eq!(ids(&v["tickets"]), vec![f2, f3, f1]);
+
+    let r = post(&t.app, &recall, w(json!({}))).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    sound(&t.app, "p").await;
+}
+
+#[tokio::test]
+async fn a_release_and_a_recall_name_what_is_left_waiting_as_the_read_said() {
+    let t = app().await;
+    let a = phase(&t.app, "p", "Creatures").await;
+    let b = phase(&t.app, "p", "Weather").await;
+    let h = in_phase(&t.app, "p", &a, "h").await;
+    let g = in_phase(&t.app, "p", &b, "g").await;
+    let y = item(&t.app, "p", "y").await;
+    for waiter in [&h, &y] {
+        ok(post(
+            &t.app,
+            &format!("/tracker/items/{waiter}"),
+            w(json!({ "blocked": true, "block_reason": "dependency", "depends_on": [g] })),
+        )
+        .await)
+        .await;
+    }
+    let h_on_g = json!({ "ticket": h, "on": g });
+    let y_on_g = json!({ "ticket": y, "on": g });
+
+    let read = ok(get(&t.app, &format!("/tracker/p/phases/{a}?tickets=true")).await).await;
+    assert_eq!(read["would_wait"], json!([h_on_g]));
+    let v = ok(post(
+        &t.app,
+        &format!("/tracker/p/phases/{a}/release"),
+        w(json!({})),
+    )
+    .await)
+    .await;
+    assert_eq!(v["waiting"], json!([h_on_g]));
+
+    let v = ok(post(
+        &t.app,
+        &format!("/tracker/p/phases/{b}/release"),
+        w(json!({})),
+    )
+    .await)
+    .await;
+    assert_eq!(v["waiting"], json!([]));
+
+    let read = ok(get(&t.app, &format!("/tracker/p/phases/{b}?tickets=true")).await).await;
+    assert_eq!(read["would_wait"], json!([h_on_g, y_on_g]));
+    let v = ok(post(
+        &t.app,
+        &format!("/tracker/p/phases/{b}/recall"),
+        w(json!({})),
+    )
+    .await)
+    .await;
+    assert_eq!(v["waiting"], json!([h_on_g, y_on_g]));
+    sound(&t.app, "p").await;
+}
+
+#[tokio::test]
+async fn a_ticket_is_created_in_a_phase_as_its_state_says() {
+    let t = app().await;
+    let planned = phase(&t.app, "p", "Planned").await;
+    let released = phase(&t.app, "p", "Released").await;
+    let archived = phase(&t.app, "p", "Archived").await;
+    ok(post(
+        &t.app,
+        &format!("/tracker/p/phases/{released}/release"),
+        w(json!({})),
+    )
+    .await)
+    .await;
+    ok(post(
+        &t.app,
+        &format!("/tracker/p/phases/{archived}/archive"),
+        w(json!({})),
+    )
+    .await)
+    .await;
+    let q = item(&t.app, "p", "q").await;
+
+    let create = |body: Value| post(&t.app, "/tracker/p/items", w(body));
+
+    let v = ok(create(json!({ "type": "dev", "title": "a", "phase": planned })).await).await;
+    assert_eq!(v["frozen"], true);
+    assert_eq!(v["queued"], false);
+    assert_eq!(v["phase"], json!(planned));
+    assert_eq!(v["approval"], "unapproved");
+    let first = v["id"].clone();
+    // A place names a place in the phase's list, and a phase id is trimmed.
+    let v = ok(create(
+        json!({ "type": "dev", "title": "b", "phase": format!(" {planned} "), "before": first }),
+    )
+    .await)
+    .await;
+    assert_eq!(v["next_id"], first);
+    assert_eq!(v["phase"], json!(planned));
+    assert_eq!(sound(&t.app, "p").await["order"], json!([q]));
+
+    let v =
+        ok(create(json!({ "type": "dev", "title": "c", "phase": released, "before": q })).await)
+            .await;
+    assert_eq!(v["frozen"], false);
+    assert_eq!(v["queued"], true);
+    assert_eq!(v["phase"], json!(released));
+    assert_eq!(v["next_id"], json!(q));
+    assert_eq!(sound(&t.app, "p").await["order"], json!([v["id"], q]));
+
+    for (body, status, says) in [
+        (
+            json!({ "type": "dev", "title": "x", "phase": archived }),
+            StatusCode::BAD_REQUEST,
+            "archived",
+        ),
+        (
+            json!({ "type": "request", "title": "x", "phase": planned }),
+            StatusCode::BAD_REQUEST,
+            "a request cannot have a phase",
+        ),
+        (
+            json!({ "type": "dev", "title": "x", "phase": "" }),
+            StatusCode::BAD_REQUEST,
+            "phase is a phase id",
+        ),
+        (
+            json!({ "type": "dev", "title": "x", "phase": "   " }),
+            StatusCode::BAD_REQUEST,
+            "phase is a phase id",
+        ),
+        (
+            json!({ "type": "dev", "title": "x", "phase": "p-p0099" }),
+            StatusCode::NOT_FOUND,
+            "no phase",
+        ),
+        (
+            json!({ "type": "dev", "title": "x", "phase": planned, "before": q }),
+            StatusCode::BAD_REQUEST,
+            "is not in phase",
+        ),
+    ] {
+        let r = create(body).await;
+        assert_eq!(r.status, status, "{says}");
+        assert!(r.error().contains(says), "{says}: {}", r.error());
+    }
+    // Another project's phase is no phase of this one.
+    let r = post(
+        &t.app,
+        "/tracker/q/items",
+        w(json!({ "type": "dev", "title": "x", "phase": planned })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(r.error().contains("belongs to project"), "{}", r.error());
+    sound(&t.app, "p").await;
+}
+
+#[tokio::test]
+async fn phase_and_frozen_are_written_alone() {
+    let t = app().await;
+    let a = phase(&t.app, "p", "Creatures").await;
+    let id = item(&t.app, "p", "t").await;
+    let uri = format!("/tracker/items/{id}");
+
+    let v = ok(post(&t.app, &uri, w(json!({ "phase": a }))).await).await;
+    assert_eq!((&v["frozen"], &v["queued"]), (&json!(true), &json!(false)));
+    assert_eq!(v["phase"], json!(a));
+    assert_eq!(last_event(&v)["kind"], "move");
+    assert_eq!(last_event(&v)["roadmap"], true);
+
+    let v = ok(post(&t.app, &uri, w(json!({ "frozen": false }))).await).await;
+    assert_eq!((&v["frozen"], &v["queued"]), (&json!(false), &json!(true)));
+    assert_eq!(v["phase"], json!(a), "a pull keeps the link");
+
+    let v = ok(post(&t.app, &uri, w(json!({ "frozen": true }))).await).await;
+    assert_eq!(v["frozen"], true);
+
+    // Blank is a clear, and a frozen ticket then joins the queue.
+    let v = ok(post(&t.app, &uri, w(json!({ "phase": "  " }))).await).await;
+    assert!(v["phase"].is_null(), "{v}");
+    assert_eq!((&v["frozen"], &v["queued"]), (&json!(false), &json!(true)));
+
+    // A note may stand beside it, and is the event's body.
+    let v = ok(post(&t.app, &uri, w(json!({ "phase": a, "note": "Later." }))).await).await;
+    assert_eq!(last_event(&v)["body"], "Later.");
+
+    let before = ticket(&t.app, &id).await;
+    let refused = "phase and frozen are written alone, with at most a note";
+    let r = post(&t.app, &uri, w(json!({ "phase": a, "frozen": true }))).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert_eq!(r.error(), refused);
+    for (field, value) in [
+        ("status", json!("in_progress")),
+        ("blocked", json!(false)),
+        ("block_reason", json!("review")),
+        ("depends_on", json!([])),
+        ("approval", json!("agent")),
+        ("assignee", json!("dev")),
+        ("title", json!("New")),
+        ("body", json!("New")),
+        (
+            "add_links",
+            json!([{ "kind": "ledger", "target": "rag-l0001" }]),
+        ),
+        (
+            "remove_links",
+            json!([{ "kind": "ledger", "target": "rag-l0001" }]),
+        ),
+        ("intensity", json!("quick")),
+        ("release", json!(true)),
+        ("parallel", json!(true)),
+        ("labels", json!(["New"])),
+        ("draft", json!(true)),
+    ] {
+        for mut body in [
+            json!({ "phase": a }),
+            json!({ "phase": "" }),
+            json!({ "frozen": true }),
+            json!({ "frozen": false }),
+        ] {
+            body[field] = value.clone();
+            let r = post(&t.app, &uri, w(body.clone())).await;
+            assert_eq!(r.status, StatusCode::BAD_REQUEST, "{body}");
+            assert_eq!(r.error(), refused, "{body}");
+        }
+    }
+    assert_eq!(ticket(&t.app, &id).await, before, "a refusal changed it");
+
+    // The store's refusals, and its missing records.
+    let closed = item(&t.app, "p", "closed").await;
+    start_and_finish(&t.app, &closed).await;
+    let r = post(
+        &t.app,
+        &format!("/tracker/items/{closed}"),
+        w(json!({ "phase": a })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(r.error().contains("only a pending ticket"), "{}", r.error());
+    let r = post(&t.app, &uri, w(json!({ "phase": "p-p0099" }))).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    let r = post(&t.app, "/tracker/items/p-t0099", w(json!({ "phase": a }))).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    let theirs = phase(&t.app, "q", "Theirs").await;
+    let r = post(&t.app, &uri, w(json!({ "phase": theirs }))).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(r.error().contains("belongs to project"), "{}", r.error());
+    sound(&t.app, "p").await;
+}
+
+#[tokio::test]
+async fn a_frozen_ticket_goes_only_to_done_or_cancelled_and_moves_only_in_its_phase() {
+    let t = app().await;
+    let q = item(&t.app, "p", "q").await;
+    let a = phase(&t.app, "p", "Creatures").await;
+    let f = in_phase(&t.app, "p", &a, "f").await;
+    let g = in_phase(&t.app, "p", &a, "g").await;
+    let uri = format!("/tracker/items/{f}");
+
+    let before = ticket(&t.app, &f).await;
+    for status in ["in_progress", "deferred", "review", "failed"] {
+        let r = post(&t.app, &uri, w(json!({ "status": status }))).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{status}");
+        assert!(
+            r.error().contains("pull it to the queue first"),
+            "{status}: {}",
+            r.error()
+        );
+    }
+    assert_eq!(ticket(&t.app, &f).await, before);
+
+    // Moves: within its own list, either way.
+    let r = post(&t.app, &format!("{uri}/move"), w(json!({ "before": q }))).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(r.error().contains("is not in phase"), "{}", r.error());
+    let r = post(
+        &t.app,
+        &format!("/tracker/items/{q}/move"),
+        w(json!({ "before": f })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(r.error().contains("frozen"), "{}", r.error());
+    let v = ok(post(&t.app, &format!("{uri}/move"), w(json!({ "after": g }))).await).await;
+    assert_eq!(v["prev_id"], json!(g));
+
+    let v = ok(post(&t.app, &uri, w(json!({ "status": "done" }))).await).await;
+    assert_eq!(v["frozen"], false);
+    assert_eq!(v["phase"], json!(a), "done keeps the link");
+    sound(&t.app, "p").await;
+}
+
+#[tokio::test]
+async fn the_items_list_leaves_frozen_tickets_out_unless_it_names_their_phase() {
+    let t = app().await;
+    let q = item(&t.app, "p", "q").await;
+    let a = phase(&t.app, "p", "Creatures").await;
+    let f = in_phase(&t.app, "p", &a, "f").await;
+    let g = in_phase(&t.app, "p", &a, "g").await;
+    ok(post(
+        &t.app,
+        &format!("/tracker/items/{g}"),
+        w(json!({ "labels": ["Physics"] })),
+    )
+    .await)
+    .await;
+    ok(post(
+        &t.app,
+        &format!("/tracker/items/{g}/move"),
+        w(json!({ "top": true })),
+    )
+    .await)
+    .await;
+
+    let list = |query: String| {
+        let app = t.app.clone();
+        async move {
+            let v = ok(get(&app, &format!("/tracker/p/items{query}")).await).await;
+            ids(&v["items"])
+        }
+    };
+    assert_eq!(list(String::new()).await, vec![q.clone()]);
+    assert_eq!(list("?status=pending".into()).await, vec![q.clone()]);
+    // In the phase's own order, not by age.
+    assert_eq!(
+        list(format!("?phase={a}")).await,
+        vec![g.clone(), f.clone()]
+    );
+    assert_eq!(
+        list(format!("?phase={a}&status=pending")).await,
+        vec![g.clone(), f.clone()]
+    );
+    assert_eq!(
+        list(format!("?phase={a}&status=done")).await,
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        list(format!("?phase={a}&label=physics")).await,
+        vec![g.clone()]
+    );
+
+    for uri in [
+        "/tracker/p/items?phase=p-p0099".to_string(),
+        "/tracker/p/items?phase=".to_string(),
+        format!("/tracker/q/items?phase={a}"),
+    ] {
+        let r = get(&t.app, &uri).await;
+        assert_eq!(r.status, StatusCode::NOT_FOUND, "{uri}");
+    }
+    let r = get(
+        &t.app,
+        &format!("/tracker/p/items?phase={a}&status=blocked"),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_frozen_ticket_is_in_no_queue_figure_but_frozen() {
+    let t = app().await;
+    let q = item(&t.app, "p", "q").await;
+    let mut before = ok(get(&t.app, "/tracker/p").await).await;
+    assert_eq!(before["frozen"], 0);
+
+    let a = phase(&t.app, "p", "Creatures").await;
+    in_phase(&t.app, "p", &a, "f").await;
+    let v = ok(post(
+        &t.app,
+        "/tracker/p/items",
+        w(json!({ "type": "dev", "title": "d", "phase": a, "draft": true, "labels": ["Physics"] })),
+    )
+    .await)
+    .await;
+    assert_eq!((&v["frozen"], &v["draft"]), (&json!(true), &json!(true)));
+
+    // The view is what it was, but for `frozen`.
+    let view = ok(get(&t.app, "/tracker/p").await).await;
+    assert_eq!(view["frozen"], 2);
+    before["frozen"] = json!(2);
+    assert_eq!(view, before);
+
+    let projects = ok(get(&t.app, "/tracker/projects").await).await;
+    let row = &projects["projects"][0];
+    assert_eq!(row["name"], "p");
+    assert_eq!(row["frozen"], 2);
+    assert_eq!(row["queued"], 1, "a frozen draft is not queued");
+    assert_eq!(row["drafts"], 0, "a frozen draft is not among the drafts");
+
+    let c = sound(&t.app, "p").await;
+    assert_eq!(c["frozen"], 2);
+    assert_eq!(c["queued"], 1);
+    assert_eq!(c["order"], json!([q]));
+
+    let labels = ok(get(&t.app, "/tracker/p/labels").await).await;
+    assert_eq!(
+        labels["labels"],
+        json!([{ "label": "Physics", "count": 1, "queued": 0 }])
+    );
+    let v = ok(get(&t.app, "/tracker/p/velocity").await).await;
+    assert_eq!(v["remaining"], 1);
+}
+
+#[tokio::test]
+async fn the_roadmap_read_answers_each_window_and_every_key_on_an_empty_project() {
+    let t = app().await;
+    for (uri, window) in [
+        ("/tracker/p/roadmap?window=24h", "24h"),
+        ("/tracker/p/roadmap?window=7d", "7d"),
+        ("/tracker/p/roadmap", "7d"),
+    ] {
+        let r = get(&t.app, uri).await;
+        assert_eq!(r.status, StatusCode::OK, "{uri}");
+        assert_eq!(r.headers.get(header::CACHE_CONTROL).unwrap(), "no-store");
+        assert!(r.headers.get(header::ETAG).is_none(), "{uri}");
+        let v = r.json();
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "archived",
+                "complete",
+                "frozen",
+                "now",
+                "planned",
+                "planned_out_days",
+                "project",
+                "queue",
+                "released",
+                "velocity_per_day",
+                "window",
+            ]
+        );
+        assert_eq!(v["project"], "p");
+        assert_eq!(v["window"], window);
+        assert_eq!(v["frozen"], 0);
+        assert_eq!(v["queue"]["remaining"], 0);
+        assert!(v["queue"].as_object().unwrap().contains_key("eta_days"));
+        for list in ["released", "planned", "complete", "archived"] {
+            assert_eq!(v[list], json!([]), "{list}");
+        }
+    }
+    for uri in [
+        "/tracker/p/roadmap?window=1h",
+        "/tracker/p/roadmap?window=",
+        "/tracker/p/roadmap?days=7",
+    ] {
+        let r = get(&t.app, uri).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{uri}");
+    }
+    let r = get(&t.app, "/tracker/p/roadmap?window=1h").await;
+    assert!(r.error().contains("1h"), "{}", r.error());
+}
+
+#[tokio::test]
+async fn the_roadmap_read_sorts_each_phase_into_its_list_with_its_figures() {
+    let t = app().await;
+    // Complete: released, its one ticket done.
+    let c = phase(&t.app, "p", "Complete").await;
+    let cf = in_phase(&t.app, "p", &c, "cf").await;
+    ok(post(
+        &t.app,
+        &format!("/tracker/p/phases/{c}/release"),
+        w(json!({})),
+    )
+    .await)
+    .await;
+    start_and_finish(&t.app, &cf).await;
+    // Released: one ticket still open.
+    let r = phase(&t.app, "p", "Released").await;
+    in_phase(&t.app, "p", &r, "rf").await;
+    ok(post(
+        &t.app,
+        &format!("/tracker/p/phases/{r}/release"),
+        w(json!({})),
+    )
+    .await)
+    .await;
+    // Archived, and planned with one ticket and one draft.
+    let x = phase(&t.app, "p", "Archived").await;
+    ok(post(
+        &t.app,
+        &format!("/tracker/p/phases/{x}/archive"),
+        w(json!({})),
+    )
+    .await)
+    .await;
+    let a = phase(&t.app, "p", "Planned").await;
+    in_phase(&t.app, "p", &a, "af").await;
+    ok(post(
+        &t.app,
+        "/tracker/p/items",
+        w(json!({ "type": "dev", "title": "ad", "phase": a, "draft": true })),
+    )
+    .await)
+    .await;
+
+    let v = ok(get(&t.app, "/tracker/p/roadmap").await).await;
+    assert_eq!(ids(&v["released"]), vec![r]);
+    assert_eq!(ids(&v["planned"]), vec![a]);
+    assert_eq!(ids(&v["complete"]), vec![c]);
+    assert_eq!(ids(&v["archived"]), vec![x]);
+    assert_eq!(v["frozen"], 2, "drafts included");
+    assert_eq!(v["queue"]["remaining"], 1);
+
+    let planned = &v["planned"][0];
+    let mut keys: Vec<&str> = planned
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "ahead",
+            "created_at",
+            "eta_days",
+            "id",
+            "project",
+            "released_at",
+            "size",
+            "state",
+            "title",
+            "updated_at",
+        ]
+    );
+    assert_eq!(
+        planned["size"],
+        json!({ "frozen": 1, "open": 0, "done": 0, "cancelled": 0, "drafts": 1, "blocked": 0,
+                "total": 2, "complete": false })
+    );
+    // The queue's one, then the phase's one that is counted.
+    assert_eq!(planned["ahead"], 2);
+    assert_eq!(v["planned_out_days"], planned["eta_days"]);
+    assert_eq!(v["released"][0]["ahead"], 1);
+    assert_eq!(v["complete"][0]["size"]["complete"], true);
+    assert!(v["complete"][0]["eta_days"].is_null());
 }

@@ -435,13 +435,74 @@ async fn an_idle_project_reads_its_working_rate_not_its_calendar_rate() {
 
 // ---- Plans (D30) ------------------------------------------------------------
 
+/// The events are one row however many there are: a row per event is what cost
+/// the read most of D30's budget (rag-l0107).
+#[tokio::test]
+async fn the_activity_read_answers_one_row_and_the_times_need_no_order_from_it() {
+    let f = fixture().await;
+    let s = &f.store;
+    let seed = Seed::new(s, "act").await;
+    let (start, end) = (ago(7 * 24 * H), ago(0));
+    let read = || async {
+        sqlx::query_scalar::<_, Option<String>>(crate::tracker::velocity::ACTIVITY_SQL)
+            .bind("act")
+            .bind(&start)
+            .bind(&end)
+            .fetch_all(&s.pool)
+            .await
+            .unwrap()
+    };
+    // No events: one row, NULL, and no active time.
+    assert_eq!(read().await, [None]);
+    assert_eq!(
+        s.velocity("act", now())
+            .await
+            .unwrap()
+            .windows
+            .week
+            .active_seconds,
+        0
+    );
+    // Written out of time order, with two in the same second.
+    seed.events([0, 3 * H, H, 2 * H, H], false).await;
+    let rows = read().await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].as_deref().unwrap().split(',').count(), 5);
+    let v = s.velocity("act", now()).await.unwrap();
+    assert_eq!(v.windows.week.active_seconds, 3 * H);
+}
+
+/// The frozen-to-done check reads only frozen spans. Through
+/// `idx_item_spans_item` it read every status span of every ticket done in the
+/// window, and cost the read about a millisecond at D30's size (rag-l0107).
+#[tokio::test]
+async fn the_frozen_check_of_the_velocity_read_uses_its_partial_index() {
+    let f = fixture().await;
+    let explain = format!("EXPLAIN QUERY PLAN {}", crate::tracker::velocity::DONE_SQL);
+    let plan: Vec<String> = sqlx::query_as::<_, (i64, i64, i64, String)>(&explain)
+        .bind("x")
+        .bind("x")
+        .bind("x")
+        .fetch_all(&f.store.pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(_, _, _, detail)| detail)
+        .collect();
+    assert!(
+        plan.iter()
+            .any(|d| d.starts_with("SEARCH f") && d.contains("idx_item_spans_frozen")),
+        "{plan:?}"
+    );
+}
+
 #[tokio::test]
 async fn every_statement_of_the_velocity_read_uses_an_index() {
     let f = fixture().await;
     let wanted = [
         "idx_items_project",
         "idx_item_spans_project_started",
-        "idx_events_project_ts",
+        "COVERING INDEX idx_events_activity",
     ];
     assert_eq!(READS.len(), wanted.len());
     for (sql, index) in READS.iter().zip(wanted) {

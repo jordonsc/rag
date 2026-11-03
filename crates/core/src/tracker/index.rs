@@ -1,5 +1,6 @@
 //! What the search index needs from the store (m05, D13): every document at its
-//! current revision and every item with its notes, read in one consistent pass.
+//! current revision, every item with its notes and every phase (spec:roadmap D28),
+//! read in one consistent pass.
 //!
 //! `rag-ingest reconcile-tracker` turns these into Qdrant points; this module only
 //! reads. It returns plain records rather than the API's views so the reconcile
@@ -7,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{DocKind, EventKind, ItemStatus, ItemType, TResult, TrackerStore};
+use super::{DocKind, EventKind, ItemStatus, ItemType, PhaseState, TResult, TrackerStore};
 
 /// A document as the index sees it: its record and its current body.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +35,10 @@ pub struct ItemForIndex {
     pub body: String,
     /// Its labels (rag-t0027), sorted case-insensitively; empty when none.
     pub labels: Vec<String>,
+    /// The phase it is linked to, frozen or not; `None` for none. A frozen ticket
+    /// stays in the corpus by design (spec:roadmap D28), so an agent searching
+    /// before planning finds it.
+    pub phase: Option<ItemPhase>,
     /// The notes written on it, oldest first: the bodies of its `note`, `status`,
     /// `block`, `unblock` and `approve` events, which are the ones a writer may
     /// explain (a note is optional since rag-t0007; without one the body is
@@ -43,12 +48,32 @@ pub struct ItemForIndex {
     pub notes: Vec<String>,
 }
 
+/// An item's phase as its chunk header says it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemPhase {
+    pub title: String,
+    pub frozen: bool,
+}
+
+/// A phase as the index sees it (spec:roadmap D28): its title and body, in any
+/// state. A phase is never deleted, so its point never is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhaseForIndex {
+    /// `<project>-p<seq:04>`.
+    pub id: String,
+    pub project: String,
+    pub title: String,
+    pub body: String,
+    pub state: PhaseState,
+}
+
 /// Everything the tracker corpus is built from, ordered by id so a reconcile is
 /// deterministic.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IndexSnapshot {
     pub documents: Vec<DocForIndex>,
     pub items: Vec<ItemForIndex>,
+    pub phases: Vec<PhaseForIndex>,
 }
 
 /// The event kinds whose bodies are notes worth indexing (see [`ItemForIndex::notes`]).
@@ -60,10 +85,22 @@ const NOTE_KINDS: &[EventKind] = &[
     EventKind::Approve,
 ];
 
+/// One row of `all_for_index`'s read of the tickets, with the phase's title and `frozen`.
+type ItemIndexRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    i64,
+);
+
 impl TrackerStore {
-    /// Every document and item, for the search index. One read transaction, so
-    /// a write landing mid-read cannot pair a document's new revision number with
-    /// its old body.
+    /// Every document, item and phase, for the search index. One read transaction,
+    /// so a write landing mid-read cannot pair a document's new revision number with
+    /// its old body, or a ticket's phase with a title it no longer has.
     pub async fn all_for_index(&self) -> TResult<IndexSnapshot> {
         let mut tx = self.pool.begin().await?;
 
@@ -114,14 +151,20 @@ impl TrackerStore {
             labels.entry(id).or_default().push(label);
         }
 
-        let rows: Vec<(String, String, String, String, String, String)> =
-            sqlx::query_as("SELECT id, project, type, status, title, body FROM items ORDER BY id")
-                .fetch_all(&mut *tx)
-                .await?;
+        let rows: Vec<ItemIndexRow> = sqlx::query_as(
+            "SELECT i.id, i.project, i.type, i.status, i.title, i.body, p.title, i.frozen \
+             FROM items i LEFT JOIN phases p ON p.id = i.phase_id ORDER BY i.id",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
         let mut items = Vec::with_capacity(rows.len());
-        for (id, project, item_type, status, title, body) in rows {
+        for (id, project, item_type, status, title, body, phase_title, frozen) in rows {
             let notes = notes.remove(&id).unwrap_or_default();
             let labels = labels.remove(&id).unwrap_or_default();
+            let phase = phase_title.map(|title| ItemPhase {
+                title,
+                frozen: frozen != 0,
+            });
             items.push(ItemForIndex {
                 id,
                 project,
@@ -130,18 +173,39 @@ impl TrackerStore {
                 title,
                 body,
                 labels,
+                phase,
                 notes,
             });
         }
+
+        let rows: Vec<(String, String, String, String, String)> =
+            sqlx::query_as("SELECT id, project, title, body, state FROM phases ORDER BY id")
+                .fetch_all(&mut *tx)
+                .await?;
+        let mut phases = Vec::with_capacity(rows.len());
+        for (id, project, title, body, state) in rows {
+            phases.push(PhaseForIndex {
+                id,
+                project,
+                title,
+                body,
+                state: state.parse()?,
+            });
+        }
         tx.commit().await?;
-        Ok(IndexSnapshot { documents, items })
+        Ok(IndexSnapshot {
+            documents,
+            items,
+            phases,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::{
-        Actor, Approval, Edit, ItemUpdate, NewConcept, NewItem, Place, Surface, TrackerStore,
+        Actor, Approval, Edit, ItemUpdate, NewConcept, NewItem, NewPhase, Place, Surface,
+        TrackerStore,
     };
     use super::*;
 
@@ -237,6 +301,129 @@ mod tests {
         assert_eq!(
             i.notes,
             vec!["started by recon-1", "found the conduction loop"]
+        );
+        // Linked to no phase, and no phase to read.
+        assert_eq!(i.phase, None);
+        assert!(snap.phases.is_empty());
+    }
+
+    fn new_item(title: &str) -> NewItem {
+        NewItem {
+            draft: false,
+            project: "ubu".into(),
+            item_type: ItemType::Dev,
+            title: title.into(),
+            body: String::new(),
+            assignee: None,
+            approval: Approval::Unapproved,
+            links: Vec::new(),
+            intensity: None,
+            release: false,
+            parallel: false,
+            labels: Vec::new(),
+            place: Place::Bottom,
+            note: None,
+        }
+    }
+
+    fn new_phase(title: &str, body: &str) -> NewPhase {
+        NewPhase {
+            project: "ubu".into(),
+            title: title.into(),
+            body: body.into(),
+            place: Place::Bottom,
+            note: None,
+        }
+    }
+
+    /// spec:roadmap D28: frozen tickets stay in, saying so; a phase is its own
+    /// record; and a released ticket keeps naming its phase.
+    #[tokio::test]
+    async fn the_snapshot_holds_phases_and_each_items_phase() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = TrackerStore::open(dir.path().join("tracker.db"), dir.path().join("att"))
+            .await
+            .unwrap();
+        let a = actor();
+        let creatures = s
+            .create_phase(new_phase("Creatures", "All of them."), &a)
+            .await
+            .unwrap()
+            .phase
+            .id;
+        let birds = s
+            .create_phase(new_phase("Birds", ""), &a)
+            .await
+            .unwrap()
+            .phase
+            .id;
+        let plain = s
+            .create_item(new_item("Not in a phase"), &a)
+            .await
+            .unwrap()
+            .item
+            .id;
+        let frozen = s
+            .create_item_in_phase(new_item("Wolves"), &creatures, &a)
+            .await
+            .unwrap()
+            .item
+            .id;
+        let thawed = s
+            .create_item_in_phase(new_item("Sparrows"), &birds, &a)
+            .await
+            .unwrap()
+            .item
+            .id;
+        s.release_phase(&birds, Place::Bottom, None, &a)
+            .await
+            .unwrap();
+
+        let snap = s.all_for_index().await.unwrap();
+        let of = |id: &str| {
+            snap.items
+                .iter()
+                .find(|i| i.id == id)
+                .unwrap_or_else(|| panic!("{id} is not in the snapshot"))
+                .phase
+                .clone()
+        };
+        assert_eq!(of(&plain), None);
+        assert_eq!(
+            of(&frozen),
+            Some(ItemPhase {
+                title: "Creatures".into(),
+                frozen: true
+            }),
+            "a frozen ticket is present, and says so"
+        );
+        assert_eq!(
+            of(&thawed),
+            Some(ItemPhase {
+                title: "Birds".into(),
+                frozen: false
+            }),
+            "a released ticket keeps its link"
+        );
+        assert_eq!(
+            snap.phases,
+            vec![
+                PhaseForIndex {
+                    id: creatures,
+                    project: "ubu".into(),
+                    title: "Creatures".into(),
+                    body: "All of them.".into(),
+                    state: PhaseState::Planned,
+                },
+                PhaseForIndex {
+                    id: birds,
+                    project: "ubu".into(),
+                    title: "Birds".into(),
+                    body: String::new(),
+                    state: PhaseState::Released,
+                },
+            ],
+            "by id, in any state"
         );
     }
 }

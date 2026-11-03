@@ -122,6 +122,10 @@ Design
     a `became` and back;
   * for a **gate**: an **intensity** (`quick`, `standard` or `full`) and a **release** flag (R8);
   * its place in the queue (D5), and `created_at`, `updated_at`, `done_at` and `acknowledged_at`.
+  * *Amended by spec:roadmap (D2, 2026-11-03):* a **`phase_id`** (JSON key `phase`, kept for life) and a **`frozen`**
+    flag. While frozen, a ticket is out of the queue and of every queue figure, and its `queued` reads false, whatever
+    its status: `queued` now means a queued status **and** not frozen. Only a `pending` ticket is ever frozen, and a
+    request never has a phase.
 * **D4. Documents** are markdown, addressed by a **path** within their project that keeps the shape the repository
   used, so the references already written into code, `docs/` and the ledger stay meaningful:
   `specs/<spec>/master.md`, `specs/<spec>/m03-music.md`, `concepts/power-generation.md`. A document has a title, a
@@ -150,6 +154,12 @@ Design
   queued ticket) runs in the tests after every operation and is a `GET /tracker/<project>/check` route. Since
   rag-t0018 it also checks `depends_on` (D3): held only by tickets blocked with `dependency`, each such ticket waiting on
   at least one ticket of its own project that is not done.
+
+  *Amended by spec:roadmap (D2, D3, D10, 2026-11-03):* a list has one of two owners. The project row holds the queue's
+  ends, and a **planned phase** holds the ends of its own list of frozen tickets, whose `prev_id` and `next_id` link
+  them there, so the walk above covers every queued ticket that is not frozen. An anchor must be on the moving ticket's
+  own list: a frozen anchor is refused for the queue, and a frozen ticket moves only within its phase. The integrity
+  check also proves each phase's list and the roadmap.
 * **D6. Gates are tickets** of type `gate` (R6, R7), so adding, removing and moving a gate or release marker is the
   same create, cancel and move as any ticket. The build number a gate produced is a note on it when it runs.
 * **D7. Events**: every change to a ticket, spec, milestone, concept or document appends an event, as the ledger's
