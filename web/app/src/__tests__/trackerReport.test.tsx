@@ -6,8 +6,10 @@
  * What it defends: the page reads `report?window=7d` by default and `24h`
  * from the parameter, which wins over the window this browser keeps;
  * switching the pill re-reads, updates the URL and keeps the choice; the
- * figures, the three blocks and their hidden tables carry the fixture's
- * numbers (the week as local days, the day as hours); an empty report says so
+ * figures (tiles, rag-t0062: each named "Velocity: 8/day" and reading so),
+ * the three blocks and their hidden tables carry the fixture's numbers (the
+ * week as local days, the day as hours); what is still open as chips; MTTC,
+ * MTTR and confirmed against sent back as tiles; an empty report says so
  * under its chart; a failed read shows the error with Retry; and the back
  * link returns to the queue.
  */
@@ -217,7 +219,7 @@ describe('the window', () => {
     expect(reads('24h')).toBe(1);
     expect(reads('7d')).toBe(0);
     expect(windowChoice('24 h')).toHaveAttribute('aria-checked', 'true');
-    expect(screen.getByText('Velocity: 24/day')).toBeInTheDocument();
+    expect(screen.getByRole('listitem', { name: 'Velocity: 24/day' })).toBeInTheDocument();
   });
 
   it('reads the kept choice without a parameter, and 7 days for rubbish', async () => {
@@ -235,13 +237,13 @@ describe('the window', () => {
     const user = userEvent.setup();
     open();
     await figures();
-    expect(screen.getByText('Velocity: 8/day')).toBeInTheDocument();
+    expect(screen.getByRole('listitem', { name: 'Velocity: 8/day' })).toBeInTheDocument();
 
     await user.click(windowChoice('24 h'));
     await waitFor(() => expect(reads('24h')).toBe(1));
     expect(address()).toBe('/projects/demo/report?window=24h');
     expect(window.localStorage.getItem(WINDOW_KEY)).toBe('24h');
-    expect(await screen.findByText('Velocity: 24/day')).toBeInTheDocument();
+    expect(await screen.findByRole('listitem', { name: 'Velocity: 24/day' })).toBeInTheDocument();
     expect(
       screen.getByRole('table', { name: 'Burn-down over the last 24 hours' }),
     ).toBeInTheDocument();
@@ -249,23 +251,54 @@ describe('the window', () => {
     await user.click(windowChoice('7 d'));
     await waitFor(() => expect(reads('7d')).toBe(2));
     expect(address()).toBe('/projects/demo/report?window=7d');
-    expect(await screen.findByText('Velocity: 8/day')).toBeInTheDocument();
+    expect(await screen.findByRole('listitem', { name: 'Velocity: 8/day' })).toBeInTheDocument();
   });
 });
 
 describe('the blocks', () => {
-  it('shows the widget’s figures across the top', async () => {
+  it('shows the widget’s figures across the top as tiles, each read as label and value', async () => {
     open();
     const list = await figures();
-    expect(within(list).getByText('Velocity: 8/day')).toBeInTheDocument();
-    expect(within(list).getByText('In progress: 3')).toBeInTheDocument();
-    expect(within(list).getByText('Pending: 48')).toBeInTheDocument();
-    expect(within(list).getByText('ETA: 7 days')).toBeInTheDocument();
-    expect(within(list).getByText('Done: 20 tickets')).toHaveAttribute(
+    const tiles = within(list).getAllByRole('listitem');
+    expect(tiles.map((li) => li.getAttribute('aria-label'))).toEqual([
+      'Velocity: 8/day',
+      'In progress: 3',
+      'Pending: 48',
+      'ETA: 7 days',
+      'Done: 20 tickets',
+    ]);
+    expect(tiles.map((li) => li.textContent)).toEqual([
+      'Velocity: 8/day',
+      'In progress: 3',
+      'Pending: 48',
+      'ETA: 7 days',
+      'Done: 20 tickets',
+    ]);
+    // The unit is set apart from the value it follows.
+    expect(within(tiles[4]!).getByText('tickets').parentElement).toHaveTextContent('20 tickets');
+  });
+
+  it('words a fractional ETA tile from hours up (rag-t0062)', async () => {
+    week = weekReport({
+      velocity: { done: 20, active_seconds: 216_000, velocity_per_day: 8, eta_days: 140 },
+    });
+    open();
+    const list = await figures();
+    expect(within(list).getByRole('listitem', { name: 'ETA: 4.6 months' })).toBeInTheDocument();
+  });
+
+  it('gives each figure its tooltip', async () => {
+    open();
+    const list = await figures();
+    expect(within(list).getByRole('listitem', { name: 'Velocity: 8/day' })).toBeInTheDocument();
+    expect(within(list).getByRole('listitem', { name: 'In progress: 3' })).toBeInTheDocument();
+    expect(within(list).getByRole('listitem', { name: 'Pending: 48' })).toBeInTheDocument();
+    expect(within(list).getByRole('listitem', { name: 'ETA: 7 days' })).toBeInTheDocument();
+    expect(within(list).getByRole('listitem', { name: 'Done: 20 tickets' })).toHaveAttribute(
       'title',
       'Over 2.5 days of active time in the last 7 days.',
     );
-    expect(within(list).getByText('Pending: 48')).toHaveAttribute(
+    expect(within(list).getByRole('listitem', { name: 'Pending: 48' })).toHaveAttribute(
       'title',
       'Includes 2 blocked. Deferred tickets (4) are left out.',
     );
@@ -320,32 +353,45 @@ describe('the blocks', () => {
     expect(row(table, 'Pending')).toEqual(['4', '3 hours', '2.5 hours', '6 hours']);
     expect(row(table, 'Review')).toEqual(['9', '20 minutes', '15 minutes', '40 minutes']);
     expect(row(table, 'Deferred')).toEqual(['0', '—', '—', '—']);
-    const stillOpen = within(screen.getByRole('list', { name: 'Still open' }))
-      .getAllByRole('listitem')
-      .map((li) => li.textContent);
-    expect(stillOpen).toEqual([
-      'Pending: 2 still open, the oldest 5.2 days',
+    // A chip a state, each named in full; 5.2 days reads whole from 5 (rag-t0062).
+    const chips = within(screen.getByRole('list', { name: 'Still open' })).getAllByRole('listitem');
+    expect(chips.map((li) => li.getAttribute('aria-label'))).toEqual([
+      'Pending: 2 still open, the oldest 5 days',
       'In progress: 3 still open, the oldest 40 minutes',
       'Review: none still open',
       'Deferred: none still open',
       'Blocked: 1 still open, the oldest 3 days',
     ]);
+    expect(chips[0]).toHaveTextContent('Pending2oldest 5 days');
+    expect(chips[2]).toHaveTextContent('Reviewnone');
   });
 
-  it('gives completion and resolution as figures', async () => {
+  it('gives completion and resolution as tiles, each read as one sentence', async () => {
     open();
     await figures();
     expect(
       screen.getByRole('heading', { level: 2, name: 'Completion and resolution' }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        '6 hours (median 5 hours), over 12 tickets, in progress since each was last reopened.',
-      ),
-    ).toBeInTheDocument();
-    expect(screen.getByText('2 tickets done without being in progress.')).toBeInTheDocument();
-    expect(screen.getByText('20 minutes (median 15 minutes), over 9 reviews.')).toBeInTheDocument();
-    expect(screen.getByText('7 confirmed, 2 sent back.')).toBeInTheDocument();
+    const tiles = within(screen.getByRole('list', { name: 'Completion and resolution' }))
+      .getAllByRole('listitem')
+      .map((li) => li.getAttribute('aria-label'));
+    expect(tiles).toEqual([
+      'Mean time to completion: 6 hours, median 5 hours, over 12 tickets',
+      'Done without being in progress: 2 tickets, left out of the mean',
+      'Mean time to resolution: 20 minutes, median 15 minutes, over 9 reviews',
+      'Reviews ended: 7 confirmed, 2 sent back',
+    ]);
+    const mttc = screen.getByRole('listitem', { name: /^Mean time to completion/ });
+    // The content reads as the name does: the hidden colon and comma.
+    expect(mttc.textContent).toBe(
+      'Mean time to completion: 6 hours, median 5 hours, over 12 tickets',
+    );
+    expect(mttc).toHaveAttribute(
+      'title',
+      'Time in progress, since each was last reopened, of the tickets done in the last 7 days.',
+    );
+    const split = screen.getByRole('listitem', { name: /^Reviews ended/ });
+    expect(split.textContent).toBe('Reviews ended: 7 confirmed, 2 sent back');
   });
 
   it('says so under its chart when nothing was done in the window', async () => {
@@ -357,13 +403,24 @@ describe('the blocks', () => {
     });
     open();
     const list = await figures();
-    expect(within(list).getByText('Velocity: 0/day')).toBeInTheDocument();
-    expect(within(list).getByText('ETA: —')).toBeInTheDocument();
+    expect(within(list).getByRole('listitem', { name: 'Velocity: 0/day' })).toBeInTheDocument();
+    expect(within(list).getByRole('listitem', { name: 'ETA: unknown' })).toBeInTheDocument();
     const empty = screen.getByText('No tickets were done in this window.');
     const chart = screen.getByRole('table', { name: 'Burn-down over the last 7 days' });
     expect(chart.compareDocumentPosition(empty) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByText('No ticket done in this window was in progress.')).toBeInTheDocument();
-    expect(screen.getByText('No review ended in this window.')).toBeInTheDocument();
+    expect(
+      screen.getByRole('listitem', {
+        name: 'Mean time to completion: none, no ticket done in this window was in progress',
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('listitem', {
+        name: 'Mean time to resolution: none, no review ended in this window',
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('listitem', { name: 'Reviews ended: 0 confirmed, 0 sent back' }),
+    ).toBeInTheDocument();
   });
 });
 

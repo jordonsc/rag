@@ -1874,10 +1874,62 @@ fn rate(per_day: f64) -> String {
     }
 }
 
+/// An amount in the owner's rule (rag-t0062; `formatAmount` in
+/// `web/app/src/tracker/velocity.ts`): one decimal below 5, a whole number from
+/// 5, and a decimal that rounds to a whole number reads whole (`1`, not `1.0`;
+/// 4.96 reads `5`). Half away from zero with `f64::round`, as the web rounds.
+fn amount(value: f64) -> String {
+    if value < 5.0 {
+        let tenths = (value * 10.0).round() / 10.0;
+        if tenths.fract() != 0.0 {
+            return format!("{tenths:.1}");
+        }
+    }
+    // `as i64` keeps a -0.0 from reading "-0".
+    format!("{}", value.round() as i64)
+}
+
+/// The units a length is worded in, smallest first, with their seconds; a
+/// month is 365.25 ÷ 12 days.
+const UNITS: [(&str, &str, f64); 5] = [
+    ("minute", "minutes", 60.0),
+    ("hour", "hours", 3_600.0),
+    ("day", "days", 86_400.0),
+    ("week", "weeks", 604_800.0),
+    ("month", "months", 2_629_800.0),
+];
+
+/// A length of time in the largest unit it is over one and a half of
+/// (rag-t0062; `durationParts` in `web/app/src/tracker/velocity.ts`, pinned by
+/// the same cases): from the unit at `smallest` in [`UNITS`], up to hours past
+/// 90 minutes, days past 36 hours, weeks past 10.5 days, months past 1.5
+/// months; the amount in [`amount`]'s rule, singular for exactly one. Something
+/// that rounds to nothing but is not nothing reads `<0.1`.
+fn duration(seconds: f64, smallest: usize) -> String {
+    let s = seconds.max(0.0);
+    let mut i = smallest;
+    while i + 1 < UNITS.len() && s > 1.5 * UNITS[i + 1].2 {
+        i += 1;
+    }
+    let (one, many, unit) = UNITS[i];
+    let mut value = amount(s / unit);
+    if value == "0" && s > 0.0 {
+        value = "<0.1".into();
+    }
+    let noun = if value == "1" { one } else { many };
+    format!("{value} {noun}")
+}
+
+/// The ETA as the widget words it (D9, D12, amended by rag-t0062): `eta_days`
+/// from hours up (`32 hours`, `1.6 days`, `6 weeks`).
+fn format_eta(days: f64) -> String {
+    duration(days * 86_400.0, 1)
+}
+
 /// `tracker_queue`'s last line (spec:velocity D32), from
 /// `GET /tracker/{project}/velocity`: `Velocity (7 d): 42/day · 24 h: 51/day ·
-/// ETA 2 days`, the ETA the 7-day one (`ETA done` with nothing remaining, `ETA
-/// unknown` with no velocity). `None` for a project with no counted ticket to
+/// ETA 1.6 days`, the ETA the 7-day one worded by [`format_eta`] (`ETA done` with
+/// nothing remaining, `ETA unknown` with no velocity). `None` for a project with no counted ticket to
 /// speak of (nothing open, deferred included, and nothing done in 7 days), and
 /// for an answer missing a figure, which says nothing rather than something wrong.
 fn velocity_line(v: &Value) -> Option<String> {
@@ -1892,9 +1944,9 @@ fn velocity_line(v: &Value) -> Option<String> {
     }
     let eta = match week.get("eta_days")? {
         Value::Null => "ETA unknown".to_string(),
-        e => match e.as_i64()? {
-            0 => "ETA done".to_string(),
-            d => format!("ETA {}", plural(d as usize, "day", "days")),
+        e => match e.as_f64()? {
+            d if d <= 0.0 => "ETA done".to_string(),
+            d => format!("ETA {}", format_eta(d)),
         },
     };
     Some(format!(

@@ -5,9 +5,9 @@
  * across a UTC day boundary, with the time zone pinned (Melbourne, where
  * local midnight falls at 13:00 UTC in November); the days' and hours'
  * labels; "nice" whole-number ticks for 0, 7, 48 and 1 000, and fractional
- * ones for an hours axis; a length's wording; each chart's hidden table
- * carrying its numbers, and each mark its `<title>`; and an all-zero series
- * drawing an empty chart with its axis, never NaN.
+ * ones for an hours axis; each chart's hidden table carrying its numbers,
+ * and each mark its `<title>`; and an all-zero series drawing an empty chart
+ * with its axis, never NaN. A length's wording is `trackerFormat.test.ts`'s.
  */
 
 import { render, screen, within } from '@testing-library/react';
@@ -81,20 +81,6 @@ describe('ticks', () => {
   it('gives fractions when asked, for an hours axis', () => {
     expect(niceTicks(0.37, { whole: false })).toEqual([0, 0.1, 0.2, 0.3, 0.4]);
     expect(niceTicks(7, { whole: false })).toEqual([0, 2, 4, 6, 8]);
-  });
-});
-
-describe('a length in words', () => {
-  it('reads minutes under an hour, hours under two days, days beyond', () => {
-    expect(formatElapsed(0)).toBe('0 minutes');
-    expect(formatElapsed(20)).toBe('under a minute');
-    expect(formatElapsed(60)).toBe('1 minute');
-    expect(formatElapsed(42 * 60)).toBe('42 minutes');
-    expect(formatElapsed(3_600)).toBe('1 hour');
-    expect(formatElapsed(2.5 * 3_600)).toBe('2.5 hours');
-    expect(formatElapsed(47 * 3_600)).toBe('47 hours');
-    expect(formatElapsed(2 * 86_400)).toBe('2 days');
-    expect(formatElapsed(12.3 * 86_400)).toBe('12 days');
   });
 });
 

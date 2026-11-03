@@ -397,8 +397,8 @@ Always 200.
   "deferred": 7,
   "remaining": 162,
   "windows": {
-    "24h": {"done": 89, "active_seconds": 86400, "velocity_per_day": 89.0, "eta_days": 2},
-    "7d":  {"done": 380, "active_seconds": 486940, "velocity_per_day": 67.4, "eta_days": 3}
+    "24h": {"done": 89, "active_seconds": 86400, "velocity_per_day": 89.0, "eta_days": 1.8202},
+    "7d":  {"done": 380, "active_seconds": 486940, "velocity_per_day": 67.4, "eta_days": 2.4036}
   }
 }
 ```
@@ -406,20 +406,22 @@ Always 200.
   `in_review`), `pending` (of which `blocked`), `deferred` and `remaining` = `in_progress` + `pending`. What each
   holds is in § *Velocity* below.
 * `windows` are the last 24 hours and the last 7 days, ending at `now`: in each, `done` (tickets that reached done
-  in it), `active_seconds`, `velocity_per_day` (unrounded; a client rounds it) and `eta_days`, an integer, **`0`
-  with nothing remaining** and **`null` when unknown** (work remains and nothing was done in the window).
-* An unknown project answers the same shape with zeros (and `eta_days` 0), not a 404; an invalid project name is
+  in it), `active_seconds`, `velocity_per_day` (unrounded; a client rounds it) and `eta_days`, `remaining ÷ velocity_per_day` in days,
+  **unrounded** (a number with a fraction; a client words it, from hours to months: owner request rag-t0062,
+  where it was an integer rounded up before), **`0` with nothing remaining** and **`null` when unknown** (work
+  remains and nothing was done in the window).
+* An unknown project answers the same shape with zeros (and `eta_days` 0.0), not a 404; an invalid project name is
   400. Read-only: it writes no event and takes no author fields.
 * `Cache-Control: no-store` and **no `ETag`**: the windows move with the clock, so the figures change while
   nothing is written. The dashboard's widget reads it beside the queue view; `tracker_queue` ends with a line read
-  from it (`Velocity (7 d): 67/day · 24 h: 89/day · ETA 3 days`).
+  from it (`Velocity (7 d): 67/day · 24 h: 89/day · ETA 2.4 days`), the ETA worded as the widget words it.
 
 #### `GET /tracker/{project}/report?window=24h|7d` — the velocity report (spec:velocity D27)
 ```json
 {
   "project": "ubu", "window": "7d",
   "start": "2026-10-26T22:55:45Z", "end": "2026-11-02T22:55:45Z",
-  "velocity": {"done": 380, "active_seconds": 486940, "velocity_per_day": 67.4, "eta_days": 3},
+  "velocity": {"done": 380, "active_seconds": 486940, "velocity_per_day": 67.4, "eta_days": 2.4036},
   "buckets": [
     {"start": "2026-10-26T22:55:45Z", "remaining": 171, "added": 0, "done": 1},
     {"start": "2026-10-26T23:00:00Z", "remaining": 168, "added": 2, "done": 5}

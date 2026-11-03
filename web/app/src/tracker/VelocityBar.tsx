@@ -1,7 +1,9 @@
 /**
  * The velocity widget (spec:velocity D11–D14): one row under the queue page's
- * header, `Velocity: 8/day · In progress: 3 · Pending: 48 · ETA: 7 days`, the
- * window pill (`7 d` | `24 h`) and **Report**.
+ * header, `Velocity 8/day · In progress 3 · Pending 48 · ETA 7 days`, the
+ * window pill (`7 d` | `24 h`) and **Report**. Each figure is a `Stat`
+ * (`Stat.tsx`, owner request rag-t0062): the label muted and the value
+ * emphasised, as the report's tiles set them, and read as "Velocity: 8/day".
  *
  * The pill moves Velocity and ETA only; the counts are what is open now,
  * whatever the window (D13, C5). The choice is kept per browser for every
@@ -17,14 +19,15 @@ import { Button, Segmented } from '@rag/ui';
 import { useNavigate } from 'react-router';
 
 import { reportPath } from './paths';
+import { Stat } from './Stat';
 import styles from './tracker.module.css';
 import type { Velocity, VelocityWindow } from './types';
 import {
-  formatEta,
-  formatVelocity,
+  etaParts,
   isVelocityWindow,
   readVelocityWindow,
   storeVelocityWindow,
+  velocityParts,
   velocityTooltips,
   WINDOW_OPTIONS,
 } from './velocity';
@@ -50,11 +53,28 @@ export function VelocityBar({ project, velocity }: { project: string; velocity: 
 
   return (
     <div className={styles.velocity} role="group" aria-label="Velocity">
-      <ul className={styles.velocityFigures}>
-        <li title={tips.velocity}>{`Velocity: ${formatVelocity(figures.velocity_per_day)}`}</li>
-        <li title={tips.inProgress}>{`In progress: ${velocity.in_progress}`}</li>
-        <li title={tips.pending}>{`Pending: ${velocity.pending}`}</li>
-        <li title={tips.eta}>{`ETA: ${formatEta(figures.eta_days)}`}</li>
+      <ul className={styles.velocityFigures} aria-label="Figures">
+        <Stat
+          variant="inline"
+          label="Velocity"
+          {...velocityParts(figures.velocity_per_day)}
+          title={tips.velocity}
+        />
+        <Stat
+          variant="inline"
+          label="In progress"
+          value={String(velocity.in_progress)}
+          unit=""
+          title={tips.inProgress}
+        />
+        <Stat
+          variant="inline"
+          label="Pending"
+          value={String(velocity.pending)}
+          unit=""
+          title={tips.pending}
+        />
+        <Stat variant="inline" label="ETA" {...etaParts(figures.eta_days)} title={tips.eta} />
       </ul>
       <Segmented
         value={choice}

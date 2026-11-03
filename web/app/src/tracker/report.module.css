@@ -1,6 +1,6 @@
 /*
- * The velocity report page (spec:velocity D19): the figures row (the
- * widget's, `tracker.module.css`), then three panels. Every colour is a token.
+ * The velocity report page (spec:velocity D19): the figures as tiles
+ * (`stat.module.css`, rag-t0062), then three panels. Every colour is a token.
  */
 
 .back {
@@ -29,9 +29,12 @@
   min-width: 0;
 }
 
+/* A chart's caption runs the panel's full width: capped at a measure it
+   wrapped short of the chart's right edge and read as cut off (rag-t0062).
+   At the caption's small size a full line on a wide screen is still a
+   readable length, and the chart under it is the same width. */
 .note {
   margin: 0;
-  max-width: var(--rag-measure);
   color: var(--rag-dim);
   font-size: var(--rag-text-s);
 }
@@ -41,35 +44,54 @@
   color: var(--rag-text);
 }
 
-.open {
+/* What is still open now, under the time-in-state chart: a quiet title and a
+   chip a state, wrapping on a phone; a chip never breaks inside. */
+.openRow {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--rag-space-1) var(--rag-space-4);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  color: var(--rag-text);
+  align-items: center;
+  gap: var(--rag-space-2) var(--rag-space-3);
+}
+
+.openTitle {
+  color: var(--rag-dim);
   font-size: var(--rag-text-s);
 }
 
-.openState {
-  color: var(--rag-dim);
-}
-
-.figures {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-  gap: var(--rag-space-4);
+.open {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2);
   margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--rag-text-s);
 }
 
-.figures dt {
+.chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--rag-space-2);
+  padding: 2px var(--rag-space-3);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-l);
+  background: var(--rag-surface2);
+  color: var(--rag-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* A state with nothing open: the same chip, without its ground, so the
+   states that hold something are the ones that catch the eye. */
+.chipNone {
+  background: transparent;
+}
+
+.chipState {
+  color: var(--rag-text);
+}
+
+.chipCount {
   color: var(--rag-bright);
   font-weight: 600;
-}
-
-.figures dd {
-  margin: var(--rag-space-1) 0 0;
-  max-width: var(--rag-measure);
-  color: var(--rag-text);
 }

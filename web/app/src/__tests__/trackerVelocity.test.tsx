@@ -6,7 +6,9 @@
  * the header, above the first section; Report opens the report page in the
  * window shown (m03); the pill moves Velocity and ETA and
  * never the counts, and the choice is kept (rubbish kept falls back to 7 d);
- * the rate's and the ETA's wording; the tooltips; a failed refresh keeping the
+ * the rate's and the ETA's wording (fractional days worded from hours up,
+ * rag-t0062); each figure a `Stat`, named "Velocity: 8/day" and reading so,
+ * its value set apart; the tooltips; a failed refresh keeping the
  * last figures and a failed first read drawing nothing; no row for a project
  * with no counted ticket; and the refresh: every 60 s while visible, paused
  * while hidden, and again when the queue's view changes.
@@ -119,10 +121,10 @@ describe('the row', () => {
   it('reads the concept’s example, under the header and above the first section', async () => {
     open();
     const row = await findBar();
-    expect(within(row).getByText('Velocity: 8/day')).toBeInTheDocument();
-    expect(within(row).getByText('In progress: 3')).toBeInTheDocument();
-    expect(within(row).getByText('Pending: 48')).toBeInTheDocument();
-    expect(within(row).getByText('ETA: 7 days')).toBeInTheDocument();
+    expect(within(row).getByRole('listitem', { name: 'Velocity: 8/day' })).toBeInTheDocument();
+    expect(within(row).getByRole('listitem', { name: 'In progress: 3' })).toBeInTheDocument();
+    expect(within(row).getByRole('listitem', { name: 'Pending: 48' })).toBeInTheDocument();
+    expect(within(row).getByRole('listitem', { name: 'ETA: 7 days' })).toBeInTheDocument();
     expect(windowChoice('7 d')).toHaveAttribute('aria-checked', 'true');
 
     const header = screen.getByRole('heading', { name: 'demo', level: 1 }).closest('header')!;
@@ -153,14 +155,14 @@ describe('the row', () => {
 
     await user.click(windowChoice('24 h'));
     expect(windowChoice('24 h')).toHaveAttribute('aria-checked', 'true');
-    expect(within(bar()).getByText('Velocity: 24/day')).toBeInTheDocument();
-    expect(within(bar()).getByText('ETA: 3 days')).toBeInTheDocument();
-    expect(within(bar()).getByText('In progress: 3')).toBeInTheDocument();
-    expect(within(bar()).getByText('Pending: 48')).toBeInTheDocument();
+    expect(within(bar()).getByRole('listitem', { name: 'Velocity: 24/day' })).toBeInTheDocument();
+    expect(within(bar()).getByRole('listitem', { name: 'ETA: 3 days' })).toBeInTheDocument();
+    expect(within(bar()).getByRole('listitem', { name: 'In progress: 3' })).toBeInTheDocument();
+    expect(within(bar()).getByRole('listitem', { name: 'Pending: 48' })).toBeInTheDocument();
 
     await user.click(windowChoice('7 d'));
-    expect(within(bar()).getByText('Velocity: 8/day')).toBeInTheDocument();
-    expect(within(bar()).getByText('ETA: 7 days')).toBeInTheDocument();
+    expect(within(bar()).getByRole('listitem', { name: 'Velocity: 8/day' })).toBeInTheDocument();
+    expect(within(bar()).getByRole('listitem', { name: 'ETA: 7 days' })).toBeInTheDocument();
   });
 
   it('keeps the window chosen across a remount', async () => {
@@ -174,7 +176,7 @@ describe('the row', () => {
     reopen();
     await findBar();
     expect(windowChoice('24 h')).toHaveAttribute('aria-checked', 'true');
-    expect(within(bar()).getByText('Velocity: 24/day')).toBeInTheDocument();
+    expect(within(bar()).getByRole('listitem', { name: 'Velocity: 24/day' })).toBeInTheDocument();
   });
 
   it('falls back to 7 d when what is stored is rubbish', async () => {
@@ -182,7 +184,7 @@ describe('the row', () => {
     reopen();
     await findBar();
     expect(windowChoice('7 d')).toHaveAttribute('aria-checked', 'true');
-    expect(within(bar()).getByText('Velocity: 8/day')).toBeInTheDocument();
+    expect(within(bar()).getByRole('listitem', { name: 'Velocity: 8/day' })).toBeInTheDocument();
   });
 
   it('falls back to 7 d when storage refuses, and still switches', async () => {
@@ -200,7 +202,7 @@ describe('the row', () => {
     await findBar();
     expect(windowChoice('7 d')).toHaveAttribute('aria-checked', 'true');
     await user.click(windowChoice('24 h'));
-    expect(within(bar()).getByText('Velocity: 24/day')).toBeInTheDocument();
+    expect(within(bar()).getByRole('listitem', { name: 'Velocity: 24/day' })).toBeInTheDocument();
   });
 });
 
@@ -208,12 +210,16 @@ describe('the wording', () => {
   it('gives one decimal under 10 unless it rounds whole, and a whole number from 10', async () => {
     current = week({ velocity_per_day: 2.4 });
     const first = open();
-    expect(within(await findBar()).getByText('Velocity: 2.4/day')).toBeInTheDocument();
+    expect(
+      within(await findBar()).getByRole('listitem', { name: 'Velocity: 2.4/day' }),
+    ).toBeInTheDocument();
     first.unmount();
 
     current = week({ velocity_per_day: 12.3 });
     open();
-    expect(within(await findBar()).getByText('Velocity: 12/day')).toBeInTheDocument();
+    expect(
+      within(await findBar()).getByRole('listitem', { name: 'Velocity: 12/day' }),
+    ).toBeInTheDocument();
     // Whole from 10, or when one decimal would be a whole number (D12);
     // half away from zero, as the MCP line rounds (D32).
     expect(formatRate(0)).toBe('0');
@@ -243,39 +249,84 @@ describe('the wording', () => {
       },
     });
     open();
-    expect(within(await findBar()).getByText('ETA: done')).toBeInTheDocument();
+    expect(
+      within(await findBar()).getByRole('listitem', { name: 'ETA: done' }),
+    ).toBeInTheDocument();
   });
 
-  it('says “ETA: —” when it is unknown, and “1 day” for one', async () => {
+  it('shows “—” for an unknown ETA, read as “unknown”', async () => {
     current = week({ done: 0, velocity_per_day: 0, eta_days: null });
+    open();
+    const eta = within(await findBar()).getByRole('listitem', { name: 'ETA: unknown' });
+    expect(within(eta).getByText('—')).toBeInTheDocument();
+    expect(within(bar()).getByRole('listitem', { name: 'Velocity: 0/day' })).toBeInTheDocument();
+  });
+
+  it('words a fractional ETA from hours up (rag-t0062)', async () => {
+    current = week({ eta_days: 1.6 });
     const first = open();
-    expect(within(await findBar()).getByText('ETA: —')).toBeInTheDocument();
-    expect(within(bar()).getByText('Velocity: 0/day')).toBeInTheDocument();
+    expect(
+      within(await findBar()).getByRole('listitem', { name: 'ETA: 1.6 days' }),
+    ).toBeInTheDocument();
     first.unmount();
 
-    current = week({ eta_days: 1 });
+    current = week({ eta_days: 32 / 24 });
+    const second = open();
+    expect(
+      within(await findBar()).getByRole('listitem', { name: 'ETA: 32 hours' }),
+    ).toBeInTheDocument();
+    second.unmount();
+
+    current = week({ eta_days: 1 / 24 });
     open();
-    expect(within(await findBar()).getByText('ETA: 1 day')).toBeInTheDocument();
+    expect(
+      within(await findBar()).getByRole('listitem', { name: 'ETA: 1 hour' }),
+    ).toBeInTheDocument();
+  });
+
+  it('sets each value apart from its label and unit, the content reading as the name', async () => {
+    open();
+    const row = await findBar();
+    const figures = within(row).getByRole('list', { name: 'Figures' });
+    const items = within(figures).getAllByRole('listitem');
+    // Names first: what a screen reader that takes the name hears.
+    expect(items.map((li) => li.getAttribute('aria-label'))).toEqual([
+      'Velocity: 8/day',
+      'In progress: 3',
+      'Pending: 48',
+      'ETA: 7 days',
+    ]);
+    // The content reads the same (a hidden colon), for one that reads it.
+    expect(items.map((li) => li.textContent)).toEqual([
+      'Velocity: 8/day',
+      'In progress: 3',
+      'Pending: 48',
+      'ETA: 7 days',
+    ]);
+    // The value is its own element, the unit apart inside it.
+    const velocity = items[0]!;
+    expect(within(velocity).getByText('Velocity')).toBeInTheDocument();
+    expect(within(velocity).getByText('/day').parentElement).toHaveTextContent(/^8\/day$/);
   });
 
   it('explains each figure on hover, naming the in-review, blocked and deferred counts', async () => {
     open();
     const row = await findBar();
-    expect(within(row).getByText('Velocity: 8/day')).toHaveAttribute(
+    expect(within(row).getByRole('listitem', { name: 'Velocity: 8/day' })).toHaveAttribute(
       'title',
       '20 done in the last 7 days over 60 h of active time (24 h: 2 over 2 h). ' +
         'Active time leaves out gaps of over 2 hours between writes.',
     );
-    expect(within(row).getByText('ETA: 7 days')).toHaveAttribute(
+    expect(within(row).getByRole('listitem', { name: 'ETA: 7 days' })).toHaveAttribute(
       'title',
       'Remaining ÷ velocity, in days of active work at this pace. ' +
         'An idle project takes longer in calendar days.',
     );
-    expect(within(row).getByText('In progress: 3')).toHaveAttribute(
+    expect(within(row).getByRole('listitem', { name: 'In progress: 3' })).toHaveAttribute(
       'title',
       'Includes 1 in review.',
     );
-    expect(within(row).getByText('Pending: 48')).toHaveAttribute(
+    expect(within(row).getByRole('listitem', { name: 'Pending: 48' })).toHaveAttribute(
       'title',
       'Includes 2 blocked. Deferred tickets (4) are left out.',
     );
@@ -292,7 +343,7 @@ describe('when the read fails, or there is nothing to count', () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
     expect(velocityReads()).toBe(2);
-    expect(within(bar()).getByText('Velocity: 8/day')).toBeInTheDocument();
+    expect(within(bar()).getByRole('listitem', { name: 'Velocity: 8/day' })).toBeInTheDocument();
     expect(screen.queryByText(/the store is locked/)).toBeNull();
   });
 
@@ -339,7 +390,9 @@ describe('when the read fails, or there is nothing to count', () => {
       },
     });
     open();
-    expect(within(await findBar()).getByText('ETA: done')).toBeInTheDocument();
+    expect(
+      within(await findBar()).getByRole('listitem', { name: 'ETA: done' }),
+    ).toBeInTheDocument();
   });
 });
 
@@ -355,7 +408,7 @@ describe('the refresh', () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
     expect(velocityReads()).toBe(2);
-    expect(within(bar()).getByText('Velocity: 9/day')).toBeInTheDocument();
+    expect(within(bar()).getByRole('listitem', { name: 'Velocity: 9/day' })).toBeInTheDocument();
   });
 
   it('stops while the tab is hidden and reads at once when it is shown', async () => {
@@ -403,6 +456,8 @@ describe('the refresh', () => {
       await vi.advanceTimersByTimeAsync(10_000);
     });
     await waitFor(() => expect(velocityReads()).toBe(2));
-    await waitFor(() => expect(within(bar()).getByText('In progress: 2')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(within(bar()).getByRole('listitem', { name: 'In progress: 2' })).toBeInTheDocument(),
+    );
   });
 });

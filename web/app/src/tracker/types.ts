@@ -291,7 +291,7 @@ export interface VelocityFigures {
   active_seconds: number;
   /** Done per 24 h of active time (D8). */
   velocity_per_day: number;
-  /** Remaining ÷ velocity, rounded up (D9): 0 when nothing remains, `null` when unknown. */
+  /** Remaining ÷ velocity in days, unrounded (D9, rag-t0062): 0 when nothing remains, `null` when unknown. */
   eta_days: number | null;
 }
 

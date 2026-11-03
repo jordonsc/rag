@@ -69,9 +69,10 @@ pub struct VelocityWindow {
     pub active_seconds: i64,
     /// `done ÷ max(active, MIN_ACTIVE)`, per 24 hours of active time (D8).
     pub velocity_per_day: f64,
-    /// `ceil(remaining ÷ velocity)` days (D9): 0 with nothing remaining, `None`
-    /// (unknown) with work remaining and a velocity of 0.
-    pub eta_days: Option<i64>,
+    /// `remaining ÷ velocity` days, unrounded (D9; a client rounds it, owner
+    /// request rag-t0062): 0 with nothing remaining, `None` (unknown) with work
+    /// remaining and a velocity of 0.
+    pub eta_days: Option<f64>,
 }
 
 /// The active time in `[start, now]` (D6), in seconds, from the sorted Unix
@@ -104,13 +105,15 @@ pub fn velocity_per_day(done: i64, active_seconds: i64) -> f64 {
     done as f64 * DAY as f64 / active_seconds.max(MIN_ACTIVE) as f64
 }
 
-/// The ETA in days (D9): `ceil(remaining ÷ velocity)`; 0 with nothing
-/// remaining; `None` (unknown) with work remaining and no velocity.
-pub fn eta_days(remaining: i64, velocity_per_day: f64) -> Option<i64> {
+/// The ETA in days (D9): `remaining ÷ velocity`, unrounded, so the widget, the
+/// report and the MCP line can word it in hours, days, weeks or months (owner
+/// request rag-t0062); 0 with nothing remaining; `None` (unknown) with work
+/// remaining and no velocity.
+pub fn eta_days(remaining: i64, velocity_per_day: f64) -> Option<f64> {
     if remaining <= 0 {
-        Some(0)
+        Some(0.0)
     } else if velocity_per_day > 0.0 {
-        Some((remaining as f64 / velocity_per_day).ceil() as i64)
+        Some(remaining as f64 / velocity_per_day)
     } else {
         None
     }

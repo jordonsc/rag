@@ -44,7 +44,7 @@ fn active_time_counts_the_gaps_of_at_most_two_hours_within_the_window() {
 }
 
 #[test]
-fn velocity_has_a_floor_of_an_hour_and_the_eta_rounds_up() {
+fn velocity_has_a_floor_of_an_hour_and_the_eta_is_unrounded() {
     assert_eq!(MIN_ACTIVE, H);
     // Three in an hour, or in twenty minutes (the floor), is 72 a day.
     assert_eq!(velocity_per_day(3, H), 72.0);
@@ -52,11 +52,13 @@ fn velocity_has_a_floor_of_an_hour_and_the_eta_rounds_up() {
     assert_eq!(velocity_per_day(56, 7 * 24 * H), 8.0);
     assert_eq!(velocity_per_day(0, 7 * 24 * H), 0.0);
     assert_eq!(velocity_per_day(0, 0), 0.0);
-    // 51 at 8 a day is 6.4 days: 7.
-    assert_eq!(eta_days(51, 8.0), Some(7));
-    assert_eq!(eta_days(48, 8.0), Some(6));
-    assert_eq!(eta_days(0, 0.0), Some(0));
-    assert_eq!(eta_days(0, 8.0), Some(0));
+    // 51 at 8 a day is 6.375 days, unrounded (rag-t0062): the client words it.
+    assert_eq!(eta_days(51, 8.0), Some(6.375));
+    assert_eq!(eta_days(48, 8.0), Some(6.0));
+    // One at 48 a day is half an hour.
+    assert_eq!(eta_days(1, 48.0), Some(1.0 / 48.0));
+    assert_eq!(eta_days(0, 0.0), Some(0.0));
+    assert_eq!(eta_days(0, 8.0), Some(0.0));
     assert_eq!(eta_days(5, 0.0), None);
 }
 
@@ -206,13 +208,13 @@ async fn the_concepts_example_reads_eight_a_day_and_seven_days() {
     assert_eq!(week.done, 56);
     assert_eq!(week.active_seconds, 7 * 24 * H);
     assert_eq!(week.velocity_per_day, 8.0);
-    assert_eq!(week.eta_days, Some(7));
+    assert_eq!(week.eta_days, Some(6.375));
     // The last 24 hours: nine done (0 h to 24 h ago, both ends in), all day active.
     let day = &v.windows.day;
     assert_eq!(day.done, 9);
     assert_eq!(day.active_seconds, 24 * H);
     assert_eq!(day.velocity_per_day, 9.0);
-    assert_eq!(day.eta_days, Some(6));
+    assert_eq!(day.eta_days, Some(51.0 / 9.0));
     assert_spans_match_rows(s).await;
 }
 
@@ -253,8 +255,8 @@ async fn the_figures_have_the_routes_shape() {
             "project": "none", "now": NOW, "in_progress": 0, "in_review": 0, "pending": 0,
             "blocked": 0, "deferred": 0, "remaining": 0,
             "windows": {
-                "24h": {"done": 0, "active_seconds": 0, "velocity_per_day": 0.0, "eta_days": 0},
-                "7d": {"done": 0, "active_seconds": 0, "velocity_per_day": 0.0, "eta_days": 0}
+                "24h": {"done": 0, "active_seconds": 0, "velocity_per_day": 0.0, "eta_days": 0.0},
+                "7d": {"done": 0, "active_seconds": 0, "velocity_per_day": 0.0, "eta_days": 0.0}
             }
         })
     );
@@ -287,7 +289,7 @@ async fn a_ticket_counts_once_in_a_window_however_often_it_was_done_and_after_a_
     // A few seconds of writes: the one-hour floor, 2 an hour is 48 a day.
     assert!(v.windows.week.active_seconds < MIN_ACTIVE);
     assert_eq!(v.windows.week.velocity_per_day, 48.0);
-    assert_eq!(v.windows.week.eta_days, Some(1));
+    assert_eq!(v.windows.week.eta_days, Some(1.0 / 48.0));
     assert_spans_match_rows(s).await;
 }
 
@@ -410,17 +412,18 @@ async fn an_idle_project_reads_its_working_rate_not_its_calendar_rate() {
     assert_eq!(week.velocity_per_day, 72.0);
     // Nothing remaining: an ETA of 0.
     assert_eq!(v.remaining, 0);
-    assert_eq!(week.eta_days, Some(0));
+    assert_eq!(week.eta_days, Some(0.0));
     // The last 24 hours were idle: nothing done, no velocity, and with nothing
     // remaining still an ETA of 0.
     let day = &v.windows.day;
     assert_eq!((day.done, day.active_seconds), (0, 0));
     assert_eq!(day.velocity_per_day, 0.0);
-    assert_eq!(day.eta_days, Some(0));
-    // One ticket waiting: a day at the week's pace, unknown at the day's.
+    assert_eq!(day.eta_days, Some(0.0));
+    // One ticket waiting: a 72nd of a day (20 minutes) at the week's pace,
+    // unknown at the day's.
     seed.ticket("dev", "pending", false).await;
     let v = s.velocity("idle", now()).await.unwrap();
-    assert_eq!(v.windows.week.eta_days, Some(1));
+    assert_eq!(v.windows.week.eta_days, Some(1.0 / 72.0));
     assert_eq!(v.windows.day.eta_days, None);
     // Spans done before the window, and events after now, are outside it.
     seed.done(8 * 24 * H).await;

@@ -1,14 +1,17 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import { Card, ErrorState, Icon, Panel, Segmented, Spinner } from '@rag/ui';
 import { Link, useParams, useSearchParams } from 'react-router';
 
 import { asApiError, isAbort, type LedgerApiError } from '../api';
+import { cx } from '../util';
 import { getReport, getVelocity, isProjectName, PROJECT_NAME_ERROR } from './api';
 import { BurnDown, RangeBars, type BurnPoint, type RangeRow } from './charts';
 import { projectPath, storeLastProject } from './paths';
 import styles from './report.module.css';
 import { dayLabels, hourLabels, localDays } from './reportMath';
 import { RETURN_STATE } from './scrollMemory';
+import { SplitStat, Stat } from './Stat';
+import stat from './stat.module.css';
 import frame from './tracker.module.css';
 import {
   REPORT_STATES,
@@ -18,12 +21,13 @@ import {
   type VelocityWindow,
 } from './types';
 import {
+  durationParts,
+  etaParts,
   formatElapsed,
-  formatEta,
-  formatVelocity,
   isVelocityWindow,
   readVelocityWindow,
   storeVelocityWindow,
+  velocityParts,
   velocityTooltips,
   WINDOW_OPTIONS,
 } from './velocity';
@@ -40,6 +44,11 @@ const STATE_LABEL: Record<ReportState, string> = {
 /** "1 ticket", "3 tickets". */
 function count(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
+}
+
+/** "ticket" or "tickets", for a tile's unit. */
+function noun(n: number, one: string, many: string): string {
+  return n === 1 ? one : many;
 }
 
 /** The window in words, for the notes: "the last 7 days". */
@@ -97,13 +106,15 @@ export function ReportView() {
  * writes both. Every block follows it (R10), each with its counts, so a small
  * sample is plain.
  *
- * * **The figures** across the top, as the widget says them: velocity and
- *   ETA over the window, the counts now, and the window's done.
+ * * **The figures** across the top as tiles (`Stat.tsx`, rag-t0062), worded
+ *   as the widget words them: velocity and ETA over the window, the counts
+ *   now, and the window's done.
  * * **Burn-down**: remaining at the end of each local day (or hour), over
  *   bars of tickets added and done in it.
  * * **Time in each state**: the mean, median and 90th percentile of the
- *   stretches that ended in the window, and those still open.
- * * **Completion and resolution**: MTTC and MTTR as figures.
+ *   stretches that ended in the window, and those still open, as chips.
+ * * **Completion and resolution**: MTTC, those done without being in
+ *   progress, MTTR, and confirmed against sent back, as tiles.
  *
  * One read of the report and one of the velocity (for the counts now), in
  * parallel, on open and on each change of window. Not polled: it is a
@@ -228,17 +239,26 @@ function Blocks({
     };
   });
   const { mttc, mttr } = report;
+  const openId = useId();
 
   return (
     <>
-      <ul className={frame.velocityFigures} aria-label="Figures">
-        <li title={tips.velocity}>{`Velocity: ${formatVelocity(figures.velocity_per_day)}`}</li>
-        <li title={tips.inProgress}>{`In progress: ${velocity.in_progress}`}</li>
-        <li title={tips.pending}>{`Pending: ${velocity.pending}`}</li>
-        <li title={tips.eta}>{`ETA: ${formatEta(figures.eta_days)}`}</li>
-        <li
+      <ul className={stat.tiles} aria-label="Figures">
+        <Stat label="Velocity" {...velocityParts(figures.velocity_per_day)} title={tips.velocity} />
+        <Stat
+          label="In progress"
+          value={String(velocity.in_progress)}
+          unit=""
+          title={tips.inProgress}
+        />
+        <Stat label="Pending" value={String(velocity.pending)} unit="" title={tips.pending} />
+        <Stat label="ETA" {...etaParts(figures.eta_days)} title={tips.eta} />
+        <Stat
+          label="Done"
+          value={String(figures.done)}
+          unit={noun(figures.done, 'ticket', 'tickets')}
           title={`Over ${formatElapsed(figures.active_seconds)} of active time in ${span}.`}
-        >{`Done: ${count(figures.done, 'ticket', 'tickets')}`}</li>
+        />
       </ul>
 
       <Block title="Burn-down">
@@ -261,42 +281,92 @@ function Blocks({
           blocked ticket is also in its status for that time.
         </p>
         <RangeBars rows={rows} caption={`Time in each state over ${span}`} format={formatElapsed} />
-        <ul className={styles.open} aria-label="Still open">
-          {REPORT_STATES.map((state) => {
-            const s = report.states[state];
-            return (
-              <li key={state}>
-                <span className={styles.openState}>{STATE_LABEL[state]}:</span>{' '}
-                {s.open === 0 || s.oldest_open_seconds === null
-                  ? 'none still open'
-                  : `${s.open} still open, the oldest ${formatElapsed(s.oldest_open_seconds)}`}
-              </li>
-            );
-          })}
-        </ul>
+        <div className={styles.openRow}>
+          <span id={openId} className={styles.openTitle}>
+            Still open
+          </span>
+          <ul className={styles.open} aria-labelledby={openId}>
+            {REPORT_STATES.map((state) => {
+              const s = report.states[state];
+              const none = s.open === 0 || s.oldest_open_seconds === null;
+              const oldest = none ? '' : formatElapsed(s.oldest_open_seconds ?? 0);
+              return (
+                <li
+                  key={state}
+                  className={cx(styles.chip, none && styles.chipNone)}
+                  aria-label={
+                    none
+                      ? `${STATE_LABEL[state]}: none still open`
+                      : `${STATE_LABEL[state]}: ${s.open} still open, the oldest ${oldest}`
+                  }
+                >
+                  <span className={styles.chipState}>{STATE_LABEL[state]}</span>
+                  {none ? (
+                    <span>none</span>
+                  ) : (
+                    <>
+                      <span className={styles.chipCount}>{s.open}</span>
+                      <span>{`oldest ${oldest}`}</span>
+                    </>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       </Block>
 
       <Block title="Completion and resolution">
-        <dl className={styles.figures}>
-          <div>
-            <dt>Mean time to completion</dt>
-            <dd>
-              {mttc.mean_seconds === null || mttc.median_seconds === null
-                ? 'No ticket done in this window was in progress.'
-                : `${formatElapsed(mttc.mean_seconds)} (median ${formatElapsed(mttc.median_seconds)}), over ${count(mttc.count, 'ticket', 'tickets')}, in progress since each was last reopened.`}
-            </dd>
-            <dd>{`${count(mttc.never_in_progress, 'ticket', 'tickets')} done without being in progress.`}</dd>
-          </div>
-          <div>
-            <dt>Mean time to resolution</dt>
-            <dd>
-              {mttr.mean_seconds === null || mttr.median_seconds === null
-                ? 'No review ended in this window.'
-                : `${formatElapsed(mttr.mean_seconds)} (median ${formatElapsed(mttr.median_seconds)}), over ${count(mttr.count, 'review', 'reviews')}.`}
-            </dd>
-            <dd>{`${mttr.confirmed} confirmed, ${mttr.sent_back} sent back.`}</dd>
-          </div>
-        </dl>
+        <ul className={cx(stat.tiles, stat.tilesWide)} aria-label="Completion and resolution">
+          <Stat
+            inset
+            label="Mean time to completion"
+            {...(mttc.mean_seconds === null
+              ? { value: '—', unit: '', spoken: 'none' }
+              : durationParts(mttc.mean_seconds))}
+            detail={
+              mttc.mean_seconds === null || mttc.median_seconds === null
+                ? ['no ticket done in this window was in progress']
+                : [
+                    `median ${formatElapsed(mttc.median_seconds)}`,
+                    `over ${count(mttc.count, 'ticket', 'tickets')}`,
+                  ]
+            }
+            title={`Time in progress, since each was last reopened, of the tickets done in ${span}.`}
+          />
+          <Stat
+            inset
+            label="Done without being in progress"
+            value={String(mttc.never_in_progress)}
+            unit={noun(mttc.never_in_progress, 'ticket', 'tickets')}
+            detail={['left out of the mean']}
+          />
+          <Stat
+            inset
+            label="Mean time to resolution"
+            {...(mttr.mean_seconds === null
+              ? { value: '—', unit: '', spoken: 'none' }
+              : durationParts(mttr.mean_seconds))}
+            detail={
+              mttr.mean_seconds === null || mttr.median_seconds === null
+                ? ['no review ended in this window']
+                : [
+                    `median ${formatElapsed(mttr.median_seconds)}`,
+                    `over ${count(mttr.count, 'review', 'reviews')}`,
+                  ]
+            }
+            title={`Time in review, until confirmed or sent back, of the reviews that ended in ${span}.`}
+          />
+          <SplitStat
+            inset
+            label="Reviews ended"
+            parts={[
+              { count: mttr.confirmed, label: 'confirmed', tone: 'good' },
+              { count: mttr.sent_back, label: 'sent back', tone: 'warn' },
+            ]}
+            title={`Of the reviews that ended in ${span}: confirmed done, or sent back to work.`}
+          />
+        </ul>
       </Block>
     </>
   );

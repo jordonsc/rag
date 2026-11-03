@@ -43,35 +43,109 @@ export function formatVelocity(perDay: number): string {
   return `${formatRate(perDay)}/day`;
 }
 
-/** The ETA's value (D9, D12): "done" for 0, "—" when unknown, "1 day", "N days". */
-export function formatEta(days: number | null): string {
-  if (days === null) {
-    return '—';
+// ---- Lengths of time (owner request rag-t0062) ------------------------------
+
+/** A number and its unit, apart, so a tile can set the unit smaller. */
+export interface Parts {
+  /** "1.6", "32", "<0.1", "done", "—". */
+  value: string;
+  /** "days", "hour", "/day", or `''` for none. */
+  unit: string;
+}
+
+/** The value and its unit as one string: "1.6 days", "8/day", "done". */
+export function joinParts({ value, unit }: Parts): string {
+  if (unit === '') {
+    return value;
   }
-  if (days === 0) {
-    return 'done';
-  }
-  return days === 1 ? '1 day' : `${days} days`;
+  return unit.startsWith('/') ? `${value}${unit}` : `${value} ${unit}`;
 }
 
 /**
- * A length of time with its unit in words (D19, VL-13): minutes under an
- * hour, hours under two days, days beyond, the hours and days worded as the
- * rate is ("2.4 hours", "12 days").
+ * An amount in the owner's rule (rag-t0062): one decimal below 5, a whole
+ * number from 5; a decimal that rounds to a whole number reads whole ("1",
+ * not "1.0", and 4.96 reads "5"). Rounded half away from zero, as the MCP's
+ * `amount()` does, so the two always agree.
+ */
+export function formatAmount(value: number): string {
+  if (value < 5) {
+    const tenths = roundHalfAway(value, 1);
+    if (!Number.isInteger(tenths)) {
+      return tenths.toFixed(1);
+    }
+  }
+  // `+ 0` turns a -0 into 0.
+  return String(roundHalfAway(value, 0) + 0);
+}
+
+/** The units a length is worded in, smallest first; a month is 365.25 ÷ 12 days. */
+const UNITS = [
+  { one: 'minute', many: 'minutes', seconds: 60 },
+  { one: 'hour', many: 'hours', seconds: 3_600 },
+  { one: 'day', many: 'days', seconds: 86_400 },
+  { one: 'week', many: 'weeks', seconds: 604_800 },
+  { one: 'month', many: 'months', seconds: 2_629_800 },
+] as const;
+
+export type SmallestUnit = 'minute' | 'hour';
+
+/**
+ * A length of time in the largest unit it is over one and a half of
+ * (rag-t0062): minutes (or hours, for the ETA) until 1.5 hours (90 minutes),
+ * then hours until 1.5 days (36 hours), days until 1.5 weeks (10.5 days),
+ * weeks until 1.5 months, months beyond; the amount in `formatAmount`'s rule
+ * ("32 hours", "1.6 days", "1.6 weeks", "6 weeks", "4.6 months"), singular
+ * for exactly one ("1 day"). Something that rounds to nothing but is not
+ * nothing reads "<0.1". Mirrored exactly by the MCP's `duration()`
+ * (`crates/mcp/src/tracker.rs`), and pinned by the same cases on both sides.
+ */
+export function durationParts(seconds: number, smallest: SmallestUnit = 'minute'): Parts {
+  const s = Math.max(0, seconds);
+  let i = UNITS.findIndex((u) => u.one === smallest);
+  while (i + 1 < UNITS.length && s > 1.5 * UNITS[i + 1]!.seconds) {
+    i += 1;
+  }
+  const unit = UNITS[i]!;
+  const amount = s / unit.seconds;
+  let value = formatAmount(amount);
+  if (value === '0' && s > 0) {
+    value = '<0.1';
+  }
+  return { value, unit: value === '1' ? unit.one : unit.many };
+}
+
+/**
+ * A length of time with its unit in words, for the report (D19, VL-13):
+ * `durationParts` from minutes ("42 minutes", "2.5 hours", "6.7 days").
  */
 export function formatElapsed(seconds: number): string {
-  if (seconds < 3600) {
-    const minutes = Math.round(seconds / 60);
-    if (minutes === 0) {
-      return seconds > 0 ? 'under a minute' : '0 minutes';
-    }
-    return minutes === 1 ? '1 minute' : `${minutes} minutes`;
+  return joinParts(durationParts(seconds, 'minute'));
+}
+
+/**
+ * The ETA (D9, D12, amended by rag-t0062): `eta_days` worded from hours up
+ * ("32 hours", "1.6 days", "6 weeks"); "done" with nothing remaining, "—"
+ * when it is unknown (`spoken` says "unknown", for a screen reader).
+ */
+export function etaParts(days: number | null): Parts & { spoken?: string } {
+  if (days === null) {
+    return { value: '—', unit: '', spoken: 'unknown' };
   }
-  if (seconds < 2 * 86_400) {
-    const hours = formatRate(seconds / 3600);
-    return hours === '1' ? '1 hour' : `${hours} hours`;
+  if (days <= 0) {
+    return { value: 'done', unit: '' };
   }
-  return `${formatRate(seconds / 86_400)} days`;
+  return durationParts(days * 86_400, 'hour');
+}
+
+/** The ETA as one string: "1.6 days", "done", "—". */
+export function formatEta(days: number | null): string {
+  const { value, unit } = etaParts(days);
+  return joinParts({ value, unit });
+}
+
+/** A velocity apart: "8" and "/day". */
+export function velocityParts(perDay: number): Parts {
+  return { value: formatRate(perDay), unit: '/day' };
 }
 
 /** Active time in hours, worded as the rate is. */

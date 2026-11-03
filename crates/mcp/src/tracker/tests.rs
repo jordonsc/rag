@@ -2618,14 +2618,20 @@ fn velocity_view(week: f64, day: f64, eta: Value, remaining: i64) -> Value {
 
 #[test]
 fn the_velocity_line_writes_rates_as_the_widget_does() {
+    // The ETA is fractional days since rag-t0062, worded from hours up.
     assert_eq!(
-        velocity_line(&velocity_view(42.9, 51.2, json!(2), 51)).as_deref(),
-        Some("Velocity (7 d): 43/day · 24 h: 51/day · ETA 2 days")
+        velocity_line(&velocity_view(42.9, 51.2, json!(51.0 / 42.9), 51)).as_deref(),
+        Some("Velocity (7 d): 43/day · 24 h: 51/day · ETA 29 hours")
     );
     assert_eq!(
-        velocity_line(&velocity_view(2.4, 9.96, json!(1), 2)).as_deref(),
-        Some("Velocity (7 d): 2.4/day · 24 h: 10/day · ETA 1 day")
+        velocity_line(&velocity_view(2.4, 9.96, json!(1.6), 4)).as_deref(),
+        Some("Velocity (7 d): 2.4/day · 24 h: 10/day · ETA 1.6 days")
     );
+    assert_eq!(
+        velocity_line(&velocity_view(8.0, 0.0, json!(0.0), 0)).as_deref(),
+        Some("Velocity (7 d): 8/day · 24 h: 0/day · ETA done")
+    );
+    // An integer 0 (an older server) is done too.
     assert_eq!(
         velocity_line(&velocity_view(8.0, 0.0, json!(0), 0)).as_deref(),
         Some("Velocity (7 d): 8/day · 24 h: 0/day · ETA done")
@@ -2649,6 +2655,60 @@ fn the_velocity_line_writes_rates_as_the_widget_does() {
     assert_eq!(rate(42.9), "43");
     assert_eq!(rate(118.9), "119");
     assert_eq!(rate(123.4), "123");
+}
+
+/// The ETA's wording (rag-t0062): the same cases as `formatEta` in
+/// `web/app/src/__tests__/trackerFormat.test.ts`, so the line and the widget agree.
+#[test]
+fn the_eta_moves_up_a_unit_past_one_and_a_half_of_it() {
+    // The owner's examples ("16 days" contradicts the rule: 2.3 weeks).
+    assert_eq!(format_eta(32.0 / 24.0), "32 hours");
+    assert_eq!(format_eta(1.6), "1.6 days");
+    assert_eq!(format_eta(11.2), "1.6 weeks");
+    assert_eq!(format_eta(42.0), "6 weeks");
+    assert_eq!(format_eta(140.0), "4.6 months");
+    assert_eq!(format_eta(16.0), "2.3 weeks");
+    // The boundaries: 36 hours is still hours, 10.5 days still days (whole,
+    // half away from zero), 1.5 months still weeks.
+    assert_eq!(format_eta(1.5), "36 hours");
+    assert_eq!(format_eta(1.51), "1.5 days");
+    assert_eq!(format_eta(10.5), "11 days");
+    assert_eq!(format_eta(10.6), "1.5 weeks");
+    assert_eq!(format_eta(1.5 * 365.25 / 12.0), "7 weeks");
+    assert_eq!(format_eta(46.0), "1.5 months");
+    assert_eq!(format_eta(200.0), "7 months");
+    // One decimal below 5, whole from 5; a whole decimal reads whole.
+    assert_eq!(format_eta(4.94), "4.9 days");
+    assert_eq!(format_eta(4.96), "5 days");
+    assert_eq!(format_eta(7.0), "7 days");
+    assert_eq!(format_eta(3.0), "3 days");
+    assert_eq!(format_eta(2.25 / 24.0), "2.3 hours");
+    // Singular for exactly one; hours are the ETA's smallest unit.
+    assert_eq!(format_eta(1.0 / 24.0), "1 hour");
+    assert_eq!(format_eta(2.0 / 24.0), "2 hours");
+    assert_eq!(format_eta(1.0 / 48.0), "0.5 hours");
+    assert_eq!(format_eta(0.001), "<0.1 hours");
+}
+
+/// The report's lengths (rag-t0062): minutes the smallest unit, the same cases
+/// as `formatElapsed` in `web/app/src/__tests__/trackerFormat.test.ts`.
+#[test]
+fn a_length_moves_up_from_minutes_by_the_same_rule() {
+    let m = |seconds: f64| duration(seconds, 0);
+    assert_eq!(m(0.0), "0 minutes");
+    assert_eq!(m(2.0), "<0.1 minutes");
+    assert_eq!(m(20.0), "0.3 minutes");
+    assert_eq!(m(60.0), "1 minute");
+    assert_eq!(m(42.0 * 60.0), "42 minutes");
+    assert_eq!(m(3_600.0), "60 minutes");
+    assert_eq!(m(90.0 * 60.0), "90 minutes");
+    assert_eq!(m(91.0 * 60.0), "1.5 hours");
+    assert_eq!(m(6_840.0), "1.9 hours");
+    assert_eq!(m(2.5 * 3_600.0), "2.5 hours");
+    assert_eq!(m(32.0 * 3_600.0), "32 hours");
+    assert_eq!(m(47.0 * 3_600.0), "2 days");
+    assert_eq!(m(5.2 * 86_400.0), "5 days");
+    assert_eq!(m(12.3 * 86_400.0), "1.8 weeks");
 }
 
 #[test]

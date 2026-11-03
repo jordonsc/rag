@@ -371,9 +371,10 @@ async fn velocity_answers_the_figures_for_a_project_with_tickets() {
     for w in ["24h", "7d"] {
         let win = &v["windows"][w];
         assert_eq!(win["done"], 1, "{v}");
-        // Seconds of writes: the one-hour floor, so 24 a day, and 2 left is a day.
+        // Seconds of writes: the one-hour floor, so 24 a day, and 2 left is two
+        // hours, the ETA unrounded (rag-t0062).
         assert_eq!(win["velocity_per_day"], 24.0, "{v}");
-        assert_eq!(win["eta_days"], 1, "{v}");
+        assert_eq!(win["eta_days"], 2.0 / 24.0, "{v}");
     }
     // A read writes nothing: the queue view's ETag is unchanged.
     let before = get(&t.app, "/tracker/p").await.headers[header::ETAG].clone();
@@ -410,7 +411,7 @@ async fn velocity_is_zeros_for_an_unknown_project_and_400_for_an_invalid_name() 
             (&json!(0), &json!(0), &json!(0.0))
         );
         // Nothing remains: an ETA of 0, not unknown.
-        assert_eq!(win["eta_days"], 0);
+        assert_eq!(win["eta_days"], 0.0);
     }
     let r = get(&t.app, "/tracker/bad%20name/velocity").await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);

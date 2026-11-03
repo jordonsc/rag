@@ -1,0 +1,165 @@
+/*
+ * Key figures (owner request rag-t0062, `Stat.tsx`): the value carries the
+ * weight, the label and the unit stand back. Every colour is a token; the
+ * large value is the type scale's largest step, scaled, so it stays in
+ * proportion if the scale moves.
+ */
+
+/* The figures' grid on the report: as many tiles a row as fit at 8.5rem, so
+   five across a desktop and two a row on a phone, never a horizontal scroll. */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  gap: var(--rag-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Wider tiles, for figures with a line of detail under them. */
+.tilesWide {
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+}
+
+.stat {
+  position: relative;
+  min-width: 0;
+  cursor: default;
+}
+
+/* ---- tile ---- */
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-1);
+  padding: var(--rag-space-3) var(--rag-space-4);
+  background: var(--rag-surface);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-l);
+}
+
+/* Inside a panel, a tile is drawn by its border alone: the panel is its ground. */
+.inset {
+  background: transparent;
+}
+
+.tile .label {
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+}
+
+.tile .value {
+  color: var(--rag-bright);
+  font-size: calc(var(--rag-text-xl) * 1.4);
+  font-weight: 600;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.tile .unit {
+  color: var(--rag-dim);
+  font-size: var(--rag-text-m);
+  font-weight: 400;
+}
+
+.detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--rag-space-2);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+}
+
+/* The design system's separator, the middle dot, between details. Generated
+   content with empty alternative text, so it is never read aloud: the hidden
+   comma is what a screen reader hears. */
+.detailPart + .detailPart::before {
+  content: '·';
+  content: '·' / '';
+  margin-right: var(--rag-space-2);
+}
+
+/* ---- inline (the queue page's velocity row) ---- */
+
+.inline {
+  white-space: nowrap;
+}
+
+.inline .label {
+  color: var(--rag-dim);
+}
+
+.inline .value {
+  margin-left: var(--rag-space-1);
+  color: var(--rag-bright);
+  font-size: var(--rag-text-m);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.inline .unit {
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+  font-weight: 400;
+}
+
+/* ---- split (confirmed against sent back) ---- */
+
+.splitFigures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rag-space-1) var(--rag-space-4);
+}
+
+.splitFigure {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--rag-space-2);
+}
+
+.swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--rag-radius-s);
+  flex: none;
+}
+
+.splitBar {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  margin-top: var(--rag-space-1);
+  border-radius: var(--rag-radius-s);
+  background: var(--rag-surface2);
+  overflow: hidden;
+}
+
+.splitPart {
+  flex-basis: 0;
+  min-width: 2px;
+}
+
+.good {
+  background: var(--rag-good);
+}
+
+.warn {
+  background: var(--rag-warn);
+}
+
+/* Visually hidden, still read: the colon after a label, the comma between details. */
+.hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
