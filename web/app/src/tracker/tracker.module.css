@@ -135,7 +135,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--rag-space-1) var(--rag-space-2);
+  gap: var(--rag-space-2) var(--rag-space-4);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -147,16 +147,6 @@
 .velocityFigures > li {
   white-space: nowrap;
   cursor: default;
-}
-
-/* The design system's separator, the middle dot, after every figure but the
-   last; each figure is a `Stat` (`stat.module.css`), its value emphasised.
-   Never read aloud: the figure's own name is what a screen reader hears. */
-.velocityFigures > li:not(:last-child)::after {
-  content: '·';
-  content: '·' / '';
-  margin-left: var(--rag-space-2);
-  color: var(--rag-dim);
 }
 
 /* ---- sections ---- */

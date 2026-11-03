@@ -65,12 +65,14 @@
   --rag-dim: #8f9497;
   --rag-bright: #f2f5f6;
   --rag-acc: #74b8f3;
-  --rag-acc2: #74ecdf;
+  /* The second accent, a soft rose (owner, 2026-11-03; was a pale teal): for
+     captions and informational text, never a link, which is `--rag-acc`. */
+  --rag-acc2: #ffb5b5;
   --rag-good: #93e9a0;
   --rag-warn: #ebb353;
   --rag-crit: #ed7477;
   --rag-extra: #a975e0;
-  /* Teal, deeper and greener than `--rag-acc2`, so it stays apart from the
+  /* Teal, so it stays apart from the
      blue of `--rag-acc` and the green of `--rag-good` beside it in a list of
      statuses (the tracker's deferred, rag-t0017). Always drawn beside a word. */
   --rag-teal: #2fbfae;

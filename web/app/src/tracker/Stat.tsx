@@ -5,8 +5,9 @@
  * * **`tile`** (the report): a small muted label over a large bright value,
  *   its unit smaller and muted beside it, and any quieter detail under it, on
  *   a bordered tile. A grid of them wraps to two columns on a phone.
- * * **`inline`** (the queue page's velocity row): the label muted and the
- *   value emphasised on one line, so the row stays one compact row.
+ * * **`inline`** (the queue page's velocity row): an accent caption beside
+ *   its value in a mini tile (the tile in small), on one line, so the row
+ *   stays one compact row.
  *
  * **Read together.** Each figure is a list item (the caller gives the list
  * its name) whose name is the whole sentence, "Velocity: 8/day" or "Mean time

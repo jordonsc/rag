@@ -2,8 +2,9 @@
  * The velocity widget (spec:velocity D11–D14): one row under the queue page's
  * header, `Velocity 8/day · In progress 3 · Pending 48 · ETA 7 days`, the
  * window pill (`7 d` | `24 h`) and **Report**. Each figure is a `Stat`
- * (`Stat.tsx`, owner request rag-t0062): the label muted and the value
- * emphasised, as the report's tiles set them, and read as "Velocity: 8/day".
+ * (`Stat.tsx`, owner request rag-t0062): an accent caption beside its value
+ * in a mini tile, the report's tile in small (owner, 2026-11-03), read as
+ * "Velocity: 8/day".
  *
  * The pill moves Velocity and ETA only; the counts are what is open now,
  * whatever the window (D13, C5). The choice is kept per browser for every

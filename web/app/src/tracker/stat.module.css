@@ -83,20 +83,35 @@
 
 /* ---- inline (the queue page's velocity row) ---- */
 
+/* The label an accent caption, the value a mini tile: the report's tile in
+   small, its ground and border and its bright value (owner, 2026-11-03). The
+   caption takes the second accent, never `--rag-acc`: that is the link colour,
+   and a label in it reads as a link. */
 .inline {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-2);
   white-space: nowrap;
 }
 
 .inline .label {
-  color: var(--rag-dim);
+  color: var(--rag-acc2);
+  font-size: var(--rag-text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .inline .value {
-  margin-left: var(--rag-space-1);
+  padding: 1px var(--rag-space-2);
   color: var(--rag-bright);
   font-size: var(--rag-text-m);
   font-weight: 600;
+  line-height: 1.5;
   font-variant-numeric: tabular-nums;
+  background: var(--rag-surface);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-m);
 }
 
 .inline .unit {

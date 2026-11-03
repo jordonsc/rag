@@ -689,8 +689,9 @@ Decisions that are easy to undo by accident:
 - **One theme.** The design system has one dark `:root` (see below); the
   tracker uses its tokens. The status colours are R12's: `good`, `acc`,
   `bright`, `crit`, `warn`, and `teal` for deferred (rag-t0017: the one token
-  the tracker added, deeper than `acc2` so it stays apart from in progress's
-  blue and done's green); gates are drawn in `extra`, the one accent no status
+  the tracker added, chosen to stay apart from in progress's blue and done's
+  green); `acc2`, a soft rose since 2026-11-03, captions the velocity row's
+  figures, since `acc` is the link colour; gates are drawn in `extra`, the one accent no status
   uses. Review (rag-t0024) shares failed's `crit`, the owner's choice: its word
   and its diamond dot (failed keeps the disc) tell them apart.
 - **Review is its own section, above the queue** (rag-t0024). The queue
