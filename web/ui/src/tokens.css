@@ -65,9 +65,10 @@
   --rag-dim: #8f9497;
   --rag-bright: #f2f5f6;
   --rag-acc: #74b8f3;
-  /* The second accent, a soft rose (owner, 2026-11-03; was a pale teal): for
-     captions and informational text, never a link, which is `--rag-acc`. */
-  --rag-acc2: #ffb5b5;
+  /* The second accent, a light neutral grey (owner, 2026-11-03; was a pale
+     teal, then briefly a rose): for captions and informational text, never a
+     link, which is `--rag-acc`. */
+  --rag-acc2: #bbbbbb;
   --rag-good: #93e9a0;
   --rag-warn: #ebb353;
   --rag-crit: #ed7477;

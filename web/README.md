@@ -690,7 +690,7 @@ Decisions that are easy to undo by accident:
   tracker uses its tokens. The status colours are R12's: `good`, `acc`,
   `bright`, `crit`, `warn`, and `teal` for deferred (rag-t0017: the one token
   the tracker added, chosen to stay apart from in progress's blue and done's
-  green); `acc2`, a soft rose since 2026-11-03, captions the velocity row's
+  green); `acc2`, a light grey since 2026-11-03, captions the velocity row's
   figures, since `acc` is the link colour; gates are drawn in `extra`, the one accent no status
   uses. Review (rag-t0024) shares failed's `crit`, the owner's choice: its word
   and its diamond dot (failed keeps the disc) tell them apart.
