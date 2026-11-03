@@ -387,6 +387,82 @@ words (a broken link, a cycle, a queued ticket the walk misses, a stale head or 
 `dependency` on nothing, or one whose dependencies are all done); `ok` is `problems` being empty.
 Always 200.
 
+#### `GET /tracker/{project}/velocity` — how fast its tickets get done (spec:velocity D26)
+```json
+{
+  "project": "ubu",
+  "now": "2026-11-02T22:55:45Z",
+  "in_progress": 4, "in_review": 0,
+  "pending": 158, "blocked": 41,
+  "deferred": 7,
+  "remaining": 162,
+  "windows": {
+    "24h": {"done": 89, "active_seconds": 86400, "velocity_per_day": 89.0, "eta_days": 2},
+    "7d":  {"done": 380, "active_seconds": 486940, "velocity_per_day": 67.4, "eta_days": 3}
+  }
+}
+```
+* The counts are the project's tickets **as they are now**, whatever the window: `in_progress` (of which
+  `in_review`), `pending` (of which `blocked`), `deferred` and `remaining` = `in_progress` + `pending`. What each
+  holds is in § *Velocity* below.
+* `windows` are the last 24 hours and the last 7 days, ending at `now`: in each, `done` (tickets that reached done
+  in it), `active_seconds`, `velocity_per_day` (unrounded; a client rounds it) and `eta_days`, an integer, **`0`
+  with nothing remaining** and **`null` when unknown** (work remains and nothing was done in the window).
+* An unknown project answers the same shape with zeros (and `eta_days` 0), not a 404; an invalid project name is
+  400. Read-only: it writes no event and takes no author fields.
+* `Cache-Control: no-store` and **no `ETag`**: the windows move with the clock, so the figures change while
+  nothing is written. The dashboard's widget reads it beside the queue view; `tracker_queue` ends with a line read
+  from it (`Velocity (7 d): 67/day · 24 h: 89/day · ETA 3 days`).
+
+#### `GET /tracker/{project}/report?window=24h|7d` — the velocity report (spec:velocity D27)
+```json
+{
+  "project": "ubu", "window": "7d",
+  "start": "2026-10-26T22:55:45Z", "end": "2026-11-02T22:55:45Z",
+  "velocity": {"done": 380, "active_seconds": 486940, "velocity_per_day": 67.4, "eta_days": 3},
+  "buckets": [
+    {"start": "2026-10-26T22:55:45Z", "remaining": 171, "added": 0, "done": 1},
+    {"start": "2026-10-26T23:00:00Z", "remaining": 168, "added": 2, "done": 5}
+  ],
+  "states": {
+    "pending":     {"count": 412, "mean_seconds": 15840.5, "median_seconds": 3600.0, "p90_seconds": 52200,
+                    "open": 158, "oldest_open_seconds": 1209600},
+    "in_progress": {"count": 401, "mean_seconds": 2710.2, "median_seconds": 1800.0, "p90_seconds": 7260,
+                    "open": 4, "oldest_open_seconds": 5400},
+    "review":      {"count": 0, "mean_seconds": null, "median_seconds": null, "p90_seconds": null,
+                    "open": 0, "oldest_open_seconds": null},
+    "deferred":    {"…": "as above"},
+    "blocked":     {"…": "as above"}
+  },
+  "mttc": {"count": 371, "mean_seconds": 3120.0, "median_seconds": 2400.0, "never_in_progress": 9},
+  "mttr": {"count": 12, "mean_seconds": 900.0, "median_seconds": 600.0, "confirmed": 10, "sent_back": 2}
+}
+```
+* `window` is `24h` or `7d`, **`7d` when absent**; anything else (and any other query parameter) is 400. The window
+  ends at `end`, when the report was computed, and starts a day or seven before it, at `start`. **Every block
+  follows the window**, and each carries its counts, so a small sample is plain.
+* `velocity` is the window's figures exactly as `GET …/velocity` gives them (its `eta_days` from the remaining now).
+* `buckets` are **hourly, on UTC hours, whatever the window**, oldest first: the first runs from `start` to the
+  next hour, the last from the hour before `end` to `end` (so 168 or 169 for 7 days, 24 or 25 for 24 hours). A
+  bucket holds what happened at or after its `start` and before the next one's (the last up to and including
+  `end`): `added` (tickets created in it, or first published from a draft in it), `done` (tickets that reached
+  done in it, each once a bucket) and `remaining` (in progress + pending, as in the velocity counts) **at its end**,
+  after everything in it. A client groups them into its own days (the web UI sums them into the browser's local
+  days: `added` and `done` summed, `remaining` the day's last hour).
+* `states` are `pending`, `in_progress`, `review` and `deferred` (a ticket's status) and `blocked` (its block, its
+  own track: a blocked pending ticket is both for that time), each over the **stretches that ended in the window**:
+  `count`, `mean_seconds`, `median_seconds` (for an even count the mean of the middle two) and `p90_seconds`
+  (nearest rank, so one of the lengths), `null` when the count is 0; and those **still open now**, `open` and
+  `oldest_open_seconds` (`null` with none open).
+* `mttc` is over the tickets done in the window (each once, by its latest completion in it): the time each was in
+  progress **since it was last reopened** (after its latest earlier `done` or `cancelled`), however long ago that
+  was; `never_in_progress` counts those done without it, which are left out of the mean.
+* `mttr` is over the review stretches that ended in the window: `confirmed` when the ticket went on to done,
+  `sent_back` otherwise.
+* Requests are in no figure, and neither is a draft (see § *Velocity*). An unknown project answers the same shape
+  with buckets of zeros and `null`s in `states`, not a 404; an invalid project name is 400. Read-only, no author
+  fields, `Cache-Control: no-store` and no `ETag`, as the velocity read.
+
 #### `POST /tracker/{project}/ack-done`
 Body: the author fields only. Stamps every done, unacknowledged ticket `acknowledged_at` (one `acknowledge` event
 each). Response: `{"project": "ubu", "acknowledged": ["ubu-t0040", "ubu-t0041"]}`.
@@ -627,6 +703,45 @@ with the first upload's `Content-Type`; raster images `Content-Disposition: inli
 `attachment`; `ETag` the sha256; `Cache-Control: private, max-age=31536000, immutable`;
 `X-Content-Type-Options: nosniff`; a sandboxing `Content-Security-Policy`. 404 unknown; 400 for an invalid hash or a
 prefix that matches two different files.
+
+
+Velocity (spec:velocity)
+------------------------
+How fast a project's tickets get done, measured over **active time**, so a project left alone does not read as
+slow; the design is `specs/velocity/master.md` (D1–D10, D16–D27), built in `crates/core/src/tracker/spans.rs`,
+`velocity.rs` and `report.rs`. Read by `GET /tracker/{project}/velocity` and `GET /tracker/{project}/report`
+(above).
+
+* **What is counted.** Tickets of type `dev`, `design`, `recon`, `analysis` and `gate`; **never a request**, and
+  never a ticket while it is a **draft** (it is in no count, and reaching done while a draft is not counted).
+* **The counts** (now): **in progress** is status `in_progress` or `review`, not blocked (review folds in, and is
+  also given alone as `in_review`); **pending** is status `pending` or `failed`, plus **every blocked ticket** of
+  status `pending`, `in_progress`, `failed` or `review` (a blocked ticket waits, whatever its status; given alone
+  as `blocked`); **deferred** tickets are in neither, blocked or not. **Remaining** is in progress + pending.
+* **Done** in a window: the tickets that reached status `done` in it, **each once** however often it was reopened
+  and done again there, and **still counted if reopened since** (a past figure does not change). `cancelled` and
+  `failed` are not completions.
+* **Active time** in a window: the project's events in it, oldest first, of every kind of record and both
+  surfaces, **draft events left out**. Each gap between consecutive events of **at most 2 hours** is active; a
+  longer gap is idle and adds nothing. The window's start and `now` count as the ends of the first and last gap,
+  so the minutes since the last write count while they are under 2 hours. A ticket left in progress overnight
+  adds nothing: activity comes from writes, not from tickets in progress.
+* **Velocity** = done ÷ active time, per 24 hours of active time, with active time **at least 1 hour** (so twenty
+  minutes that closed three tickets is 72 a day, not 216); 0 with nothing done. For a project at work all day it
+  is its calendar rate; for one that works an hour a week, the rate it works at when it works.
+* **ETA** = remaining ÷ velocity, **rounded up**, in days of active work at that pace: 0 with nothing remaining,
+  `null` (unknown) with work remaining and a velocity of 0. An idle project takes longer in calendar days.
+* **The windows** are rolling: the last 24 hours and the last 7 × 24 hours, ending now.
+* **Where the figures come from.** Every status, block and draft change of a ticket opens and closes an
+  `item_spans` row (one a ticket a state, on the tracks `status`, `blocked` and `draft`) in the same transaction
+  as its event; a database from before them is backfilled from its events when it is opened (the log says how many
+  tickets it built spans for, and how many it set from their rows because their events disagreed). Every figure is
+  a range read of spans and events by time, with no counters to keep in step.
+* **The report and drafts.** A ticket is in no bucket's `remaining` while it is a draft, is `added` when it is first
+  published, and a completion made while it was a draft is not `done`. A stretch (in `states`, `mttc`, `mttr`)
+  that began while its ticket was a draft counts from the publication, and not at all if it ended, or is still
+  open, under that draft. Which of two writes in the same second came first is the events' order, never the
+  timestamps'.
 
 
 The event feed (rag-t0036)

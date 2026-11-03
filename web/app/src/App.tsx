@@ -18,6 +18,7 @@ import {
   PROJECTS_PATH,
   ProjectsView,
   QueueView,
+  ReportView,
   projectPath,
   readLastProject,
 } from './tracker';
@@ -155,6 +156,9 @@ export function App() {
           <Route path="/projects/:project/docs/new" element={<NewConceptView />} />
           <Route path="/projects/:project/doc/*" element={<DocView />} />
           <Route path="/projects/:project/history" element={<HistoryView />} />
+          {/* The velocity report (spec:velocity m03), reached from the queue
+              widget's Report: a page, not a tab. */}
+          <Route path="/projects/:project/report" element={<ReportView />} />
           <Route path="*" element={<NotFoundView />} />
         </Routes>
       </main>

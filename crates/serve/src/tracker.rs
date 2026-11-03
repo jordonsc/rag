@@ -45,7 +45,7 @@ use rag_core::tracker::{
     default_approval, Actor, Approval, BlockReason, ConceptState, ConceptUpdate, DocKind, Edit,
     Intensity, ItemStatus, ItemType, ItemUpdate, Link, MilestoneState, MilestoneUpdate,
     NewAttachment, NewConcept, NewDocument, NewItem, NewMilestone, NewSpec, Place, Replacement,
-    SpecState, SpecUpdate, Surface, TrackerError, TrackerStore, MAX_ATTACHMENT_BYTES,
+    ReportWindow, SpecState, SpecUpdate, Surface, TrackerError, TrackerStore, MAX_ATTACHMENT_BYTES,
 };
 
 /// Body limit for the JSON routes: a document may be up to 4 MB, and JSON
@@ -84,6 +84,8 @@ pub fn router(store: Option<TrackerStore>, reindex_trigger: Option<PathBuf>) -> 
         .route("/tracker/projects", get(projects))
         .route("/tracker/{project}", get(queue_view))
         .route("/tracker/{project}/check", get(check))
+        .route("/tracker/{project}/velocity", get(velocity))
+        .route("/tracker/{project}/report", get(report))
         .route("/tracker/{project}/ack-done", post(ack_done))
         .route("/tracker/{project}/labels", get(labels_list))
         .route("/tracker/{project}/events", get(feed::events_read))
@@ -355,6 +357,49 @@ async fn queue_view(State(api): St, Path(project): Path<String>, headers: Header
 
 async fn check(State(api): St, Path(project): Path<String>) -> ApiResult {
     ok(&api.store()?.check(&project).await?)
+}
+
+/// The velocity figures (spec:velocity D26): the counts now, and each rolling
+/// window's done, active time, velocity and ETA. Read-only. `no-store` and no
+/// `ETag`: the windows move with the clock even when nothing is written.
+async fn velocity(State(api): St, Path(project): Path<String>) -> ApiResult {
+    rag_core::tracker::validate_project(&project)?;
+    let v = api.store()?.velocity(&project, chrono::Utc::now()).await?;
+    Ok((
+        [(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))],
+        Json(v),
+    )
+        .into_response())
+}
+
+/// `?window=` on the report: `24h` or `7d`, 7 days when absent.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReportQuery {
+    #[serde(default)]
+    window: Option<String>,
+}
+
+/// The velocity report (spec:velocity D27): the window's burn-down, time in
+/// each state, MTTC and MTTR. Read-only; `no-store`, as the velocity read, for
+/// the same reason. Any window but `24h` and `7d` is a 400.
+async fn report(State(api): St, Path(project): Path<String>, Q(q): Q<ReportQuery>) -> ApiResult {
+    rag_core::tracker::validate_project(&project)?;
+    let window = q
+        .window
+        .as_deref()
+        .map(str::parse::<ReportWindow>)
+        .transpose()?
+        .unwrap_or_default();
+    let r = api
+        .store()?
+        .report(&project, window, chrono::Utc::now())
+        .await?;
+    Ok((
+        [(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))],
+        Json(r),
+    )
+        .into_response())
 }
 
 #[derive(Deserialize)]

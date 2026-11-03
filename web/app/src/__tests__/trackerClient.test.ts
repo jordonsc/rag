@@ -16,6 +16,7 @@ import {
   editDoc,
   getDocByPath,
   getQueue,
+  getVelocity,
   isProjectName,
   listItems,
   moveItem,
@@ -24,7 +25,18 @@ import {
   updateItem,
   uploadAttachment,
 } from '../tracker/api';
-import { docPath, itemPath, itemProject, linkHref, projectPath } from '../tracker/paths';
+import {
+  docPath,
+  docsPath,
+  docsTabOf,
+  itemPath,
+  itemProject,
+  linkHref,
+  projectPath,
+  reportPath,
+} from '../tracker/paths';
+import type { Velocity } from '../tracker/types';
+import { LedgerApiError } from '../api';
 import { renderMarkdown } from '../markdown/render';
 import { matching } from './sources';
 import { TrackerServer, item, queueView } from './trackerFixtures';
@@ -101,6 +113,36 @@ describe('the queue read', () => {
     server.on(/\/tracker\/demo\/items/, { body: { project: 'demo', items: [] } });
     await listItems('demo', 'done');
     expect(server.last(/items/).path).toBe('/tracker/demo/items?status=done');
+  });
+});
+
+describe('the velocity read (spec:velocity VL-07)', () => {
+  const VELOCITY: Velocity = {
+    project: 'demo',
+    now: '2026-11-02T12:00:00Z',
+    in_progress: 3,
+    in_review: 1,
+    pending: 48,
+    blocked: 2,
+    deferred: 4,
+    remaining: 51,
+    windows: {
+      '24h': { done: 2, active_seconds: 7200, velocity_per_day: 24, eta_days: 3 },
+      '7d': { done: 20, active_seconds: 216000, velocity_per_day: 8, eta_days: 7 },
+    },
+  };
+
+  it('reads /tracker/{project}/velocity and returns the body', async () => {
+    server.on('/tracker/demo/velocity', { body: VELOCITY }, 'GET');
+    await expect(getVelocity('demo')).resolves.toEqual(VELOCITY);
+    expect(server.last('/tracker/demo/velocity').method).toBe('GET');
+  });
+
+  it('turns a 500 into the usual error', async () => {
+    server.on('/tracker/demo/velocity', { status: 500, body: { error: 'the store is locked' } });
+    const failure = await getVelocity('demo').catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(LedgerApiError);
+    expect(failure).toMatchObject({ status: 500, message: 'the store is locked' });
   });
 });
 
@@ -217,6 +259,19 @@ describe('names and paths', () => {
     expect(projectPath('demo')).toBe('/projects/demo');
     expect(itemPath('demo', 'demo-t0001')).toBe('/projects/demo/ticket/demo-t0001');
     expect(docPath('demo', 'specs/a b/master.md')).toBe('/projects/demo/doc/specs/a%20b/master.md');
+    expect(docsPath('demo')).toBe('/projects/demo/docs');
+    expect(docsPath('demo', 'specs')).toBe('/projects/demo/docs?tab=specs');
+    expect(reportPath('demo', '24h')).toBe('/projects/demo/report?window=24h');
+  });
+
+  it('sends a document back to the documents tab that lists it (rag-t0059)', () => {
+    expect(docsTabOf('specs/audio/master.md', 'spec')).toBe('specs');
+    expect(docsTabOf('specs/audio/m03-music.md', 'milestone')).toBe('specs');
+    expect(docsTabOf('concepts/power.md', 'concept')).toBe('concepts');
+    expect(docsTabOf('notes/runbook.md', 'doc')).toBe('other');
+    // Unread: the path decides.
+    expect(docsTabOf('specs/gone/master.md')).toBe('specs');
+    expect(docsTabOf('docs/architecture.md')).toBe('concepts');
   });
 
   it('finds an item id’s project at its final -t', () => {

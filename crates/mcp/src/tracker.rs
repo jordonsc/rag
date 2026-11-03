@@ -1074,6 +1074,14 @@ fn queue_req(project: Option<&str>) -> Result<Req, String> {
     )))
 }
 
+/// The velocity figures beside the queue (spec:velocity D32).
+fn velocity_req(project: Option<&str>) -> Result<Req, String> {
+    Ok(Req::get(format!(
+        "/tracker/{}/velocity",
+        enc(need_project(project)?)
+    )))
+}
+
 fn list_req(args: &TrackerListArgs, project: Option<&str>) -> Result<Req, String> {
     let mut f = present(args);
     let what = args.what.trim().to_ascii_lowercase();
@@ -1848,6 +1856,52 @@ fn not_shown(v: &Value, shown: &BTreeSet<&str>) -> String {
     } else {
         format!("Not shown: {}", parts.join(" · "))
     }
+}
+
+/// A velocity as the widget writes it (spec:velocity D12, `formatRate` in
+/// `web/app/src/tracker/velocity.ts`): a whole number when it is 10 or more,
+/// or when rounding it to one decimal gives a whole number (`43`, `8` for
+/// 8.04, `0`); otherwise one decimal (`2.4`, and 9.96 reads `10`). Rounded
+/// half away from zero with `f64::round`, as the widget does, not with
+/// `format!`'s precision, which rounds half to even (10.5 would read `10`).
+fn rate(per_day: f64) -> String {
+    let tenths = (per_day * 10.0).round() / 10.0;
+    if tenths.abs() >= 10.0 || tenths.fract() == 0.0 {
+        // `as i64` keeps a -0.0 from reading "-0".
+        format!("{}", per_day.round() as i64)
+    } else {
+        format!("{tenths:.1}")
+    }
+}
+
+/// `tracker_queue`'s last line (spec:velocity D32), from
+/// `GET /tracker/{project}/velocity`: `Velocity (7 d): 42/day · 24 h: 51/day ·
+/// ETA 2 days`, the ETA the 7-day one (`ETA done` with nothing remaining, `ETA
+/// unknown` with no velocity). `None` for a project with no counted ticket to
+/// speak of (nothing open, deferred included, and nothing done in 7 days), and
+/// for an answer missing a figure, which says nothing rather than something wrong.
+fn velocity_line(v: &Value) -> Option<String> {
+    let n = |k: &str| v.get(k).and_then(Value::as_i64);
+    let w = |k: &str| v.get("windows")?.get(k);
+    let (week, day) = (w("7d")?, w("24h")?);
+    let done = |w: &Value| w.get("done").and_then(Value::as_i64);
+    let per_day = |w: &Value| w.get("velocity_per_day").and_then(Value::as_f64);
+    let open = n("in_progress")? + n("pending")? + n("deferred")?;
+    if open == 0 && done(week)? == 0 && done(day)? == 0 {
+        return None;
+    }
+    let eta = match week.get("eta_days")? {
+        Value::Null => "ETA unknown".to_string(),
+        e => match e.as_i64()? {
+            0 => "ETA done".to_string(),
+            d => format!("ETA {}", plural(d as usize, "day", "days")),
+        },
+    };
+    Some(format!(
+        "Velocity (7 d): {}/day · 24 h: {}/day · {eta}",
+        rate(per_day(week)?),
+        rate(per_day(day)?)
+    ))
 }
 
 fn unknown_project(v: &Value) -> Option<String> {
@@ -2668,7 +2722,18 @@ impl TrackerServer {
         let v = self
             .call(queue_req(project.as_deref()).map_err(bad)?)
             .await?;
-        Ok(text(render_queue(&v, &opts)))
+        let mut out = render_queue(&v, &opts);
+        // The velocity line (spec:velocity D32) is a second read; when it fails,
+        // the queue is still the answer, without the line.
+        if unknown_project(&v).is_none() {
+            if let Ok(req) = velocity_req(project.as_deref()) {
+                if let Some(line) = self.call(req).await.ok().as_ref().and_then(velocity_line) {
+                    out.push('\n');
+                    out.push_str(&line);
+                }
+            }
+        }
+        Ok(text(out))
     }
 
     #[tool(

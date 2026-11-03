@@ -11,9 +11,10 @@
  * | the project list | `/projects` |
  * | the dashboard (D14) | `/projects/{project}` |
  * | a ticket (D15) | `/projects/{project}/ticket/{id}`; the older `…/item/{id}` still opens it (rag-t0050) |
- * | the documents page (D16, m04) | `/projects/{project}/docs` |
+ * | the documents page (D16, m04) | `/projects/{project}/docs`, its tab as `?tab=specs` (Concepts has none) |
  * | a document (m04) | `/projects/{project}/doc/{path…}` |
  * | the history: done, cancelled and failed tickets (rag-t0008) | `/projects/{project}/history` |
+ * | the velocity report (spec:velocity m03) | `/projects/{project}/report?window=7d` |
  *
  * Every segment is encoded, as `topicPath` encodes a topic id: a project or an
  * id this application did not mint may carry a character that changes what
@@ -21,7 +22,7 @@
  */
 
 import { topicPath } from '../ledger/ids';
-import type { Link } from './types';
+import type { DocumentKind, Link, VelocityWindow } from './types';
 
 const enc = encodeURIComponent;
 
@@ -35,14 +36,46 @@ export function itemPath(project: string, id: string): string {
   return `${projectPath(project)}/ticket/${enc(id)}`;
 }
 
-/** The documents page (m04). */
-export function docsPath(project: string): string {
-  return `${projectPath(project)}/docs`;
+/** A tab of the documents page; Concepts, the default, has no `?tab=`. */
+export type DocsTab = 'concepts' | 'specs' | 'other' | 'attachments';
+
+/** The documents page (m04), on one of its tabs. */
+export function docsPath(project: string, tab: DocsTab = 'concepts'): string {
+  const page = `${projectPath(project)}/docs`;
+  return tab === 'concepts' ? page : `${page}?tab=${tab}`;
+}
+
+/**
+ * The documents page tab that lists a document: a spec and its milestones
+ * are under Specs, a concept under Concepts, a free document under Other
+ * (rag-t0059: a spec's way back used to land on Concepts, the default).
+ * Without the kind (the document could not be read) its path decides.
+ */
+export function docsTabOf(path: string, kind?: DocumentKind): DocsTab {
+  switch (kind) {
+    case 'spec':
+    case 'milestone':
+      return 'specs';
+    case 'concept':
+      return 'concepts';
+    case 'doc':
+      return 'other';
+    default:
+      return path.startsWith('specs/') ? 'specs' : 'concepts';
+  }
 }
 
 /** The history page: the project's done, cancelled and failed items (rag-t0008). */
 export function historyPath(project: string): string {
   return `${projectPath(project)}/history`;
+}
+
+/**
+ * The velocity report (spec:velocity D19, m03), in the window the widget is
+ * showing (D13).
+ */
+export function reportPath(project: string, window: VelocityWindow): string {
+  return `${projectPath(project)}/report?window=${window}`;
 }
 
 /** A document by its path within the project (m04); `/` is kept as `/`. */

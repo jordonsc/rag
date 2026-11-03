@@ -116,6 +116,46 @@
   background: var(--rag-border);
 }
 
+/* ---- velocity (spec:velocity D11, D12) ---- */
+
+/*
+ * One row under the header: the figures, the window pill, Report. It wraps
+ * between figures (each one stays whole), so a phone gets two or three lines
+ * and no horizontal scroll.
+ */
+.velocity {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2) var(--rag-space-3);
+  min-width: 0;
+}
+
+.velocityFigures {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rag-space-1) var(--rag-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--rag-text);
+  font-size: var(--rag-text-s);
+  font-variant-numeric: tabular-nums;
+}
+
+.velocityFigures > li {
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* The design system's separator, the middle dot, after every figure but the last. */
+.velocityFigures > li:not(:last-child)::after {
+  content: '·';
+  margin-left: var(--rag-space-2);
+  color: var(--rag-dim);
+}
+
 /* ---- sections ---- */
 
 /*

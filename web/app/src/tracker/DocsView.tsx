@@ -49,7 +49,7 @@ import { draftKey, hasDraft } from './drafts';
 import { useTrackerGate } from './gate';
 import { planMove, type Direction } from './milestoneOrder';
 import { ApprovalBadge, DraftBadge, LinkChips } from './parts';
-import { docPath, newConceptPath, storeLastProject } from './paths';
+import { docPath, newConceptPath, storeLastProject, type DocsTab } from './paths';
 import { ProjectPicker } from './ProjectPicker';
 import { TitleDialog, type TitleTarget } from './RenameDialogs';
 import { useScrollMemory } from './scrollMemory';
@@ -68,7 +68,7 @@ const TABS = [
   { id: 'specs', label: 'Specs' },
   { id: 'other', label: 'Other' },
   { id: 'attachments', label: 'Attachments' },
-] as const;
+] as const satisfies readonly { id: DocsTab; label: string }[];
 type Tab = (typeof TABS)[number]['id'];
 
 function tabOf(value: string | null): Tab {

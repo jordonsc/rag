@@ -67,7 +67,10 @@ import type {
   SpecUpdate,
   SpecsResponse,
   TrackerAuthor,
+  Report,
   TrackerSearchResponse,
+  Velocity,
+  VelocityWindow,
 } from './types';
 
 // ---- Errors -----------------------------------------------------------------
@@ -335,6 +338,20 @@ export async function getQueue(
 
 export function checkQueue(project: string, signal?: AbortSignal): Promise<CheckResponse> {
   return request<CheckResponse>(`/tracker/${enc(project)}/check`, { signal });
+}
+
+/** How fast the project's tickets get done, over both windows (spec:velocity D26). */
+export function getVelocity(project: string, signal?: AbortSignal): Promise<Velocity> {
+  return request<Velocity>(`/tracker/${enc(project)}/velocity`, { signal });
+}
+
+/** The velocity report over one window (spec:velocity D27). */
+export function getReport(
+  project: string,
+  window: VelocityWindow,
+  signal?: AbortSignal,
+): Promise<Report> {
+  return request<Report>(`/tracker/${enc(project)}/report?window=${enc(window)}`, { signal });
 }
 
 /** Acknowledge every done item: they leave the dashboard, not the history. */

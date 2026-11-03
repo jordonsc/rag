@@ -38,6 +38,9 @@ import styles from './tracker.module.css';
 import type { Item, Place } from './types';
 import { useScrollMemory } from './scrollMemory';
 import { useQueue } from './useQueue';
+import { useVelocity } from './useVelocity';
+import { hasCountedTickets } from './velocity';
+import { VelocityBar } from './VelocityBar';
 import { blockReasonLabel, dotState, type DotState } from './vocab';
 
 type Notice = { tone: 'warn' | 'crit'; text: string };
@@ -188,6 +191,10 @@ export function QueueView() {
  * or under Review, Blocked or Deferred has an *Approve*. Each opens a confirmation (the note
  * optional) and the row re-reads after.
  *
+ * **Velocity** (spec:velocity m02): under the header, above the notices, a
+ * row of how fast the project's tickets get done (`VelocityBar`), shown once
+ * the project has a counted ticket (D11).
+ *
  * It refreshes every 10 s while the tab is visible and at once after the
  * viewer's own write (`useQueue`). Writes re-read; nothing is patched in
  * place, except that a dropped row is shown where it was dropped until the
@@ -195,6 +202,8 @@ export function QueueView() {
  */
 function Dashboard({ project }: { project: string }) {
   const { state, refresh } = useQueue(project);
+  // Read beside the queue, and again whenever the queue's view changes (D15).
+  const velocity = useVelocity(project, state.kind === 'ready' ? state.revision : null);
   // Back from an item lands where the reader left the queue (rag-t0040): put
   // back once the rows are drawn, and only once, so a refresh never moves it.
   useScrollMemory(`queue:${project}`, state.kind === 'ready');
@@ -432,6 +441,10 @@ function Dashboard({ project }: { project: string }) {
           </Button>
         </div>
       </header>
+
+      {velocity !== null && hasCountedTickets(velocity) && (
+        <VelocityBar project={project} velocity={velocity} />
+      )}
 
       {state.error !== null && (
         <p className={cx(styles.notice, styles.notice_warn)} role="status">

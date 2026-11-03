@@ -22,6 +22,11 @@
 //!   the list sound.
 //! * **Documents are revisioned** (D9, `docs.rs`). An edit names the revision it
 //!   read; an edit against an older one is refused with [`TrackerError::Stale`].
+//! * **A ticket's spans follow its row** (spec:velocity D22, `spans.rs`): every
+//!   item event reconciles the ticket's open `item_spans` with its status, block
+//!   and draft flag in the same transaction, so the velocity read
+//!   (`velocity.rs`) and the report (`report.rs`) are range reads, never a
+//!   replay of history.
 //!
 //! Writes open `BEGIN IMMEDIATE` transactions: a deferred transaction that reads
 //! and then writes can fail with `SQLITE_BUSY` when another connection wrote in
@@ -36,6 +41,9 @@ mod items;
 mod labels;
 mod list;
 mod records;
+mod report;
+mod spans;
+mod velocity;
 
 #[cfg(test)]
 mod tests;
@@ -70,6 +78,11 @@ pub use list::{IntegrityReport, Place};
 pub use records::{
     Concept, ConceptRecord, ConceptUpdate, Milestone, MilestoneRecord, MilestoneUpdate, NewConcept,
     NewMilestone, NewSpec, Spec, SpecRecord, SpecUpdate,
+};
+pub use report::{Bucket, Mttc, Mttr, Report, ReportStates, ReportWindow, StateTime};
+pub use velocity::{
+    active_seconds, eta_days, velocity_per_day, Velocity, VelocityWindow, VelocityWindows,
+    IDLE_GAP, MIN_ACTIVE,
 };
 
 // ---- Errors -----------------------------------------------------------------
@@ -564,8 +577,45 @@ impl TrackerStore {
                 Err(e) => return Err(e.into()),
             }
         }
+        // Before the migrations: they append item events, whose hook would open
+        // spans and leave `item_spans` non-empty, so the backfill would never run.
+        self.backfill_item_spans().await?;
         self.migrate_retired_approval_blocks().await?;
         self.migrate_web_agent_to_owner().await?;
+        Ok(())
+    }
+
+    /// The one-time span backfill (spec:velocity D23, `spans.rs`): a database
+    /// with tickets and no spans gains them, replayed from its events, in one
+    /// transaction. Says in the log how many tickets it built spans for and how
+    /// many it corrected to their rows (a warning when any were). A database
+    /// with spans, or with no tickets, is left alone.
+    async fn backfill_item_spans(&self) -> TResult<()> {
+        let mut tx = self.write_tx().await?;
+        let Some(done) = spans::backfill(&mut tx).await? else {
+            return Ok(());
+        };
+        tx.commit().await?;
+        if done.corrected > 0 {
+            tracing::warn!(
+                tickets = done.tickets,
+                spans = done.spans,
+                corrected = done.corrected,
+                "item spans backfilled: {} of {} tickets' events disagreed with their rows; \
+                 their open spans were set from the rows",
+                done.corrected,
+                done.tickets
+            );
+        } else {
+            tracing::info!(
+                tickets = done.tickets,
+                spans = done.spans,
+                corrected = 0,
+                "item spans backfilled: {} tickets, {} spans, none corrected",
+                done.tickets,
+                done.spans
+            );
+        }
         Ok(())
     }
 
@@ -823,6 +873,11 @@ async fn append_event(
     .bind(draft as i64)
     .fetch_one(&mut *conn)
     .await?;
+    // Keep the ticket's spans in step with its row, in this same transaction
+    // (spec:velocity D22): whatever the write changed, it is read back here.
+    if target_kind == TargetKind::Item {
+        spans::sync_item_spans(conn, project, target_id, id, now).await?;
+    }
     Ok(id)
 }
 
@@ -1255,4 +1310,31 @@ CREATE TABLE IF NOT EXISTS events (
     draft        INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_events_target ON events(project, target_kind, target_id);
+
+-- spec:velocity (D21, D24). A ticket's history as intervals, one row a ticket a
+-- state: on the `status` track (state: the status; always exactly one open span
+-- a ticket), the `blocked` track (open while blocked) and the `draft` track (open
+-- while a draft). Kept in step by `append_event` in the writing transaction;
+-- an older database is backfilled from its events on open (`spans.rs`).
+CREATE TABLE IF NOT EXISTS item_spans (
+    span_id       INTEGER PRIMARY KEY,
+    project       TEXT NOT NULL,
+    item_id       TEXT NOT NULL,
+    track         TEXT NOT NULL,
+    state         TEXT NOT NULL,
+    started_at    TEXT NOT NULL,
+    ended_at      TEXT,
+    started_event INTEGER NOT NULL,
+    ended_event   INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_item_spans_project_started ON item_spans(project, started_at);
+CREATE INDEX IF NOT EXISTS idx_item_spans_project_ended ON item_spans(project, ended_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_item_spans_open ON item_spans(item_id, track)
+    WHERE ended_at IS NULL;
+-- One ticket's spans of a track in order, closed ones included (the partial
+-- index above holds only the open ones): what the velocity read's
+-- draft-at-the-time check and the report's per-ticket sums read.
+CREATE INDEX IF NOT EXISTS idx_item_spans_item ON item_spans(item_id, track, started_event);
+-- Activity (D6) is a range read of a project's events by time.
+CREATE INDEX IF NOT EXISTS idx_events_project_ts ON events(project, ts);
 ";

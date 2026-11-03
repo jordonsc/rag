@@ -139,6 +139,8 @@ async fn every_route_answers_503_without_a_store() {
         "/tracker/projects",
         "/tracker/p",
         "/tracker/p/check",
+        "/tracker/p/velocity",
+        "/tracker/p/report",
         "/tracker/p/labels",
         "/tracker/p/events",
         "/tracker/p/events/ws",
@@ -296,6 +298,284 @@ async fn check_reports_the_list() {
     assert_eq!(v["queued"], 2);
     assert_eq!(v["order"], json!([a, b]));
     assert_eq!(v["problems"], json!([]));
+}
+
+// ---- Velocity (spec:velocity m01, VL-06) --------------------------------------------
+
+/// D26's shape, with every key and no others.
+fn assert_velocity_shape(v: &Value) {
+    let keys = |v: &Value| {
+        let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        k.sort();
+        k
+    };
+    assert_eq!(
+        keys(v),
+        [
+            "blocked",
+            "deferred",
+            "in_progress",
+            "in_review",
+            "now",
+            "pending",
+            "project",
+            "remaining",
+            "windows"
+        ],
+        "{v}"
+    );
+    assert_eq!(keys(&v["windows"]), ["24h", "7d"], "{v}");
+    for w in ["24h", "7d"] {
+        assert_eq!(
+            keys(&v["windows"][w]),
+            ["active_seconds", "done", "eta_days", "velocity_per_day"],
+            "{v}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn velocity_answers_the_figures_for_a_project_with_tickets() {
+    let t = app().await;
+    let a = item(&t.app, "p", "a").await;
+    let b = item(&t.app, "p", "b").await;
+    item(&t.app, "p", "c").await;
+    start_and_finish(&t.app, &a).await;
+    ok(post(
+        &t.app,
+        &format!("/tracker/items/{b}"),
+        w(json!({ "status": "review" })),
+    )
+    .await)
+    .await;
+    let r = get(&t.app, "/tracker/p/velocity").await;
+    assert_eq!(
+        r.headers.get(header::CACHE_CONTROL).unwrap(),
+        "no-store",
+        "the windows move with the clock"
+    );
+    assert!(r.headers.get(header::ETAG).is_none());
+    let v = ok(r).await;
+    assert_velocity_shape(&v);
+    assert_eq!(v["project"], "p");
+    assert!(v["now"].as_str().unwrap().ends_with('Z'), "{v}");
+    assert_eq!(
+        (
+            &v["in_progress"],
+            &v["in_review"],
+            &v["pending"],
+            &v["remaining"]
+        ),
+        (&json!(1), &json!(1), &json!(1), &json!(2))
+    );
+    for w in ["24h", "7d"] {
+        let win = &v["windows"][w];
+        assert_eq!(win["done"], 1, "{v}");
+        // Seconds of writes: the one-hour floor, so 24 a day, and 2 left is a day.
+        assert_eq!(win["velocity_per_day"], 24.0, "{v}");
+        assert_eq!(win["eta_days"], 1, "{v}");
+    }
+    // A read writes nothing: the queue view's ETag is unchanged.
+    let before = get(&t.app, "/tracker/p").await.headers[header::ETAG].clone();
+    get(&t.app, "/tracker/p/velocity").await;
+    assert_eq!(
+        get(&t.app, "/tracker/p").await.headers[header::ETAG],
+        before
+    );
+}
+
+#[tokio::test]
+async fn velocity_is_zeros_for_an_unknown_project_and_400_for_an_invalid_name() {
+    let t = app().await;
+    let v = ok(get(&t.app, "/tracker/nobody/velocity").await).await;
+    assert_velocity_shape(&v);
+    for k in [
+        "in_progress",
+        "in_review",
+        "pending",
+        "blocked",
+        "deferred",
+        "remaining",
+    ] {
+        assert_eq!(v[k], 0, "{k}");
+    }
+    for w in ["24h", "7d"] {
+        let win = &v["windows"][w];
+        assert_eq!(
+            (
+                &win["done"],
+                &win["active_seconds"],
+                &win["velocity_per_day"]
+            ),
+            (&json!(0), &json!(0), &json!(0.0))
+        );
+        // Nothing remains: an ETA of 0, not unknown.
+        assert_eq!(win["eta_days"], 0);
+    }
+    let r = get(&t.app, "/tracker/bad%20name/velocity").await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(r.error().contains("invalid project name"), "{}", r.error());
+}
+
+// ---- The report (spec:velocity m03, VL-11) -----------------------------------------
+
+/// D27's shape, with every key and no others.
+fn assert_report_shape(v: &Value) {
+    let keys = |v: &Value| {
+        let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        k.sort();
+        k
+    };
+    assert_eq!(
+        keys(v),
+        ["buckets", "end", "mttc", "mttr", "project", "start", "states", "velocity", "window"],
+        "{v}"
+    );
+    assert_eq!(
+        keys(&v["velocity"]),
+        ["active_seconds", "done", "eta_days", "velocity_per_day"],
+        "{v}"
+    );
+    for b in v["buckets"].as_array().unwrap() {
+        assert_eq!(keys(b), ["added", "done", "remaining", "start"], "{b}");
+    }
+    assert_eq!(
+        keys(&v["states"]),
+        ["blocked", "deferred", "in_progress", "pending", "review"],
+        "{v}"
+    );
+    for (_, s) in v["states"].as_object().unwrap() {
+        assert_eq!(
+            keys(s),
+            [
+                "count",
+                "mean_seconds",
+                "median_seconds",
+                "oldest_open_seconds",
+                "open",
+                "p90_seconds"
+            ],
+            "{s}"
+        );
+    }
+    assert_eq!(
+        keys(&v["mttc"]),
+        [
+            "count",
+            "mean_seconds",
+            "median_seconds",
+            "never_in_progress"
+        ],
+        "{v}"
+    );
+    assert_eq!(
+        keys(&v["mttr"]),
+        [
+            "confirmed",
+            "count",
+            "mean_seconds",
+            "median_seconds",
+            "sent_back"
+        ],
+        "{v}"
+    );
+}
+
+/// A window's hourly buckets: one an hour, plus one when it does not start on
+/// the hour (a partial hour at each end).
+fn assert_hourly(v: &Value, hours: usize) {
+    let n = v["buckets"].as_array().unwrap().len();
+    assert!(
+        n == hours || n == hours + 1,
+        "{n} buckets for {hours} hours"
+    );
+    assert_eq!(v["buckets"][0]["start"], v["start"]);
+}
+
+#[tokio::test]
+async fn report_answers_the_week_by_default_and_the_day_when_asked() {
+    let t = app().await;
+    let a = item(&t.app, "p", "a").await;
+    item(&t.app, "p", "b").await;
+    start_and_finish(&t.app, &a).await;
+
+    let r = get(&t.app, "/tracker/p/report").await;
+    assert_eq!(
+        r.headers.get(header::CACHE_CONTROL).unwrap(),
+        "no-store",
+        "the window moves with the clock"
+    );
+    assert!(r.headers.get(header::ETAG).is_none());
+    let v = ok(r).await;
+    assert_report_shape(&v);
+    assert_eq!((&v["project"], &v["window"]), (&json!("p"), &json!("7d")));
+    assert!(v["end"].as_str().unwrap().ends_with('Z'), "{v}");
+    assert_hourly(&v, 168);
+    let buckets = v["buckets"].as_array().unwrap();
+    let sum = |k: &str| buckets.iter().map(|b| b[k].as_i64().unwrap()).sum::<i64>();
+    assert_eq!((sum("added"), sum("done")), (2, 1), "{v}");
+    assert_eq!(buckets.last().unwrap()["remaining"], 1, "{v}");
+    assert_eq!(v["velocity"]["done"], 1);
+    assert_eq!(v["mttc"]["count"], 1);
+    assert_eq!(v["states"]["pending"]["count"], 1);
+    assert_eq!(v["states"]["pending"]["open"], 1);
+
+    let v = ok(get(&t.app, "/tracker/p/report?window=24h").await).await;
+    assert_report_shape(&v);
+    assert_eq!(v["window"], "24h");
+    assert_hourly(&v, 24);
+    assert_eq!(v["velocity"]["done"], 1);
+    let v = ok(get(&t.app, "/tracker/p/report?window=7d").await).await;
+    assert_eq!(v["window"], "7d");
+
+    // A read writes nothing: the queue view's ETag is unchanged.
+    let before = get(&t.app, "/tracker/p").await.headers[header::ETAG].clone();
+    get(&t.app, "/tracker/p/report").await;
+    assert_eq!(
+        get(&t.app, "/tracker/p").await.headers[header::ETAG],
+        before
+    );
+}
+
+#[tokio::test]
+async fn report_refuses_another_window_and_is_empty_for_an_unknown_project() {
+    let t = app().await;
+    for uri in [
+        "/tracker/p/report?window=30d",
+        "/tracker/p/report?window=",
+        "/tracker/p/report?days=7",
+    ] {
+        let r = get(&t.app, uri).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{uri}");
+    }
+    let r = get(&t.app, "/tracker/p/report?window=30d").await;
+    assert!(r.error().contains("30d"), "{}", r.error());
+
+    let v = ok(get(&t.app, "/tracker/nobody/report").await).await;
+    assert_report_shape(&v);
+    assert_hourly(&v, 168);
+    for b in v["buckets"].as_array().unwrap() {
+        assert_eq!(
+            (&b["remaining"], &b["added"], &b["done"]),
+            (&json!(0), &json!(0), &json!(0))
+        );
+    }
+    for (state, s) in v["states"].as_object().unwrap() {
+        assert_eq!(
+            s,
+            &json!({
+                "count": 0, "mean_seconds": null, "median_seconds": null, "p90_seconds": null,
+                "open": 0, "oldest_open_seconds": null
+            }),
+            "{state}"
+        );
+    }
+    assert_eq!(v["mttc"]["mean_seconds"], Value::Null);
+    assert_eq!(v["mttr"]["count"], 0);
+
+    let r = get(&t.app, "/tracker/bad%20name/report").await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(r.error().contains("invalid project name"), "{}", r.error());
 }
 
 #[tokio::test]

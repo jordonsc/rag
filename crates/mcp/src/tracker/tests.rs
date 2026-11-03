@@ -2599,3 +2599,169 @@ fn create_takes_a_request_and_a_from_link() {
         }))
     );
 }
+
+// ---- Velocity (spec:velocity D32, VL-06) -----------------------------------------
+
+/// A velocity answer (D26) with a 7-day and a 24-hour rate, and a 7-day ETA.
+fn velocity_view(week: f64, day: f64, eta: Value, remaining: i64) -> Value {
+    json!({
+        "project": "ubu", "now": "2026-11-02T12:00:00Z",
+        "in_progress": remaining.min(3), "in_review": 0,
+        "pending": remaining - remaining.min(3), "blocked": 0, "deferred": 0,
+        "remaining": remaining,
+        "windows": {
+            "24h": {"done": 5, "active_seconds": 80_000, "velocity_per_day": day, "eta_days": 1},
+            "7d": {"done": 40, "active_seconds": 500_000, "velocity_per_day": week, "eta_days": eta}
+        }
+    })
+}
+
+#[test]
+fn the_velocity_line_writes_rates_as_the_widget_does() {
+    assert_eq!(
+        velocity_line(&velocity_view(42.9, 51.2, json!(2), 51)).as_deref(),
+        Some("Velocity (7 d): 43/day · 24 h: 51/day · ETA 2 days")
+    );
+    assert_eq!(
+        velocity_line(&velocity_view(2.4, 9.96, json!(1), 2)).as_deref(),
+        Some("Velocity (7 d): 2.4/day · 24 h: 10/day · ETA 1 day")
+    );
+    assert_eq!(
+        velocity_line(&velocity_view(8.0, 0.0, json!(0), 0)).as_deref(),
+        Some("Velocity (7 d): 8/day · 24 h: 0/day · ETA done")
+    );
+    assert_eq!(
+        velocity_line(&velocity_view(0.0, 0.0, Value::Null, 4)).as_deref(),
+        Some("Velocity (7 d): 0/day · 24 h: 0/day · ETA unknown")
+    );
+    // D12: whole from 10, or when one decimal would be a whole number; else
+    // one decimal. Half away from zero, as the widget's `formatRate` rounds.
+    assert_eq!(rate(0.0), "0");
+    assert_eq!(rate(0.04), "0");
+    assert_eq!(rate(8.0), "8");
+    assert_eq!(rate(8.04), "8");
+    assert_eq!(rate(2.4), "2.4");
+    assert_eq!(rate(2.45), "2.5");
+    assert_eq!(rate(9.94), "9.9");
+    assert_eq!(rate(9.96), "10");
+    assert_eq!(rate(10.0), "10");
+    assert_eq!(rate(10.5), "11");
+    assert_eq!(rate(42.9), "43");
+    assert_eq!(rate(118.9), "119");
+    assert_eq!(rate(123.4), "123");
+}
+
+#[test]
+fn an_empty_project_or_a_short_answer_gets_no_velocity_line() {
+    // Nothing open, nothing deferred, nothing done in 7 days: nothing to say.
+    let mut empty = velocity_view(0.0, 0.0, json!(0), 0);
+    empty["windows"]["24h"]["done"] = json!(0);
+    empty["windows"]["7d"]["done"] = json!(0);
+    assert_eq!(velocity_line(&empty), None);
+    // Only deferred work is still a project with tickets.
+    let mut deferred = empty.clone();
+    deferred["deferred"] = json!(2);
+    assert_eq!(
+        velocity_line(&deferred).as_deref(),
+        Some("Velocity (7 d): 0/day · 24 h: 0/day · ETA done")
+    );
+    // A figure missing says nothing rather than something wrong.
+    let mut short = velocity_view(4.0, 4.0, json!(2), 5);
+    short["windows"].as_object_mut().unwrap().remove("24h");
+    assert_eq!(velocity_line(&short), None);
+    assert_eq!(velocity_line(&json!({"error": "nope"})), None);
+}
+
+#[test]
+fn the_velocity_read_is_its_own_route() {
+    assert_eq!(
+        get_of(&velocity_req(Some("js_web")).unwrap()),
+        "/tracker/js_web/velocity"
+    );
+    assert!(velocity_req(None).is_err());
+}
+
+/// The velocity figures the stand-in answers: 42.9 a day over 7 days.
+async fn velocity_figures(AxPath(project): AxPath<String>) -> impl IntoResponse {
+    let mut v = velocity_view(42.9, 2.4, json!(2), 51);
+    v["project"] = json!(project);
+    Json(v)
+}
+
+/// A stand-in serving the queue view and, when `velocity`, its figures; without
+/// them the velocity read is a 404.
+async fn stand_in_with(velocity: bool) -> String {
+    let mut app = Router::new().route("/tracker/{project}", get(queue_view));
+    if velocity {
+        app = app.route("/tracker/{project}/velocity", get(velocity_figures));
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+async fn queue_text(base: &str) -> String {
+    let server = TrackerServer::new(reqwest::Client::new(), base, Transport::Gateway);
+    texts(
+        &server
+            .tracker_queue(Parameters(TrackerQueueArgs {
+                project: Some("ubu".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap(),
+    )
+}
+
+async fn next_text(base: &str) -> String {
+    let server = TrackerServer::new(reqwest::Client::new(), base, Transport::Gateway);
+    texts(
+        &server
+            .tracker_next(Parameters(TrackerNextArgs {
+                project: Some("ubu".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn tracker_queue_ends_with_the_velocity_line_after_not_shown() {
+    let with = stand_in_with(true).await;
+    let without = stand_in_with(false).await;
+    let t = queue_text(&with).await;
+    let (queue, line) = t.rsplit_once('\n').unwrap();
+    assert_eq!(line, "Velocity (7 d): 43/day · 24 h: 2.4/day · ETA 2 days");
+    assert!(
+        queue.rsplit('\n').next().unwrap().starts_with("Not shown:"),
+        "{t}"
+    );
+    // A failed velocity read leaves the line out and the queue answered.
+    let bare = queue_text(&without).await;
+    assert_eq!(bare, queue);
+    assert!(!bare.contains("Velocity"), "{bare}");
+    // So does a rag-serve that cannot be reached for it: the queue's own read
+    // failing is still the tool's error.
+    let dead = TrackerServer::new(
+        reqwest::Client::new(),
+        "http://127.0.0.1:9",
+        Transport::Gateway,
+    );
+    assert!(dead
+        .tracker_queue(Parameters(TrackerQueueArgs {
+            project: Some("ubu".into()),
+            ..Default::default()
+        }))
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn tracker_next_is_unchanged_by_velocity() {
+    let with = next_text(&stand_in_with(true).await).await;
+    let without = next_text(&stand_in_with(false).await).await;
+    assert_eq!(with, without);
+    assert!(!with.contains("Velocity"), "{with}");
+}

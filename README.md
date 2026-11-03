@@ -362,11 +362,23 @@ specs and concepts move out of the project's repository into it, keeping their p
   ticket edit and the document editor on the spot, staying open, and submits New concept
   and the add dialogs.
 
+- **Velocity** (spec:velocity): `GET /tracker/{project}/velocity` answers how fast a
+  project's tickets get done over the last 24 hours and 7 days, measured over its **active
+  time** (gaps of over 2 hours between writes are idle, so a project left alone does not
+  read as slow), with the counts now (in progress, review folded in; pending, blocked
+  folded in; deferred apart) and the ETA of what remains. Every figure is a range read of
+  `item_spans`, a ticket's history as intervals kept in step by every write and backfilled
+  from the events once, when an older database is opened. `tracker_queue` ends with its line
+  (`Velocity (7 d): 42/day · 24 h: 51/day · ETA 2 days`). `GET /tracker/{project}/report?window=24h|7d`
+  is the report over one window: an hourly burn-down (remaining, added, done), the time in
+  each state, and the mean times to completion and to resolution, drawn by the web UI's
+  report page (`/projects/{project}/report`). See `specs/tracker/api.md` § *Velocity*.
+
 - **MCP tools** (m02): `rag-mcp --server tracker` (stdio) or `/tracker` on the gateway, each
   forwarding to the API (`crates/mcp/src/tracker.rs`): `tracker_queue` (the dashboard as
   compact text: requests first, then review, then the queue with gate markers, blocked and deferred, bounded by `limit` (default 20),
   `until_gate` and `sections`, done only counted unless asked for, a `Not shown:` count
-  footer), `tracker_next` (the next `n` dispatchable tickets in full, stopping at the first
+  footer, then the velocity line, left out when that second read fails), `tracker_next` (the next `n` dispatchable tickets in full, stopping at the first
   gate; rag-t0006; then any `parallel` tickets below the gate, which may start now and land
   after it, rag-t0013), `tracker_list`, `tracker_get` (history only when asked: `history:
   true` or `N`, rag-t0039), `tracker_create` (tickets and gates), `tracker_create_record`

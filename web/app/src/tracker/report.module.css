@@ -1,0 +1,75 @@
+/*
+ * The velocity report page (spec:velocity D19): the figures row (the
+ * widget's, `tracker.module.css`), then three panels. Every colour is a token.
+ */
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-1);
+  color: var(--rag-acc);
+  font-size: var(--rag-text-s);
+  text-decoration: none;
+}
+
+.back:hover {
+  text-decoration: underline;
+}
+
+.blockTitle {
+  margin: 0;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-3);
+  min-width: 0;
+}
+
+.note {
+  margin: 0;
+  max-width: var(--rag-measure);
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+}
+
+.empty {
+  margin: 0;
+  color: var(--rag-text);
+}
+
+.open {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rag-space-1) var(--rag-space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--rag-text);
+  font-size: var(--rag-text-s);
+}
+
+.openState {
+  color: var(--rag-dim);
+}
+
+.figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: var(--rag-space-4);
+  margin: 0;
+}
+
+.figures dt {
+  color: var(--rag-bright);
+  font-weight: 600;
+}
+
+.figures dd {
+  margin: var(--rag-space-1) 0 0;
+  max-width: var(--rag-measure);
+  color: var(--rag-text);
+}

@@ -277,6 +277,113 @@ export interface AckDoneResponse {
   acknowledged: string[];
 }
 
+// ---- Velocity (spec:velocity D26) -------------------------------------------
+
+/** The windows velocity is measured over (D10): rolling, ending now. */
+export const VELOCITY_WINDOWS = ['7d', '24h'] as const;
+export type VelocityWindow = (typeof VELOCITY_WINDOWS)[number];
+
+/** One window's figures (D26). */
+export interface VelocityFigures {
+  /** Tickets that reached done in the window, each once (D3). */
+  done: number;
+  /** Active time in the window (D6), in seconds. */
+  active_seconds: number;
+  /** Done per 24 h of active time (D8). */
+  velocity_per_day: number;
+  /** Remaining ÷ velocity, rounded up (D9): 0 when nothing remains, `null` when unknown. */
+  eta_days: number | null;
+}
+
+/**
+ * `GET /tracker/{project}/velocity` (D26). The counts are now, whatever the
+ * window (D4, D5); a project with no ticket answers zeros, not a 404.
+ */
+export interface Velocity {
+  project: string;
+  now: string;
+  /** `in_progress` or `review`, not blocked (R5). */
+  in_progress: number;
+  /** Of `in_progress`, those in review. */
+  in_review: number;
+  /** `pending` or `failed`, plus every blocked ticket but a deferred one (R6). */
+  pending: number;
+  /** Of `pending`, those blocked. */
+  blocked: number;
+  /** Deferred: in neither count. */
+  deferred: number;
+  /** `in_progress + pending` (D5). */
+  remaining: number;
+  windows: Record<VelocityWindow, VelocityFigures>;
+}
+
+// ---- The report (spec:velocity D27) -----------------------------------------
+
+/** One hour of the burn-down (D16), in UTC; the first and last may be partial. */
+export interface ReportBucket {
+  /** RFC 3339 UTC: the window's start for the first, a whole hour after. */
+  start: string;
+  /** Remaining (D5) at the bucket's end. */
+  remaining: number;
+  /** Created, or first published from a draft, in it. */
+  added: number;
+  /** Reached done in it, each ticket once (D3). */
+  done: number;
+}
+
+/** The states the report times (D17), in its order: four statuses and the block. */
+export const REPORT_STATES = ['pending', 'in_progress', 'review', 'deferred', 'blocked'] as const;
+export type ReportState = (typeof REPORT_STATES)[number];
+
+/**
+ * One state's time (D17): over the spans that ended in the window (`null`s
+ * when none did), and the spans still open now.
+ */
+export interface StateTime {
+  count: number;
+  mean_seconds: number | null;
+  median_seconds: number | null;
+  /** Nearest rank: one of the lengths. */
+  p90_seconds: number | null;
+  open: number;
+  oldest_open_seconds: number | null;
+}
+
+/** Mean time to completion (D18): in progress since the last reopen, per ticket done. */
+export interface ReportMttc {
+  count: number;
+  mean_seconds: number | null;
+  median_seconds: number | null;
+  /** Done without being in progress since the last reopen: not in the mean. */
+  never_in_progress: number;
+}
+
+/** Mean time to resolution (D18): per review that ended in the window. */
+export interface ReportMttr {
+  count: number;
+  mean_seconds: number | null;
+  median_seconds: number | null;
+  confirmed: number;
+  sent_back: number;
+}
+
+/**
+ * `GET /tracker/{project}/report?window=` (D27). Every block follows the
+ * window (R10); an unknown project answers buckets of zeros, not a 404.
+ */
+export interface Report {
+  project: string;
+  window: VelocityWindow;
+  start: string;
+  end: string;
+  /** The window's figures, as the widget reads them (D26). */
+  velocity: VelocityFigures;
+  buckets: ReportBucket[];
+  states: Record<ReportState, StateTime>;
+  mttc: ReportMttc;
+  mttr: ReportMttr;
+}
+
 export interface ItemsResponse {
   project: string;
   items: Item[];

@@ -9,7 +9,7 @@ import type { ReactElement } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { I18nProvider } from '@rag/ui';
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router';
 
 import { IdentityProvider } from '../identity';
 import { DocsView } from '../tracker/DocsView';
@@ -415,6 +415,130 @@ describe('a document', () => {
       author_email: AUTHOR,
       surface: 'web',
     });
+  });
+});
+
+// ---- The way back to the documents page (rag-t0059) -------------------------
+
+/** The browser's Back, for a memory router. */
+function BrowserBack() {
+  const navigate = useNavigate();
+  return (
+    <button type="button" onClick={() => void navigate(-1)}>
+      Browser back
+    </button>
+  );
+}
+
+describe('the way back to the documents page', () => {
+  const SPEC_DOC = docView({
+    id: 'demo-d0005',
+    path: 'specs/audio/master.md',
+    kind: 'spec',
+    title: 'Audio',
+    spec: 'audio',
+    concept: null,
+    body: 'The spec.',
+  });
+
+  beforeEach(() => {
+    server.on('/tracker/demo/concepts', { body: { project: 'demo', concepts: [CONCEPT] } });
+    server.on('/tracker/demo/specs', { body: { project: 'demo', specs: [SPEC] } });
+    server.on('/tracker/demo/docs?kind=doc', { body: { project: 'demo', documents: [] } });
+    server.on(docUrl('specs/audio/master.md'), { body: SPEC_DOC }, 'GET');
+    server.on('/tracker/demo/specs/audio', { body: SPEC }, 'GET');
+  });
+
+  function pages(route: string) {
+    return mount(
+      <>
+        <BrowserBack />
+        <Routes>
+          <Route path="/projects/:project/docs" element={<DocsView />} />
+          <Route path="/projects/:project/doc/*" element={<DocView />} />
+        </Routes>
+      </>,
+      { route },
+    );
+  }
+
+  const backLink = () => screen.getByRole('link', { name: /demo documents/ });
+
+  it('from a spec lands on Specs, not Concepts', async () => {
+    const user = userEvent.setup();
+    pages('/projects/demo/doc/specs/audio/master.md');
+    await screen.findByRole('heading', { name: 'Audio', level: 1 });
+    expect(backLink()).toHaveAttribute('href', '/projects/demo/docs?tab=specs');
+
+    await user.click(backLink());
+    expect(await screen.findByRole('tab', { name: 'Specs · 1' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByTestId('address')).toHaveTextContent('/projects/demo/docs?tab=specs');
+    expect(screen.getByRole('region', { name: 'Audio' })).toBeInTheDocument();
+  });
+
+  it('from a milestone lands on Specs too', async () => {
+    server.on(docUrl('specs/audio/m03-music.md'), {
+      body: docView({
+        id: 'demo-d0007',
+        path: 'specs/audio/m03-music.md',
+        kind: 'milestone',
+        title: 'Music',
+        spec: 'audio',
+        milestone: 'm03',
+        concept: null,
+      }),
+    });
+    server.on('/tracker/demo/specs/audio/milestones/m03', { body: SPEC.milestones[1] });
+    pages('/projects/demo/doc/specs/audio/m03-music.md');
+    await screen.findByRole('heading', { name: 'Music', level: 1 });
+    expect(backLink()).toHaveAttribute('href', '/projects/demo/docs?tab=specs');
+  });
+
+  it('from a concept still lands on Concepts', async () => {
+    pages('/projects/demo/doc/concepts/power.md');
+    await screen.findByRole('heading', { name: 'Power', level: 1 });
+    expect(backLink()).toHaveAttribute('href', '/projects/demo/docs');
+  });
+
+  it('from a free document lands on Other', async () => {
+    server.on(docUrl('notes/runbook.md'), {
+      body: docView({
+        id: 'demo-d0009',
+        path: 'notes/runbook.md',
+        kind: 'doc',
+        title: 'Runbook',
+        concept: null,
+      }),
+    });
+    pages('/projects/demo/doc/notes/runbook.md');
+    await screen.findByRole('heading', { name: 'Runbook', level: 1 });
+    expect(backLink()).toHaveAttribute('href', '/projects/demo/docs?tab=other');
+  });
+
+  it('from a spec that cannot be read still lands on Specs', async () => {
+    server.on(docUrl('specs/gone/master.md'), { status: 404, body: { error: 'no document' } });
+    pages('/projects/demo/doc/specs/gone/master.md');
+    await screen.findByText('There is no document at specs/gone/master.md in demo.');
+    expect(backLink()).toHaveAttribute('href', '/projects/demo/docs?tab=specs');
+  });
+
+  it('the browser’s Back from a spec opened from Specs returns to Specs', async () => {
+    const user = userEvent.setup();
+    pages('/projects/demo/docs');
+    await user.click(await screen.findByRole('tab', { name: 'Specs · 1' }));
+    const spec = screen.getByRole('region', { name: 'Audio' });
+    await user.click(within(spec).getByRole('link', { name: 'Audio' }));
+    await screen.findByRole('heading', { name: 'Audio', level: 1 });
+
+    await user.click(screen.getByRole('button', { name: 'Browser back' }));
+    expect(await screen.findByRole('tab', { name: 'Specs · 1' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByTestId('address')).toHaveTextContent('/projects/demo/docs?tab=specs');
   });
 });
 

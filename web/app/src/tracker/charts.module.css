@@ -1,0 +1,151 @@
+/*
+ * The report's charts (spec:velocity D20): inline SVG, every colour a token,
+ * each colour beside a word in the legend. Remaining is the accent, done the
+ * good green and added the caution amber; the time bars are the accent, the
+ * median a bright solid tick and the 90th percentile an amber dashed one, so
+ * shape tells them apart as well as colour.
+ */
+
+.chart {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rag-space-2);
+  min-width: 0;
+}
+
+/* Sized to its container: the viewBox is the measured width, so text stays
+   at its own size on a phone and on a wide screen alike. */
+.svg {
+  display: block;
+  width: 100%;
+  overflow: visible;
+}
+
+.grid {
+  stroke: var(--rag-border);
+  stroke-width: 1;
+}
+
+.axis {
+  stroke: var(--rag-dim);
+  stroke-width: 1;
+}
+
+.axisText {
+  fill: var(--rag-dim);
+  font-size: var(--rag-text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.rowLabel {
+  fill: var(--rag-text);
+  font-size: var(--rag-text-s);
+}
+
+.line {
+  fill: none;
+  stroke: var(--rag-acc);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+.point {
+  fill: var(--rag-acc);
+}
+
+.added {
+  fill: var(--rag-warn);
+}
+
+.done {
+  fill: var(--rag-good);
+}
+
+.mean {
+  fill: var(--rag-acc);
+}
+
+.median {
+  stroke: var(--rag-bright);
+  stroke-width: 2;
+}
+
+.p90 {
+  stroke: var(--rag-warn);
+  stroke-width: 2;
+  stroke-dasharray: 3 2;
+}
+
+/* ---- the legend ---- */
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rag-space-1) var(--rag-space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+}
+
+.legend > li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-2);
+}
+
+.swatch {
+  display: inline-block;
+  width: 12px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.swatchLine {
+  display: inline-block;
+  width: 14px;
+  height: 0;
+  border-top: 2px solid var(--rag-acc);
+}
+
+.swatchAdded {
+  background: var(--rag-warn);
+}
+
+.swatchDone {
+  background: var(--rag-good);
+}
+
+.swatchMean {
+  background: var(--rag-acc);
+}
+
+.swatchMedian {
+  display: inline-block;
+  width: 0;
+  height: 12px;
+  border-left: 2px solid var(--rag-bright);
+}
+
+.swatchP90 {
+  display: inline-block;
+  width: 0;
+  height: 12px;
+  border-left: 2px dashed var(--rag-warn);
+}
+
+/* The chart's numbers as a table, for a screen reader: off screen, not
+   hidden from the accessibility tree (D19). */
+.hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}

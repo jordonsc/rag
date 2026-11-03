@@ -7,6 +7,10 @@ use serde_json::json;
 
 use super::*;
 
+mod item_spans;
+mod report_read;
+mod velocity_read;
+
 struct Fixture {
     _dir: tempfile::TempDir,
     store: TrackerStore,
@@ -97,6 +101,64 @@ async fn mv(s: &TrackerStore, project: &str, id: &str, place: Place) {
 
 fn ids(v: &[&str]) -> Vec<String> {
     v.iter().map(|s| s.to_string()).collect()
+}
+
+/// The span invariant (spec:velocity VL-02): every ticket has exactly one open
+/// `status` span, its state the ticket's status; an open `blocked` span exactly
+/// when it is blocked and an open `draft` span exactly when it is a draft; no
+/// span on any other track; and every closed span ends no earlier than it
+/// started, by a later event.
+async fn assert_spans_match_rows(s: &TrackerStore) {
+    let rows: Vec<(String, String, String, i64, i64)> =
+        sqlx::query_as("SELECT id, project, status, blocked, draft FROM items ORDER BY id")
+            .fetch_all(&s.pool)
+            .await
+            .unwrap();
+    for (id, project, status, blocked, draft) in rows {
+        let open: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT track, state, project FROM item_spans WHERE item_id = ? AND ended_at IS NULL \
+             ORDER BY track",
+        )
+        .bind(&id)
+        .fetch_all(&s.pool)
+        .await
+        .unwrap();
+        let on = |track: &str| {
+            open.iter()
+                .filter(|(t, _, _)| t == track)
+                .map(|(_, state, _)| state.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(on("status"), vec![status.as_str()], "{id}'s status span");
+        let want_blocked: Vec<&str> = if blocked != 0 {
+            vec!["blocked"]
+        } else {
+            vec![]
+        };
+        assert_eq!(on("blocked"), want_blocked, "{id}'s blocked span");
+        let want_draft: Vec<&str> = if draft != 0 { vec!["draft"] } else { vec![] };
+        assert_eq!(on("draft"), want_draft, "{id}'s draft span");
+        assert!(
+            open.iter().all(|(_, _, p)| *p == project),
+            "{id}'s spans name another project: {open:?}"
+        );
+    }
+    let strays: Vec<(String, String)> = sqlx::query_as(
+        "SELECT item_id, track FROM item_spans WHERE track NOT IN ('status', 'blocked', 'draft') \
+         OR item_id NOT IN (SELECT id FROM items)",
+    )
+    .fetch_all(&s.pool)
+    .await
+    .unwrap();
+    assert!(strays.is_empty(), "stray spans: {strays:?}");
+    let bad: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT span_id, item_id FROM item_spans WHERE ended_at IS NOT NULL \
+         AND (ended_at < started_at OR ended_event IS NULL OR ended_event < started_event)",
+    )
+    .fetch_all(&s.pool)
+    .await
+    .unwrap();
+    assert!(bad.is_empty(), "spans that end before they start: {bad:?}");
 }
 
 // ---- The list ---------------------------------------------------------------
@@ -280,6 +342,7 @@ async fn a_failed_item_stays_queued_and_a_reopen_keeps_its_place() {
     assert_eq!(sound(s, "p").await, vec![a.clone(), b.clone()]);
     set_status(s, &b, ItemStatus::Pending).await;
     assert_eq!(sound(s, "p").await, vec![a, b]);
+    assert_spans_match_rows(s).await;
 }
 
 #[tokio::test]
@@ -307,6 +370,7 @@ async fn done_clears_a_block() {
         serde_json::json!(false)
     );
     sound(s, "p").await;
+    assert_spans_match_rows(s).await;
 }
 
 // ---- Refusals ---------------------------------------------------------------
@@ -688,6 +752,7 @@ async fn disallowed_transitions_are_refused() {
         }
     }
     sound(s, "p").await;
+    assert_spans_match_rows(s).await;
 }
 
 #[tokio::test]
@@ -740,6 +805,7 @@ async fn pending_goes_straight_to_done_or_failed() {
         .await
         .unwrap();
     assert_eq!(done.events.last().unwrap().body, "Status: pending → done.");
+    assert_spans_match_rows(s).await;
 }
 
 #[tokio::test]
@@ -811,6 +877,7 @@ async fn deferred_keeps_its_place_and_resumes_in_place() {
     // Cancelling a deferred item takes it out of the list.
     set_status(s, &b, ItemStatus::Cancelled).await;
     assert_eq!(sound(s, "p").await, ids(&[&a]));
+    assert_spans_match_rows(s).await;
 }
 
 #[tokio::test]
@@ -869,6 +936,7 @@ async fn a_deferred_item_may_also_be_blocked_and_is_shown_as_deferred() {
         ids(&[&c])
     );
     sound(s, "p").await;
+    assert_spans_match_rows(s).await;
 }
 
 #[tokio::test]
@@ -969,6 +1037,7 @@ async fn review_keeps_its_place_and_is_confirmed_or_sent_back() {
     // Cancelling a review item takes it out of the list.
     set_status(s, &a, ItemStatus::Cancelled).await;
     assert_eq!(sound(s, "p").await, ids(&[&b, &d]));
+    assert_spans_match_rows(s).await;
 }
 
 #[tokio::test]
@@ -1099,6 +1168,9 @@ async fn an_older_database_moves_approval_blocks_to_review_once() {
         assert_eq!(v(&view.review), ids(&["old-t0001", "old-t0003"]));
         assert_eq!(v(&view.blocked), ids(&["old-t0002"]));
         assert_eq!(v(&view.queue), ids(&["old-t0004"]));
+        // The backfill gave the old tickets spans from their rows, and the
+        // migration's events moved them on (spec:velocity VL-02).
+        assert_spans_match_rows(&store).await;
         store.pool.close().await;
     }
 }
@@ -1809,6 +1881,7 @@ async fn random_operations_match_a_reference_model() {
     assert!(r.next().is_none());
     assert!(deferred_seen > 0, "the walk exercised no deferred item");
     assert!(review_seen > 0, "the walk exercised no review item");
+    assert_spans_match_rows(s).await;
 }
 
 // ---- Concurrency ------------------------------------------------------------
@@ -1875,6 +1948,7 @@ async fn concurrent_writers_keep_the_list_intact() {
     for id in a.iter().chain(b.iter()) {
         assert!(unique.contains(id));
     }
+    assert_spans_match_rows(&s1).await;
 }
 
 // ---- Documents --------------------------------------------------------------
@@ -2945,6 +3019,7 @@ async fn an_older_database_gains_the_parallel_column_and_keeps_its_items() {
         if pass == 1 {
             assert_eq!(order, ids(&["old-t0001", "old-t0002"]));
             assert!(item(&store, "old-t0002").await.item.parallel);
+            assert_spans_match_rows(&store).await;
             break;
         }
         assert_eq!(order, ids(&["old-t0001"]));
@@ -3040,6 +3115,7 @@ async fn a_dependency_unblocks_itself_when_its_one_dependency_is_done() {
     let a_done = item(s, &a).await.events.last().unwrap().event_id;
     assert!(ev.event_id > a_done);
     sound(s, "ubu").await;
+    assert_spans_match_rows(s).await;
 }
 
 #[tokio::test]
@@ -3071,6 +3147,7 @@ async fn a_dependency_on_two_items_waits_for_both() {
         format!("Unblocked: {b} is done, the last of {a}, {b}.")
     );
     sound(s, "ubu").await;
+    assert_spans_match_rows(s).await;
 }
 
 #[tokio::test]
@@ -3103,6 +3180,7 @@ async fn a_cancelled_or_failed_dependency_unblocks_nothing() {
     assert!(rec.item.depends_on.is_empty());
     assert_eq!(rec.events.last().unwrap().fields["depends_on"], json!([]));
     sound(s, "ubu").await;
+    assert_spans_match_rows(s).await;
 }
 
 #[tokio::test]
@@ -3214,6 +3292,7 @@ async fn depends_on_is_refused_across_projects_empty_self_unknown_done_and_in_a_
         assert_eq!(rec.events.len(), 1, "{id}");
     }
     sound(s, "ubu").await;
+    assert_spans_match_rows(s).await;
 }
 
 #[tokio::test]
@@ -3269,6 +3348,7 @@ async fn depends_on_changes_in_place_and_clears_with_the_reason() {
     finish(s, &b).await;
     assert_eq!(item(s, &c).await.item.status, ItemStatus::Cancelled);
     sound(s, "ubu").await;
+    assert_spans_match_rows(s).await;
 }
 
 #[tokio::test]
@@ -3675,6 +3755,7 @@ async fn an_older_database_gains_the_labels_table_and_keeps_its_items() {
             assert_eq!(store.project_labels("old").await.unwrap().len(), 1);
         }
         assert_eq!(sound(&store, "old").await, ids(&["old-t0001"]));
+        assert_spans_match_rows(&store).await;
         store.pool.close().await;
     }
 }
@@ -4808,6 +4889,8 @@ async fn an_older_database_gains_the_prior_values_column_and_its_web_events_read
             Some(json!({ "status": "in_progress", "done_at": null }))
         );
         store.check("old").await.unwrap();
+        // Backfilled from events with no create, then kept in step.
+        assert_spans_match_rows(&store).await;
     }
 }
 
@@ -5014,6 +5097,7 @@ async fn from_links_are_answered_by_became_on_the_request() {
         }]),
         Approval::Unapproved
     );
+    assert_spans_match_rows(s).await;
 }
 
 #[tokio::test]
@@ -5342,6 +5426,7 @@ async fn a_draft_ticket_stays_out_of_the_feed_and_the_queue_until_published() {
         )
         .await
         .is_err());
+    assert_spans_match_rows(s).await;
 }
 
 #[tokio::test]
