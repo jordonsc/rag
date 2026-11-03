@@ -1,7 +1,7 @@
 /**
  * The report page's arithmetic (spec:velocity D16, VL-12): the server's
- * hourly UTC buckets summed into the reader's local days, the labels of a
- * day and an hour, and "nice" axis ticks.
+ * hourly UTC buckets summed into the reader's local days, a day's labels, and
+ * "nice" axis ticks.
  *
  * Local time is the browser's (`Date`'s local fields), so a day boundary
  * falls at the reader's midnight. An hour belongs to the day it starts in:
@@ -81,21 +81,6 @@ export function dayLabels(day: string): { tick: string; label: string } {
   const date = new Date(y, m - 1, d);
   const tick = `${WEEKDAYS[date.getDay()]} ${date.getDate()}`;
   return { tick, label: `${tick} ${MONTHS[date.getMonth()]}` };
-}
-
-/**
- * An hour's labels, in local time: the full one ("Mon 2 Nov, 14:00"), and
- * the axis's, which only every `every` hours on the hour carries ("14:00"),
- * so 24 of them fit on a phone.
- */
-export function hourLabels(iso: string, every = 6): { tick: string; label: string } {
-  const d = new Date(iso);
-  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  const onTick = d.getMinutes() === 0 && d.getSeconds() === 0 && d.getHours() % every === 0;
-  return {
-    tick: onTick ? time : '',
-    label: `${dayLabels(localDay(iso)).label}, ${time}`,
-  };
 }
 
 /** Rounds away the binary noise of `k × 0.1` and the like. */

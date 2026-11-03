@@ -57,7 +57,7 @@ const px = (n: number) => Math.round(n * 10) / 10;
 
 // ---- The burn-down ------------------------------------------------------------
 
-/** One period of the burn-down: an hour or a local day. */
+/** One period of the burn-down: a local day. */
 export interface BurnPoint {
   key: string;
   /** The period in full, for the titles and the table ("Mon 2 Nov"). */
@@ -73,11 +73,9 @@ export interface BurnDownProps {
   points: readonly BurnPoint[];
   /** What the chart shows, said to a screen reader and as the table's caption. */
   caption: string;
-  /** The table's heading for a period: "Day" or "Hour". */
-  period: string;
 }
 
-export function BurnDown({ points, caption, period }: BurnDownProps) {
+export function BurnDown({ points, caption }: BurnDownProps) {
   const [ref, width] = useWidth();
   const height = 220;
   const pad = { top: 12, right: 12, bottom: 28, left: 40 };
@@ -179,7 +177,7 @@ export function BurnDown({ points, caption, period }: BurnDownProps) {
       <ul className={styles.legend} aria-hidden>
         <li>
           <span className={styles.swatchLine} />
-          Remaining, at the end of each {period.toLowerCase()}
+          Remaining, at the end of each day
         </li>
         <li>
           <span className={cx(styles.swatch, styles.swatchAdded)} />
@@ -194,7 +192,7 @@ export function BurnDown({ points, caption, period }: BurnDownProps) {
         <caption>{caption}</caption>
         <thead>
           <tr>
-            <th scope="col">{period}</th>
+            <th scope="col">Day</th>
             <th scope="col">Remaining at its end</th>
             <th scope="col">Added</th>
             <th scope="col">Done</th>

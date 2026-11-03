@@ -441,11 +441,11 @@ Always 200.
 }
 ```
 * `window` is `24h` or `7d`, **`7d` when absent**; anything else (and any other query parameter) is 400. The window
-  ends at `end`, when the report was computed, and starts a day or seven before it, at `start`. **Every block
-  follows the window**, and each carries its counts, so a small sample is plain.
+  ends at `end`, when the report was computed, and starts a day or seven before it, at `start`. **Every block but
+  `buckets` follows the window**, and each carries its counts, so a small sample is plain.
 * `velocity` is the window's figures exactly as `GET …/velocity` gives them (its `eta_days` from the remaining now).
-* `buckets` are **hourly, on UTC hours, whatever the window**, oldest first: the first runs from `start` to the
-  next hour, the last from the hour before `end` to `end` (so 168 or 169 for 7 days, 24 or 25 for 24 hours). A
+* `buckets` are **hourly, on UTC hours, over the last 7 days whatever the window**, oldest first: the first runs
+  from seven days before `end` to the next hour, the last from the hour before `end` to `end` (so 168 or 169). A
   bucket holds what happened at or after its `start` and before the next one's (the last up to and including
   `end`): `added` (tickets created in it, or first published from a draft in it), `done` (tickets that reached
   done in it, each once a bucket) and `remaining` (in progress + pending, as in the velocity counts) **at its end**,
@@ -739,11 +739,14 @@ slow; the design is `specs/velocity/master.md` (D1–D10, D16–D27), built in `
   as its event; a database from before them is backfilled from its events when it is opened (the log says how many
   tickets it built spans for, and how many it set from their rows because their events disagreed). Every figure is
   a range read of spans and events by time, with no counters to keep in step.
-* **The report and drafts.** A ticket is in no bucket's `remaining` while it is a draft, is `added` when it is first
-  published, and a completion made while it was a draft is not `done`. A stretch (in `states`, `mttc`, `mttr`)
-  that began while its ticket was a draft counts from the publication, and not at all if it ended, or is still
-  open, under that draft. Which of two writes in the same second came first is the events' order, never the
-  timestamps'.
+* **The report and drafts.** A ticket that is **a draft now is in no figure**, in the report or in the velocity's
+  `done`, whatever it did before it was made one; publishing it brings its history back, so a past figure can
+  change when a ticket is drafted or published. A published ticket's time as a draft does not count either: it is
+  in no bucket's `remaining` for that time, is `added` when it is first published, and a completion made while it
+  was a draft is not `done`. A stretch (in `states`, `mttc`, `mttr`) that began while its ticket was a draft counts
+  from the publication, and not at all if it ended under that draft; a stretch as a draft in the middle of one is
+  taken out of its length, as far as the last 7 days' spans show it. Which of two writes in the same second came
+  first is the events' order, never the timestamps'.
 
 
 The event feed (rag-t0036)

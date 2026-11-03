@@ -1,15 +1,16 @@
-//! The velocity report (`specs/velocity/master.md` D16–D18, D27): a window's
-//! burn-down, the time tickets spent in each state, and the mean times to
+//! The velocity report (`specs/velocity/master.md` D16–D18, D27): the last 7
+//! days' burn-down and a window's time in each state and mean times to
 //! completion and to resolution, as `GET /tracker/{project}/report` answers
-//! them. Every block follows the chosen window (R10).
+//! them. Every block but the burn-down follows the chosen window (R10, amended
+//! by the owner 2026-11-03).
 //!
 //! Like the velocity read (`velocity.rs`), nothing is kept: every figure is
 //! computed on request (D25) from two range reads of `item_spans`, with the
 //! window's velocity read beside them in the same transaction.
 //!
-//! * [`SPANS_SQL`]: the spans that overlap the window, once
+//! * [`SPANS_SQL`]: the spans that overlap the last 7 days, once
 //!   (`idx_item_spans_project_ended`, for the closed spans that end in or after
-//!   it and the open ones), each with whether it began with its ticket and
+//!   them and the open ones), each with whether it began with its ticket and
 //!   whether its ticket was a draft when it began (`idx_item_spans_item`).
 //! * [`HISTORY_SQL`]: the `status` spans of the tickets done in the window,
 //!   however old (`idx_item_spans_item`), for the time since a ticket's last
@@ -19,11 +20,15 @@
 //! (ledger rag-l0083): which span came first, and whether a draft covered the
 //! event that started a span, compare event ids, never timestamps.
 //!
-//! **Drafts are not counted while they are drafts** (D2). A ticket is in no
-//! bucket's `remaining` while a draft, is `added` when it is first published,
-//! and is not `done` by a completion made while it was one (as `velocity.rs`
-//! has it). A span that began while its ticket was a draft counts from the
-//! publication, and not at all if it ended, or is still open, under that draft.
+//! **A ticket that is a draft now is in no figure** (D2, amended by the owner
+//! 2026-11-03), whatever it did before it was made one: its spans are not read.
+//! Publishing it brings its history back. A published ticket's time as a draft
+//! does not count either: it is in no bucket's `remaining` for that time, is
+//! `added` when it is first published, and is not `done` by a completion made
+//! while it was one (as `velocity.rs` has it). A span that began while its
+//! ticket was a draft counts from the publication, and not at all if it ended
+//! under that draft; a stretch as a draft in the middle of a span is taken out
+//! of its length.
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -47,7 +52,8 @@ const REMAINING: [&str; 4] = ["pending", "failed", "in_progress", "review"];
 const TIMED: [&str; 4] = ["pending", "in_progress", "review", "deferred"];
 
 /// The report's window (D27): the last 24 hours or the last 7 days, ending now,
-/// as the widget's are (D10). 7 days unless asked.
+/// as the widget's are (D10). 7 days unless asked. The burn-down does not follow
+/// it (D16).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub enum ReportWindow {
     #[serde(rename = "24h")]
@@ -98,7 +104,8 @@ pub struct Report {
     pub end: String,
     /// The window's velocity figures, as the widget has them (D26).
     pub velocity: VelocityWindow,
-    /// The burn-down (D16): hourly, in UTC, oldest first.
+    /// The burn-down (D16): the last 7 days whatever the window, hourly, in UTC,
+    /// oldest first.
     pub buckets: Vec<Bucket>,
     /// The time in each state (D17).
     pub states: ReportStates,
@@ -109,7 +116,7 @@ pub struct Report {
 }
 
 /// One hour of the burn-down (D16). Buckets fall on UTC hours: the first runs
-/// from the window's start to the next hour, the last from the hour before
+/// from 7 days before `end` to the next hour, the last from the hour before
 /// `end` to `end` (each partial unless the window starts on the hour), and the
 /// rest are whole hours. Each holds what happened at or after its `start` and
 /// before the next bucket's (the last one up to and including `end`).
@@ -206,7 +213,8 @@ macro_rules! first {
 }
 
 /// One part of [`SPANS_SQL`]: the columns, from the project's spans by
-/// `idx_item_spans_project_ended`, of tickets that are not requests (D1).
+/// `idx_item_spans_project_ended`, of tickets that are not requests (D1) and
+/// are not drafts now (D2).
 /// `INDEXED BY` and `CROSS JOIN` keep the plan to that index with the spans on
 /// the outside: either of the project's other two would read its whole
 /// history, and items on the outside would scan every project's tickets.
@@ -220,7 +228,7 @@ macro_rules! spans_part {
             draft_until!(),
             " FROM item_spans s INDEXED BY idx_item_spans_project_ended \
              CROSS JOIN items i ON i.id = s.item_id WHERE s.project = ? AND i.type <> 'request' \
-             AND s.started_at <= ? AND "
+             AND i.draft = 0 AND s.started_at <= ? AND "
         )
     };
 }
@@ -331,8 +339,21 @@ impl Span {
     }
 
     /// The counted length of a closed span.
-    fn counted_seconds(&self) -> Option<i64> {
-        Some(self.end? - self.counted_start()?)
+    fn counted_seconds(&self, drafts: &Stretches) -> Option<i64> {
+        let end = self.end?;
+        Some(self.counted(self.counted_start()?, end, drafts))
+    }
+
+    /// The seconds from `from` to `to`, less this span's ticket's stretches as
+    /// a draft within them (D2).
+    fn counted(&self, from: i64, to: i64, drafts: &Stretches) -> i64 {
+        let drafted: i64 = drafts
+            .get(self.item.as_str())
+            .into_iter()
+            .flatten()
+            .map(|&(start, end)| (end.unwrap_or(to).min(to) - start.max(from)).max(0))
+            .sum();
+        to - from - drafted
     }
 
     fn on_status(&self) -> bool {
@@ -407,11 +428,29 @@ impl Hours {
     }
 }
 
-/// What the spans say (D16–D18), with the window's velocity to come.
-pub(super) struct Figures {
+/// Each ticket's stretches as a draft among the spans read: start and end.
+type Stretches<'a> = HashMap<&'a str, Vec<(i64, Option<i64>)>>;
+
+fn draft_stretches(spans: &[Span]) -> Stretches<'_> {
+    let mut drafts: Stretches = HashMap::new();
+    for s in spans.iter().filter(|s| s.track == DRAFT) {
+        drafts
+            .entry(s.item.as_str())
+            .or_default()
+            .push((s.start, s.end));
+    }
+    drafts
+}
+
+/// The burn-down's series (D16), one figure an hour of [`Hours`].
+pub(super) struct BurnDown {
     pub remaining: Vec<i64>,
     pub added: Vec<i64>,
     pub done: Vec<i64>,
+}
+
+/// What the spans say of the window (D17, D18), with its velocity to come.
+pub(super) struct Figures {
     pub states: ReportStates,
     pub mttc: Mttc,
     pub mttr: Mttr,
@@ -429,30 +468,12 @@ fn state_time(lengths: Vec<i64>, open: i64, oldest: Option<i64>) -> StateTime {
     }
 }
 
-/// The report's figures over `[start, end]` from the spans that overlap it
-/// ([`SPANS_SQL`]) and the history of the tickets done in it
-/// ([`HISTORY_SQL`]).
-pub(super) fn figures(spans: &[Span], history: &[Span], start: i64, end: i64) -> Figures {
-    let hours = Hours::new(start, end);
+/// The burn-down over `[start, end]` from the spans that overlap it
+/// ([`SPANS_SQL`]).
+pub(super) fn burn_down(spans: &[Span], hours: &Hours, start: i64, end: i64) -> BurnDown {
     let n = hours.starts.len();
     let within = |t: i64| t >= start && t <= end;
-
-    let mut drafts: HashMap<&str, Vec<(i64, Option<i64>)>> = HashMap::new();
-    let mut drafts_now: HashSet<&str> = HashSet::new();
-    let mut by_start: HashMap<(&str, i64), &Span> = HashMap::new();
-    for s in spans {
-        if s.track == DRAFT {
-            drafts
-                .entry(s.item.as_str())
-                .or_default()
-                .push((s.start, s.end));
-            if s.end.is_none() {
-                drafts_now.insert(s.item.as_str());
-            }
-        } else if s.on_status() {
-            by_start.insert((s.item.as_str(), s.started_event), s);
-        }
-    }
+    let drafts = draft_stretches(spans);
 
     // Remaining at each bucket's end (D5, D16): a span counts at an instant
     // `T` when `start < T <= end` (it began before `T` and had not ended by
@@ -518,11 +539,9 @@ pub(super) fn figures(spans: &[Span], history: &[Span], start: i64, end: i64) ->
         }
     }
 
-    // Done (D3), each ticket once a bucket, and the window's completion of
-    // each (its latest) for MTTC.
+    // Done (D3), each ticket once a bucket.
     let mut done = vec![0i64; n];
     let mut done_in: HashSet<(usize, &str)> = HashSet::new();
-    let mut completion: HashMap<&str, &Span> = HashMap::new();
     for s in spans.iter().filter(|s| {
         s.on_status() && s.state == "done" && within(s.start) && s.draft == DraftAtStart::No
     }) {
@@ -530,6 +549,32 @@ pub(super) fn figures(spans: &[Span], history: &[Span], start: i64, end: i64) ->
         if done_in.insert((bucket, s.item.as_str())) {
             done[bucket] += 1;
         }
+    }
+
+    BurnDown {
+        remaining,
+        added,
+        done,
+    }
+}
+
+/// The window's figures over `[start, end]` from spans that overlap at least
+/// that ([`SPANS_SQL`]) and the history of the tickets done in it
+/// ([`HISTORY_SQL`]).
+pub(super) fn figures(spans: &[Span], history: &[Span], start: i64, end: i64) -> Figures {
+    let within = |t: i64| t >= start && t <= end;
+    let drafts = draft_stretches(spans);
+
+    let mut by_start: HashMap<(&str, i64), &Span> = HashMap::new();
+    for s in spans.iter().filter(|s| s.on_status()) {
+        by_start.insert((s.item.as_str(), s.started_event), s);
+    }
+
+    // The window's completion of each ticket (its latest), for MTTC.
+    let mut completion: HashMap<&str, &Span> = HashMap::new();
+    for s in spans.iter().filter(|s| {
+        s.on_status() && s.state == "done" && within(s.start) && s.draft == DraftAtStart::No
+    }) {
         let latest = completion.entry(s.item.as_str()).or_insert(s);
         if s.started_event > latest.started_event {
             *latest = s;
@@ -549,15 +594,15 @@ pub(super) fn figures(spans: &[Span], history: &[Span], start: i64, end: i64) ->
         };
         match s.end {
             Some(e) if within(e) => {
-                if let Some(len) = s.counted_seconds() {
+                if let Some(len) = s.counted_seconds(&drafts) {
                     lengths.entry(key).or_default().push(len);
                 }
             }
-            None if !drafts_now.contains(s.item.as_str()) => {
+            None => {
                 if let Some(from) = s.counted_start() {
                     let o = open.entry(key).or_insert((0, 0));
                     o.0 += 1;
-                    o.1 = o.1.max(end - from);
+                    o.1 = o.1.max(s.counted(from, end, &drafts));
                 }
             }
             _ => {}
@@ -605,7 +650,7 @@ pub(super) fn figures(spans: &[Span], history: &[Span], start: i64, end: i64) ->
                     && s.started_event >= reopened
                     && s.ended_event.is_some_and(|e| e <= c.started_event)
             })
-            .filter_map(|s| s.counted_seconds())
+            .filter_map(|s| s.counted_seconds(&drafts))
             .collect();
         if worked.is_empty() {
             never_in_progress += 1;
@@ -629,7 +674,7 @@ pub(super) fn figures(spans: &[Span], history: &[Span], start: i64, end: i64) ->
         .iter()
         .filter(|s| s.on_status() && s.state == "review" && s.end.is_some_and(within))
     {
-        let Some(len) = s.counted_seconds() else {
+        let Some(len) = s.counted_seconds(&drafts) else {
             continue;
         };
         reviews.push(len);
@@ -651,33 +696,29 @@ pub(super) fn figures(spans: &[Span], history: &[Span], start: i64, end: i64) ->
         sent_back,
     };
 
-    Figures {
-        remaining,
-        added,
-        done,
-        states,
-        mttc,
-        mttr,
-    }
+    Figures { states, mttc, mttr }
 }
 
+/// The spans overlapping `[burn_start, end]` and the history of the tickets
+/// done in `[start, end]`.
 async fn read_spans(
     conn: &mut SqliteConnection,
     project: &str,
+    burn_start: &str,
     start: &str,
     end: &str,
 ) -> TResult<(Vec<Span>, Vec<Span>)> {
     let spans: Vec<SpanRow> = sqlx::query_as(SPANS_SQL)
         // The closed part: first!'s start, then project, end, start.
-        .bind(start)
+        .bind(burn_start)
         .bind(project)
         .bind(end)
-        .bind(start)
+        .bind(burn_start)
         // The open part: the same, then its start for the finished ones.
-        .bind(start)
+        .bind(burn_start)
         .bind(project)
         .bind(end)
-        .bind(start)
+        .bind(burn_start)
         .fetch_all(&mut *conn)
         .await?;
     let history: Vec<SpanRow> = sqlx::query_as(HISTORY_SQL)
@@ -693,8 +734,9 @@ async fn read_spans(
 }
 
 impl TrackerStore {
-    /// The report for `project` over `window`, ending at `now` (D27). An
-    /// unknown project answers an empty report (its buckets zeros, its states
+    /// The report for `project` over `window`, ending at `now` (D27), with the
+    /// burn-down over the last 7 days whatever the window (D16). An unknown
+    /// project answers an empty report (its buckets zeros, its states
     /// `null`s), not an error; an invalid project name is refused. Read-only,
     /// in one read transaction so the velocity and the spans agree; `now` is a
     /// parameter so a test can pin time, and the route passes the clock.
@@ -706,24 +748,27 @@ impl TrackerStore {
     ) -> TResult<Report> {
         validate_project(project)?;
         let start = now - window.length();
+        let burn_start = now - ReportWindow::Week.length();
         let (start_s, end_s) = (iso(start), iso(now));
         let mut tx = self.pool.begin().await?;
         let v = velocity::read(&mut tx, project, now).await?;
-        let (spans, history) = read_spans(&mut tx, project, &start_s, &end_s).await?;
+        let (spans, history) =
+            read_spans(&mut tx, project, &iso(burn_start), &start_s, &end_s).await?;
         tx.commit().await?;
 
-        let (from, to) = (start.timestamp(), now.timestamp());
+        let (from, burn_from, to) = (start.timestamp(), burn_start.timestamp(), now.timestamp());
         let f = figures(&spans, &history, from, to);
-        let hours = Hours::new(from, to);
+        let hours = Hours::new(burn_from, to);
+        let burn = burn_down(&spans, &hours, burn_from, to);
         let buckets = hours
             .starts
             .iter()
             .enumerate()
             .map(|(k, &at)| Bucket {
                 start: DateTime::from_timestamp(at, 0).map(iso).unwrap_or_default(),
-                remaining: f.remaining[k],
-                added: f.added[k],
-                done: f.done[k],
+                remaining: burn.remaining[k],
+                added: burn.added[k],
+                done: burn.done[k],
             })
             .collect();
         Ok(Report {

@@ -482,15 +482,11 @@ fn assert_report_shape(v: &Value) {
     );
 }
 
-/// A window's hourly buckets: one an hour, plus one when it does not start on
-/// the hour (a partial hour at each end).
-fn assert_hourly(v: &Value, hours: usize) {
+/// The burn-down's hourly buckets, 7 days whatever the window: one an hour, plus
+/// one when they do not start on the hour (a partial hour at each end).
+fn assert_hourly(v: &Value) {
     let n = v["buckets"].as_array().unwrap().len();
-    assert!(
-        n == hours || n == hours + 1,
-        "{n} buckets for {hours} hours"
-    );
-    assert_eq!(v["buckets"][0]["start"], v["start"]);
+    assert!(n == 168 || n == 169, "{n} buckets for 168 hours");
 }
 
 #[tokio::test]
@@ -511,7 +507,8 @@ async fn report_answers_the_week_by_default_and_the_day_when_asked() {
     assert_report_shape(&v);
     assert_eq!((&v["project"], &v["window"]), (&json!("p"), &json!("7d")));
     assert!(v["end"].as_str().unwrap().ends_with('Z'), "{v}");
-    assert_hourly(&v, 168);
+    assert_hourly(&v);
+    assert_eq!(v["buckets"][0]["start"], v["start"]);
     let buckets = v["buckets"].as_array().unwrap();
     let sum = |k: &str| buckets.iter().map(|b| b[k].as_i64().unwrap()).sum::<i64>();
     assert_eq!((sum("added"), sum("done")), (2, 1), "{v}");
@@ -524,7 +521,7 @@ async fn report_answers_the_week_by_default_and_the_day_when_asked() {
     let v = ok(get(&t.app, "/tracker/p/report?window=24h").await).await;
     assert_report_shape(&v);
     assert_eq!(v["window"], "24h");
-    assert_hourly(&v, 24);
+    assert_hourly(&v);
     assert_eq!(v["velocity"]["done"], 1);
     let v = ok(get(&t.app, "/tracker/p/report?window=7d").await).await;
     assert_eq!(v["window"], "7d");
@@ -554,7 +551,7 @@ async fn report_refuses_another_window_and_is_empty_for_an_unknown_project() {
 
     let v = ok(get(&t.app, "/tracker/nobody/report").await).await;
     assert_report_shape(&v);
-    assert_hourly(&v, 168);
+    assert_hourly(&v);
     for b in v["buckets"].as_array().unwrap() {
         assert_eq!(
             (&b["remaining"], &b["added"], &b["done"]),

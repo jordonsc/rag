@@ -8,7 +8,8 @@
  * switching the pill re-reads, updates the URL and keeps the choice; the
  * figures (tiles, rag-t0062: each named "Velocity: 8/day" and reading so),
  * the three blocks and their hidden tables carry the fixture's numbers (the
- * week as local days, the day as hours); what is still open as chips; MTTC,
+ * burn-down as local days over the last 7 days, whatever the window); what is
+ * still open as chips; MTTC,
  * MTTR and confirmed against sent back as tiles; an empty report says so
  * under its chart; a failed read shows the error with Retry; and the back
  * link returns to the queue.
@@ -111,13 +112,12 @@ function weekReport(overrides: Partial<Report> = {}): Report {
   };
 }
 
-/** The day: 24 whole hours, from 13:00 UTC (Melbourne midnight). */
+/** The day: its own figures, the same week of buckets (D16). */
 function dayReport(): Report {
   return weekReport({
     window: '24h',
     start: '2026-11-07T13:00:00Z',
-    velocity: { done: 2, active_seconds: 7_200, velocity_per_day: 24, eta_days: 3 },
-    buckets: hours('2026-11-07T13:00:00Z', 24),
+    velocity: { done: 0, active_seconds: 7_200, velocity_per_day: 0, eta_days: null },
   });
 }
 
@@ -219,7 +219,7 @@ describe('the window', () => {
     expect(reads('24h')).toBe(1);
     expect(reads('7d')).toBe(0);
     expect(windowChoice('24 h')).toHaveAttribute('aria-checked', 'true');
-    expect(screen.getByRole('listitem', { name: 'Velocity: 24/day' })).toBeInTheDocument();
+    expect(screen.getByRole('listitem', { name: 'Velocity: 0/day' })).toBeInTheDocument();
   });
 
   it('reads the kept choice without a parameter, and 7 days for rubbish', async () => {
@@ -243,9 +243,9 @@ describe('the window', () => {
     await waitFor(() => expect(reads('24h')).toBe(1));
     expect(address()).toBe('/projects/demo/report?window=24h');
     expect(window.localStorage.getItem(WINDOW_KEY)).toBe('24h');
-    expect(await screen.findByRole('listitem', { name: 'Velocity: 24/day' })).toBeInTheDocument();
+    expect(await screen.findByRole('listitem', { name: 'Velocity: 0/day' })).toBeInTheDocument();
     expect(
-      screen.getByRole('table', { name: 'Burn-down over the last 24 hours' }),
+      screen.getByRole('table', { name: 'Burn-down over the last 7 days' }),
     ).toBeInTheDocument();
 
     await user.click(windowChoice('7 d'));
@@ -325,17 +325,23 @@ describe('the blocks', () => {
     ]);
     expect(row(table, 'Mon 2 Nov')).toEqual(['60', '2', '3']);
     expect(row(table, 'Sun 8 Nov')).toEqual(['54', '2', '3']);
-    expect(screen.queryByText('No tickets were done in this window.')).toBeNull();
+    expect(screen.queryByText('No tickets were done in the last 7 days.')).toBeNull();
   });
 
-  it('draws the day’s burn-down by the hour', async () => {
+  it('keeps the burn-down in the last 7 days on the 24-hour window', async () => {
     open('/projects/demo/report?window=24h');
     await figures();
-    const table = screen.getByRole('table', { name: 'Burn-down over the last 24 hours' });
-    const rows = within(table).getAllByRole('rowheader');
-    expect(rows).toHaveLength(24);
-    expect(rows[0]).toHaveTextContent('Sun 8 Nov, 00:00');
-    expect(row(table, 'Sun 8 Nov, 12:00')).toEqual(['60', '0', '3']);
+    const table = screen.getByRole('table', { name: 'Burn-down over the last 7 days' });
+    expect(within(table).getAllByRole('rowheader')).toHaveLength(7);
+    expect(row(table, 'Mon 2 Nov')).toEqual(['60', '2', '3']);
+    // The window's own done is nothing; the week's bars are what the note reads.
+    expect(screen.getByRole('listitem', { name: 'Done: 0 tickets' })).toBeInTheDocument();
+    expect(screen.queryByText('No tickets were done in the last 7 days.')).toBeNull();
+    expect(screen.queryByRole('table', { name: 'Burn-down over the last 24 hours' })).toBeNull();
+    // The rest follows the window.
+    expect(
+      screen.getByRole('table', { name: 'Time in each state over the last 24 hours' }),
+    ).toBeInTheDocument();
   });
 
   it('shows time in each state, with what is still open under it', async () => {
@@ -405,7 +411,7 @@ describe('the blocks', () => {
     const list = await figures();
     expect(within(list).getByRole('listitem', { name: 'Velocity: 0/day' })).toBeInTheDocument();
     expect(within(list).getByRole('listitem', { name: 'ETA: unknown' })).toBeInTheDocument();
-    const empty = screen.getByText('No tickets were done in this window.');
+    const empty = screen.getByText('No tickets were done in the last 7 days.');
     const chart = screen.getByRole('table', { name: 'Burn-down over the last 7 days' });
     expect(chart.compareDocumentPosition(empty) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(

@@ -370,8 +370,9 @@ specs and concepts move out of the project's repository into it, keeping their p
   `item_spans`, a ticket's history as intervals kept in step by every write and backfilled
   from the events once, when an older database is opened. `tracker_queue` ends with its line
   (`Velocity (7 d): 42/day · 24 h: 51/day · ETA 1.6 days`, the ETA worded from hours to months). `GET /tracker/{project}/report?window=24h|7d`
-  is the report over one window: an hourly burn-down (remaining, added, done), the time in
-  each state, and the mean times to completion and to resolution, drawn by the web UI's
+  is the report: an hourly burn-down (remaining, added, done) over the last 7 days whatever the
+  window, and over the window the time in each state and the mean times to completion and to
+  resolution, leaving out any ticket that is a draft now, drawn by the web UI's
   report page (`/projects/{project}/report`). See `specs/tracker/api.md` § *Velocity*.
 
 - **MCP tools** (m02): `rag-mcp --server tracker` (stdio) or `/tracker` on the gateway, each

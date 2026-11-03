@@ -8,7 +8,7 @@ import { getReport, getVelocity, isProjectName, PROJECT_NAME_ERROR } from './api
 import { BurnDown, RangeBars, type BurnPoint, type RangeRow } from './charts';
 import { projectPath, storeLastProject } from './paths';
 import styles from './report.module.css';
-import { dayLabels, hourLabels, localDays } from './reportMath';
+import { dayLabels, localDays } from './reportMath';
 import { RETURN_STATE } from './scrollMemory';
 import { SplitStat, Stat } from './Stat';
 import stat from './stat.module.css';
@@ -57,25 +57,16 @@ function windowWords(choice: VelocityWindow): string {
 }
 
 /**
- * The burn-down's periods (D16): local days for 7 days (the server's hourly
- * UTC buckets summed at the reader's midnights), the hours themselves for 24.
+ * The burn-down's periods (D16): the server's hourly UTC buckets, always the
+ * last 7 days, summed at the reader's midnights.
  */
 export function burnPoints(report: ReportRecord): BurnPoint[] {
-  if (report.window === '7d') {
-    return localDays(report.buckets).map((d) => ({
-      key: d.day,
-      ...dayLabels(d.day),
-      remaining: d.remaining,
-      added: d.added,
-      done: d.done,
-    }));
-  }
-  return report.buckets.map((b) => ({
-    key: b.start,
-    ...hourLabels(b.start),
-    remaining: b.remaining,
-    added: b.added,
-    done: b.done,
+  return localDays(report.buckets).map((d) => ({
+    key: d.day,
+    ...dayLabels(d.day),
+    remaining: d.remaining,
+    added: d.added,
+    done: d.done,
   }));
 }
 
@@ -103,14 +94,15 @@ export function ReportView() {
  *
  * The window is the widget's (`7 d` | `24 h`): `?window=` when the address
  * names one, else the choice this browser keeps (`velocity.ts`), and the pill
- * writes both. Every block follows it (R10), each with its counts, so a small
- * sample is plain.
+ * writes both. Every block but the burn-down follows it (R10), each with its
+ * counts, so a small sample is plain.
  *
  * * **The figures** across the top as tiles (`Stat.tsx`, rag-t0062), worded
  *   as the widget words them: velocity and ETA over the window, the counts
  *   now, and the window's done.
- * * **Burn-down**: remaining at the end of each local day (or hour), over
- *   bars of tickets added and done in it.
+ * * **Burn-down**: always the last 7 days, whatever the window (D16):
+ *   remaining at the end of each local day, over bars of tickets added and
+ *   done in it.
  * * **Time in each state**: the mean, median and 90th percentile of the
  *   stretches that ended in the window, and those still open, as chips.
  * * **Completion and resolution**: MTTC, those done without being in
@@ -263,16 +255,13 @@ function Blocks({
 
       <Block title="Burn-down">
         <p className={styles.note}>
-          {choice === '7d'
-            ? 'Tickets remaining at the end of each day, in your time zone, and the tickets added and done that day. Today is so far.'
-            : 'Tickets remaining at the end of each hour, and the tickets added and done in it. This hour is so far.'}
+          The last 7 days, whatever the window: tickets remaining at the end of each day, in your
+          time zone, and the tickets added and done that day. Today is so far.
         </p>
-        <BurnDown
-          points={points}
-          caption={`Burn-down over ${span}`}
-          period={choice === '7d' ? 'Day' : 'Hour'}
-        />
-        {figures.done === 0 && <p className={styles.empty}>No tickets were done in this window.</p>}
+        <BurnDown points={points} caption={`Burn-down over ${windowWords('7d')}`} />
+        {points.every((p) => p.done === 0) && (
+          <p className={styles.empty}>No tickets were done in the last 7 days.</p>
+        )}
       </Block>
 
       <Block title="Time in each state">

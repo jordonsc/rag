@@ -127,12 +127,12 @@ pub(super) const COUNTS_SQL: &str = "SELECT status, blocked, COUNT(*) FROM items
 
 /// Each ticket that reached `done` in `[?, ?]` (D3), with the latest time it
 /// did: a `done` span on the `status` track started in the window, of a ticket
-/// that is not a request (D1) and was not a draft at the time (D2: no `draft`
-/// span open over the event that started it).
+/// that is not a request (D1), is not a draft now, and was not one at the time
+/// (D2: no `draft` span open over the event that started it).
 pub(super) const DONE_SQL: &str = "SELECT s.item_id, MAX(s.started_at) FROM item_spans s \
      JOIN items i ON i.id = s.item_id \
      WHERE s.project = ? AND s.started_at >= ? AND s.started_at <= ? \
-     AND s.track = 'status' AND s.state = 'done' AND i.type <> 'request' \
+     AND s.track = 'status' AND s.state = 'done' AND i.type <> 'request' AND i.draft = 0 \
      AND NOT EXISTS (SELECT 1 FROM item_spans d WHERE d.item_id = s.item_id \
        AND d.track = 'draft' AND d.started_event <= s.started_event \
        AND (d.ended_event IS NULL OR d.ended_event > s.started_event)) \

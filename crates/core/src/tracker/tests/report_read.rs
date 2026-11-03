@@ -33,6 +33,8 @@ enum Step {
     Status(&'static str),
     /// Published from a draft.
     Publish,
+    /// Made a draft, after its create.
+    Redraft,
     Block,
     Unblock,
 }
@@ -121,6 +123,10 @@ impl Week {
                 Publish => {
                     close(&mut spans, "draft", at, ev);
                     is_draft = false;
+                }
+                Redraft => {
+                    open("draft", "draft");
+                    is_draft = true;
                 }
                 Block => {
                     open("blocked", "blocked");
@@ -266,6 +272,104 @@ async fn a_hand_built_week_gives_the_expected_buckets_and_a_request_appears_nowh
     assert_eq!((r.mttc.count, r.mttc.never_in_progress), (1, 0));
     assert_eq!(r.mttc.mean_seconds, Some(29.5 * H as f64));
     assert_eq!(r.mttr.count, 0);
+}
+
+#[tokio::test]
+async fn a_ticket_made_a_draft_after_its_create_is_in_no_figure() {
+    let f = fixture().await;
+    let s = &f.store;
+    let mut w = Week::new(s, "p").await;
+    // Created, worked and sent to review, then made a draft: the live
+    // ubu-t0680's shape.
+    w.dev(&[
+        ("2026-11-02T10:00:00Z", Status("pending")),
+        ("2026-11-02T11:00:00Z", Status("in_progress")),
+        ("2026-11-02T12:00:00Z", Status("review")),
+        ("2026-11-03T00:00:00Z", Redraft),
+    ])
+    .await;
+    // Done, then made a draft: not done for the report or the widget.
+    w.dev(&[
+        ("2026-11-02T10:00:00Z", Status("pending")),
+        ("2026-11-02T11:00:00Z", Status("in_progress")),
+        ("2026-11-02T12:00:00Z", Status("done")),
+        ("2026-11-03T00:00:00Z", Redraft),
+    ])
+    .await;
+    // Blocked, then made a draft.
+    w.dev(&[
+        ("2026-11-02T10:00:00Z", Status("pending")),
+        ("2026-11-02T11:00:00Z", Block),
+        ("2026-11-02T12:00:00Z", Unblock),
+        ("2026-11-03T00:00:00Z", Redraft),
+    ])
+    .await;
+    assert_spans_match_rows(s).await;
+
+    let r = week_report(s, "p").await;
+    assert_eq!(r.buckets.len(), 168);
+    assert!(r
+        .buckets
+        .iter()
+        .all(|b| (b.remaining, b.added, b.done) == (0, 0, 0)));
+    for st in [
+        &r.states.pending,
+        &r.states.in_progress,
+        &r.states.review,
+        &r.states.deferred,
+        &r.states.blocked,
+    ] {
+        assert_eq!((st.count, st.open), (0, 0));
+    }
+    assert_eq!((r.mttc.count, r.mttc.never_in_progress), (0, 0));
+    assert_eq!(r.mttr.count, 0);
+    assert_eq!(r.velocity.done, 0);
+    let v = s.velocity("p", now()).await.unwrap();
+    assert_eq!(v.windows.week.done, 0);
+    assert_eq!(v.remaining, 0);
+}
+
+#[tokio::test]
+async fn a_stretch_as_a_draft_is_out_of_a_published_tickets_figures() {
+    let f = fixture().await;
+    let s = &f.store;
+    let mut w = Week::new(s, "p").await;
+    // In progress for 10 h, of which 4 h a draft, then 3 h in review, of which
+    // 1 h a draft, then done: 6 h to complete and 2 h to resolve.
+    w.dev(&[
+        ("2026-11-02T00:00:00Z", Status("in_progress")),
+        ("2026-11-02T02:00:00Z", Redraft),
+        ("2026-11-02T06:00:00Z", Publish),
+        ("2026-11-02T10:00:00Z", Status("review")),
+        ("2026-11-02T11:00:00Z", Redraft),
+        ("2026-11-02T12:00:00Z", Publish),
+        ("2026-11-02T13:00:00Z", Status("done")),
+    ])
+    .await;
+    // Pending for 8 h so far, of which 4 h a draft: 4 h open.
+    w.dev(&[
+        ("2026-11-08T04:00:00Z", Status("pending")),
+        ("2026-11-08T05:00:00Z", Redraft),
+        ("2026-11-08T09:00:00Z", Publish),
+    ])
+    .await;
+    assert_spans_match_rows(s).await;
+
+    let r = week_report(s, "p").await;
+    assert_eq!(r.states.in_progress.mean_seconds, Some(6.0 * H as f64));
+    assert_eq!(r.states.review.mean_seconds, Some(2.0 * H as f64));
+    assert_eq!(r.mttc.mean_seconds, Some(6.0 * H as f64));
+    assert_eq!(r.mttr.mean_seconds, Some(2.0 * H as f64));
+    assert_eq!(r.states.pending.open, 1);
+    assert_eq!(r.states.pending.oldest_open_seconds, Some(4 * H));
+    // Not remaining while a draft: the first ticket from its start to 02:00
+    // and 06:00 to done, with the second's own draft hours out too.
+    let at = |t: &str| r.buckets[bucket_at(&r, t)].remaining;
+    assert_eq!(at("2026-11-02T01:00:00Z"), 1);
+    assert_eq!(at("2026-11-02T03:00:00Z"), 0);
+    assert_eq!(at("2026-11-02T07:00:00Z"), 1);
+    assert_eq!(at("2026-11-08T06:00:00Z"), 0);
+    assert_eq!(at("2026-11-08T10:00:00Z"), 1);
 }
 
 #[tokio::test]
@@ -659,6 +763,43 @@ async fn an_unknown_project_gets_an_empty_report_of_the_routes_shape() {
 }
 
 #[tokio::test]
+async fn the_burn_down_is_seven_days_whatever_the_window_and_the_rest_follows_it() {
+    let f = fixture().await;
+    let s = &f.store;
+    let mut w = Week::new(s, "p").await;
+    // Done on Tuesday: outside the 24 hours, inside the 7 days.
+    w.dev(&[
+        ("2026-11-03T08:00:00Z", Status("pending")),
+        ("2026-11-03T09:00:00Z", Status("in_progress")),
+        ("2026-11-03T10:00:00Z", Status("done")),
+    ])
+    .await;
+    // Done an hour ago.
+    w.dev(&[
+        ("2026-11-08T09:00:00Z", Status("pending")),
+        ("2026-11-08T10:00:00Z", Status("in_progress")),
+        ("2026-11-08T11:00:00Z", Status("done")),
+    ])
+    .await;
+
+    let day = s.report("p", ReportWindow::Day, now()).await.unwrap();
+    let week = week_report(s, "p").await;
+    assert_eq!(day.window, ReportWindow::Day);
+    assert_eq!(day.start, "2026-11-07T12:00:00Z");
+    assert_eq!(day.buckets, week.buckets);
+    assert_eq!(day.buckets.len(), 168);
+    assert_eq!(day.buckets.iter().map(|b| b.done).sum::<i64>(), 2);
+    assert_eq!(day.buckets.iter().map(|b| b.added).sum::<i64>(), 2);
+    // Everything else is the window's: one done, one measured.
+    assert_eq!(day.velocity.done, 1);
+    assert_eq!(day.mttc.count, 1);
+    assert_eq!(day.states.pending.count, 1);
+    assert_eq!(week.velocity.done, 2);
+    assert_eq!(week.mttc.count, 2);
+    assert_eq!(week.states.pending.count, 2);
+}
+
+#[tokio::test]
 async fn the_window_is_24h_or_7d_and_its_buckets_fall_on_utc_hours() {
     assert_eq!("24h".parse::<ReportWindow>().unwrap(), ReportWindow::Day);
     assert_eq!("7d".parse::<ReportWindow>().unwrap(), ReportWindow::Week);
@@ -687,19 +828,20 @@ async fn the_window_is_24h_or_7d_and_its_buckets_fall_on_utc_hours() {
         .unwrap();
     assert_eq!(r.window, ReportWindow::Day);
     assert_eq!(r.start, "2026-11-07T12:34:56Z");
-    // A partial hour at each end and 23 whole ones between.
-    assert_eq!(r.buckets.len(), 25);
-    assert_eq!(r.buckets[0].start, "2026-11-07T12:34:56Z");
-    assert_eq!(r.buckets[1].start, "2026-11-07T13:00:00Z");
-    assert_eq!(r.buckets[24].start, "2026-11-08T12:00:00Z");
-    assert_eq!(r.buckets[24].done, 1);
-    assert_eq!(r.buckets[24].remaining, 0);
+    // Seven days whatever the window: a partial hour at each end and 167 whole
+    // ones between.
+    assert_eq!(r.buckets.len(), 169);
+    assert_eq!(r.buckets[0].start, "2026-11-01T12:34:56Z");
+    assert_eq!(r.buckets[1].start, "2026-11-01T13:00:00Z");
+    assert_eq!(r.buckets[168].start, "2026-11-08T12:00:00Z");
+    assert_eq!(r.buckets[168].done, 1);
+    assert_eq!(r.buckets[168].remaining, 0);
     // Added 09:00, in progress until the end: remaining from there.
     let nine = bucket_at(&r, "2026-11-08T09:00:00Z");
     assert_eq!(r.buckets[nine].added, 1);
     assert_eq!(r.buckets[nine].remaining, 1);
     assert_eq!(r.buckets[nine - 1].remaining, 0);
-    assert_eq!(r.buckets[23].remaining, 1);
+    assert_eq!(r.buckets[167].remaining, 1);
     assert_eq!(r.velocity.done, 1);
     assert_eq!(r.mttc.mean_seconds, Some((2 * H + 34 * 60 + 56) as f64));
 }

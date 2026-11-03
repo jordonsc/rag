@@ -319,9 +319,12 @@ export interface Velocity {
 
 // ---- The report (spec:velocity D27) -----------------------------------------
 
-/** One hour of the burn-down (D16), in UTC; the first and last may be partial. */
+/**
+ * One hour of the burn-down (D16), in UTC, over the last 7 days whatever the
+ * window; the first and last may be partial.
+ */
 export interface ReportBucket {
-  /** RFC 3339 UTC: the window's start for the first, a whole hour after. */
+  /** RFC 3339 UTC: 7 days before `end` for the first, a whole hour after. */
   start: string;
   /** Remaining (D5) at the bucket's end. */
   remaining: number;

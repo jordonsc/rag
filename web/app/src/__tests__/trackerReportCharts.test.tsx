@@ -13,7 +13,7 @@
 import { render, screen, within } from '@testing-library/react';
 
 import { BurnDown, RangeBars, type BurnPoint, type RangeRow } from '../tracker/charts';
-import { dayLabels, hourLabels, localDay, localDays, niceTicks } from '../tracker/reportMath';
+import { dayLabels, localDay, localDays, niceTicks } from '../tracker/reportMath';
 import type { ReportBucket } from '../tracker/types';
 import { formatElapsed } from '../tracker/velocity';
 
@@ -53,17 +53,8 @@ describe('local days', () => {
     expect(localDays([])).toEqual([]);
   });
 
-  it('labels a day and an hour in local time', () => {
+  it('labels a day', () => {
     expect(dayLabels('2026-11-02')).toEqual({ tick: 'Mon 2', label: 'Mon 2 Nov' });
-    // Melbourne's midnight carries a tick; one o’clock does not, by default.
-    expect(hourLabels('2026-11-01T13:00:00Z')).toEqual({
-      tick: '00:00',
-      label: 'Mon 2 Nov, 00:00',
-    });
-    expect(hourLabels('2026-11-01T14:00:00Z')).toEqual({ tick: '', label: 'Mon 2 Nov, 01:00' });
-    expect(hourLabels('2026-11-01T14:00:00Z', 1).tick).toBe('01:00');
-    // A partial first hour is labelled by its own start, and has no tick.
-    expect(hourLabels('2026-11-01T13:34:56Z')).toEqual({ tick: '', label: 'Mon 2 Nov, 00:34' });
   });
 });
 
@@ -103,7 +94,7 @@ const POINTS: BurnPoint[] = [
 
 describe('the burn-down', () => {
   it('carries its numbers in a hidden table and on each mark', () => {
-    const { container } = render(<BurnDown points={POINTS} caption="Burn-down" period="Day" />);
+    const { container } = render(<BurnDown points={POINTS} caption="Burn-down" />);
     const table = screen.getByRole('table', { name: 'Burn-down' });
     expect(
       within(table)
@@ -136,7 +127,7 @@ describe('the burn-down', () => {
 
   it('draws an all-zero series as an empty chart with its axis, not NaN', () => {
     const zeros = POINTS.map((p) => ({ ...p, remaining: 0, added: 0, done: 0 }));
-    const { container } = render(<BurnDown points={zeros} caption="Burn-down" period="Day" />);
+    const { container } = render(<BurnDown points={zeros} caption="Burn-down" />);
     expect(container.innerHTML).not.toContain('NaN');
     expect(container.querySelectorAll('rect')).toHaveLength(0);
     const axis = [...container.querySelectorAll('text')].map((t) => t.textContent);
