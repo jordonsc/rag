@@ -803,6 +803,20 @@ describe('a ticket and its phase (spec:roadmap RM-48)', () => {
     expect(screen.getByText('Draft')).toBeInTheDocument();
   });
 
+  it('goes back to the phase, by its title, from a frozen ticket', async () => {
+    await opened(FROZEN);
+    const crumb = screen.getByRole('article').querySelector('a');
+    expect(crumb).toHaveAttribute('href', `/projects/demo/roadmap/${PHASE}`);
+    await waitFor(() => expect(crumb).toHaveTextContent('Creatures'));
+  });
+
+  it('goes back to the project from a ticket with a phase that is not frozen', async () => {
+    await opened({ ...FROZEN, frozen: false, queued: true });
+    const crumb = screen.getByRole('article').querySelector('a');
+    expect(crumb).toHaveAttribute('href', '/projects/demo');
+    expect(crumb).toHaveTextContent('demo');
+  });
+
   it('has no Frozen badge once it is not frozen', async () => {
     await opened(item(ID, { title: 'Next up', phase: 'demo-p0003' }));
     expect(screen.queryByText('Frozen')).toBeNull();

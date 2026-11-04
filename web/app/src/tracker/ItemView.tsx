@@ -20,8 +20,8 @@ import {
   TypeBadge,
   WaitsOn,
 } from './parts';
-import { itemPath, linkHref, projectPath } from './paths';
-import { PhaseChip, PhaseTitlesProvider } from './phaseTitles';
+import { itemPath, linkHref, phasePath, projectPath } from './paths';
+import { PhaseChip, PhaseTitlesProvider, usePhaseName } from './phaseTitles';
 import { RETURN_STATE } from './scrollMemory';
 import styles from './item.module.css';
 import type { FeedEvent, Item, Link as ItemLink, TrackerEvent } from './types';
@@ -317,6 +317,16 @@ function BecameList({
   );
 }
 
+/** A frozen ticket's way back: its phase's page, as that is the list it sits in. */
+function PhaseCrumb({ project, phase }: { project: string; phase: string }) {
+  return (
+    <Link to={phasePath(project, phase)}>
+      <Icon name="arrow-left" size={13} />
+      {usePhaseName(phase)}
+    </Link>
+  );
+}
+
 /**
  * One item, whole (D15): its record, its body rendered, its links, its history
  * and the writes that act on it. A ticket broken out of a request names it
@@ -325,7 +335,7 @@ function BecameList({
  *
  * A ticket in a phase names it with a chip, kept when the ticket is done; a
  * frozen one is badged, and says where it is in the phase's list rather than the
- * queue's (spec:roadmap RM-48).
+ * queue's (spec:roadmap RM-48), and its crumb goes back to the phase.
  *
  * Live: the page follows its project's event feed (`useProjectFeed`) and
  * re-reads the item after any item event there, since an agent's write to
@@ -494,10 +504,14 @@ export function ItemView() {
     <PhaseTitlesProvider project={project} enabled={phase !== null}>
       <article className={styles.view}>
         <p className={styles.crumbs}>
-          <Link to={projectPath(project)} state={RETURN_STATE}>
-            <Icon name="arrow-left" size={13} />
-            {project}
-          </Link>
+          {frozen && phase !== null ? (
+            <PhaseCrumb project={project} phase={phase} />
+          ) : (
+            <Link to={projectPath(project)} state={RETURN_STATE}>
+              <Icon name="arrow-left" size={13} />
+              {project}
+            </Link>
+          )}
         </p>
 
         <header className={styles.header}>
