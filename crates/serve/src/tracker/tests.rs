@@ -2550,7 +2550,24 @@ async fn phase_and_frozen_are_written_alone() {
     )
     .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
-    assert!(r.error().contains("only a pending ticket"), "{}", r.error());
+    assert!(
+        r.error().contains("only a pending or deferred ticket"),
+        "{}",
+        r.error()
+    );
+
+    // A deferred ticket freezes, resumed by the same write.
+    let put_aside = item(&t.app, "p", "put aside").await;
+    let aside = format!("/tracker/items/{put_aside}");
+    let r = post(&t.app, &aside, w(json!({ "status": "deferred" }))).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    let r = post(&t.app, &aside, w(json!({ "phase": a }))).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    let frozen = ticket(&t.app, &put_aside).await;
+    assert_eq!(frozen["status"], json!("pending"));
+    assert_eq!(frozen["frozen"], json!(true));
+    sound(&t.app, "p").await;
+
     let r = post(&t.app, &uri, w(json!({ "phase": "p-p0099" }))).await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
     let r = post(&t.app, "/tracker/items/p-t0099", w(json!({ "phase": a }))).await;

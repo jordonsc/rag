@@ -587,16 +587,14 @@ pub(super) async fn request_link_problems(
 const REQUEST_NO_PHASE: &str =
     "a request cannot have a phase: it is the owner's idea, never dispatched";
 
-/// Refuse to freeze a ticket that is not `pending` (spec:roadmap D4).
+/// Refuse to freeze a ticket that is neither `pending` nor `deferred`
+/// (spec:roadmap D4). A deferred one is resumed by the freeze, since a frozen
+/// ticket is always `pending`.
 fn freezable(item: &Item) -> TResult<()> {
     match item.status {
-        ItemStatus::Pending => Ok(()),
-        ItemStatus::Deferred => refused(format!(
-            "{} is deferred: only a pending ticket can be frozen: resume it first",
-            item.id
-        )),
+        ItemStatus::Pending | ItemStatus::Deferred => Ok(()),
         status => refused(format!(
-            "{} is {status}: only a pending ticket can be frozen",
+            "{} is {status}: only a pending or deferred ticket can be frozen",
             item.id
         )),
     }
@@ -1558,16 +1556,17 @@ impl TrackerStore {
     /// link did, and stamped as a roadmap change either way (D17). A note is
     /// optional; a change to what already stands is refused.
     ///
-    /// * Into a planned phase: only a `pending` ticket (D4), or one frozen in
-    ///   another phase; it joins the phase's tail, frozen.
+    /// * Into a planned phase: only a `pending` or `deferred` ticket (D4), or one
+    ///   frozen in another phase; it joins the phase's tail, frozen. A deferred
+    ///   one becomes `pending` in the same write, as a frozen ticket always is.
     /// * Into a released phase: only the link is written, whatever the status, so
     ///   the ticket keeps its place; one frozen elsewhere joins the queue's tail.
     /// * Into an archived phase: refused, as is any change to a request.
     /// * [`PhaseChange::Clear`]: a frozen ticket joins the queue's tail; an unfrozen
     ///   one stays where it is.
     /// * [`PhaseChange::Frozen`]: `false` pulls a frozen ticket to the queue's tail,
-    ///   keeping its link; `true` re-freezes a `pending` one whose own phase is
-    ///   planned.
+    ///   keeping its link; `true` re-freezes a `pending` or `deferred` one whose
+    ///   own phase is planned.
     pub async fn set_item_phase(
         &self,
         id: &str,
@@ -1633,13 +1632,18 @@ impl TrackerStore {
             }
         };
 
+        // A deferred ticket freezing is resumed by it (D4): only `pending` is
+        // frozen, and the status moves in this one write and event.
+        let resumed = matches!(write, PhaseWrite::Freeze(_)) && item.status == ItemStatus::Deferred;
+
         // Unlink, relink and update the row before the event, which reads the
         // row for its stamp and its spans.
         let (linked, frozen, listed) = match &write {
             PhaseWrite::Freeze(p) => {
                 list::unlink(&mut tx, &item.owner(), id).await?;
-                sqlx::query("UPDATE items SET phase_id = ?, frozen = 1 WHERE id = ?")
+                sqlx::query("UPDATE items SET phase_id = ?, frozen = 1, status = ? WHERE id = ?")
                     .bind(p)
+                    .bind(ItemStatus::Pending.as_str())
                     .bind(id)
                     .execute(&mut *tx)
                     .await?;
@@ -1672,6 +1676,9 @@ impl TrackerStore {
         if frozen != item.frozen {
             fields.insert("frozen".into(), json!(frozen));
         }
+        if resumed {
+            fields.insert("status".into(), json!(ItemStatus::Pending));
+        }
         if listed {
             let prev_id: Option<String> =
                 sqlx::query_scalar("SELECT prev_id FROM items WHERE id = ?")
@@ -1683,6 +1690,9 @@ impl TrackerStore {
         let old = item.phase_id.as_deref().unwrap_or("(none)");
         let said = match (&write, &linked) {
             (PhaseWrite::Freeze(p), _) if item.frozen => format!("Moved to phase {p}."),
+            (PhaseWrite::Freeze(p), _) if resumed => {
+                format!("Status: deferred → pending. Frozen in {p}.")
+            }
             (PhaseWrite::Freeze(p), _) => format!("Frozen in {p}."),
             (PhaseWrite::Thaw(_), None) | (PhaseWrite::Link(_), None) => {
                 format!("Removed from {old}.")

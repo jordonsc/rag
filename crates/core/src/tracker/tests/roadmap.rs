@@ -907,17 +907,12 @@ async fn any_other_status_links_but_never_freezes() {
         ItemStatus::InProgress,
         ItemStatus::Failed,
         ItemStatus::Review,
-        ItemStatus::Deferred,
         ItemStatus::Done,
         ItemStatus::Cancelled,
     ] {
         let t = create(s, P, "t").await;
         set_status(s, &t, to).await;
-        let want = if to == ItemStatus::Deferred {
-            "resume it first"
-        } else {
-            "only a pending ticket can be frozen"
-        };
+        let want = "only a pending or deferred ticket can be frozen";
         refused_change(s, &t, PhaseChange::Set(pl.clone()), want).await;
         refused_change(s, &t, PhaseChange::Set(ar.clone()), "archived").await;
         refused_change(s, &t, PhaseChange::Frozen(false), "nothing to update").await;
@@ -935,6 +930,52 @@ async fn any_other_status_links_but_never_freezes() {
         assert!(rec.item.phase_id.is_none());
         assert_eq!(rec.item.status, to);
     }
+}
+
+#[tokio::test]
+async fn a_deferred_ticket_is_resumed_by_freezing() {
+    let f = fixture().await;
+    let s = &f.store;
+    let (pl, re) = (planned(s, "P").await, released(s, "R").await);
+    let t = create(s, P, "t").await;
+
+    // Set(P), P planned: frozen, pending, in one stamped event saying both.
+    set_status(s, &t, ItemStatus::Deferred).await;
+    let rec = change(s, &t, PhaseChange::Set(pl.clone())).await;
+    assert!(rec.item.frozen);
+    assert_eq!(rec.item.status, ItemStatus::Pending);
+    assert_eq!(frozen_in(s, &pl).await, vec![t.clone()]);
+    let e = rec.events.last().unwrap();
+    assert_eq!(e.kind, EventKind::Move);
+    assert!(e.roadmap);
+    assert_eq!(
+        e.body,
+        format!("Status: deferred → pending. Frozen in {pl}.")
+    );
+    assert_eq!(e.fields["status"], json!("pending"));
+    assert_eq!(e.before.as_ref().unwrap()["status"], json!("deferred"));
+
+    // Frozen(true) in its own planned phase does the same, and a note still
+    // replaces the generated body.
+    change(s, &t, PhaseChange::Frozen(false)).await;
+    set_status(s, &t, ItemStatus::Deferred).await;
+    let rec = s
+        .set_item_phase(&t, PhaseChange::Frozen(true), Some("Later."), &mcp())
+        .await
+        .unwrap();
+    assert!(rec.item.frozen);
+    assert_eq!(rec.item.status, ItemStatus::Pending);
+    let e = rec.events.last().unwrap();
+    assert_eq!(e.body, "Later.");
+    assert_eq!(e.fields["status"], json!("pending"));
+
+    // A released phase freezes nothing, so only the link is written: still deferred.
+    change(s, &t, PhaseChange::Frozen(false)).await;
+    set_status(s, &t, ItemStatus::Deferred).await;
+    let rec = change(s, &t, PhaseChange::Set(re.clone())).await;
+    assert!(!rec.item.frozen);
+    assert_eq!(rec.item.status, ItemStatus::Deferred);
+    assert!(rec.events.last().unwrap().fields.get("status").is_none());
 }
 
 // ---- 6. Status ------------------------------------------------------------------

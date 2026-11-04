@@ -146,8 +146,9 @@ Records
   that says so (`phase: ""`). A request never has one (D4).
 * **`frozen`** (spec:roadmap R6, D4–D6): held out of the queue in a planned phase, and in **no queue figure**
   (D20): not in the queue view's lists, `tracker_next`, a gate's batch, the counts, a label's `queued`, or
-  `GET …/items` without `?phase=`. Its events are **roadmap events** (see Event). Only a `pending` ticket can be frozen,
-  blocked or not (D4; a deferred one is resumed first). **Its status moves only to `done` or `cancelled`**, which
+  `GET …/items` without `?phase=`. Its events are **roadmap events** (see Event). Only a `pending` or `deferred` ticket
+  can be frozen, blocked or not, and a frozen ticket is always `pending`: freezing a deferred one resumes it in the same
+  write (D4). **Its status moves only to `done` or `cancelled`**, which
   clears `frozen` and takes it off the phase's list, keeping `phase`; any other status is 400, naming "pull it to the
   queue first" (D5). Reopened, it joins the top of the queue, unfrozen. Its **block, draft, labels, links, body and
   assignee** are independent and editable while frozen (D6): a `dependency` block works across the boundary either
@@ -611,12 +612,12 @@ ubu-p0001.`, `Removed from ubu-p0001.`).
 
 | Write | The ticket | |
 |---|---|---|
-| `phase: <planned>` | unlinked from the queue, or from another phase's list, and **frozen at this phase's tail**; so a ticket pulled from this phase freezes again | only a `pending` ticket (D4; `… only a pending ticket can be frozen`, and a deferred one says to resume it first), or one already frozen elsewhere |
+| `phase: <planned>` | unlinked from the queue, or from another phase's list, and **frozen at this phase's tail**; so a ticket pulled from this phase freezes again | only a `pending` or `deferred` ticket (D4; else `… only a pending or deferred ticket can be frozen`), or one already frozen elsewhere. A deferred one becomes `pending` in this write: `status` is in the event's `fields`, and its generated body is `Status: deferred → pending. Frozen in ubu-p0001.` |
 | `phase: <released>` | **only the link is written**: it keeps its place in the queue, whatever its status. One frozen in another phase joins the queue's tail, unfrozen | |
 | `phase: <archived>` | 400 (`phase <id> is archived: …`) | |
 | `phase: ""` | a frozen ticket joins the queue's tail; an unfrozen one stays where it is | |
 | `frozen: false` | a pull (D9): a frozen ticket joins the queue's tail, unfrozen, **keeping its link**. One event and **no frame**: it simply appears at the tail for the manager's next `tracker_next` (D18) | |
-| `frozen: true` | a re-freeze: joins the tail of its own phase | a `pending`, unfrozen ticket whose phase is planned; else 400 |
+| `frozen: true` | a re-freeze: joins the tail of its own phase | a `pending` or `deferred` (resumed, as above), unfrozen ticket whose phase is planned; else 400 |
 
 Any change on a request is 400 (D4). A write that changes nothing (the phase it already has, `frozen` as it already
 stands) is 400: `nothing to update on <id>: its phase already stands so`. An unknown phase or ticket is 404; another

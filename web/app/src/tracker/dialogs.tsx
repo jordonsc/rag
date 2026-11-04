@@ -1210,15 +1210,21 @@ export function phaseMoveRefusal(
     if (frozen && same) {
       return 'already frozen here';
     }
-    return !frozen && item.status !== 'pending' ? 'only a pending ticket can be frozen' : null;
+    return !frozen && item.status !== 'pending' && item.status !== 'deferred'
+      ? 'only a pending or deferred ticket can be frozen'
+      : null;
   }
   return !frozen && same ? 'already its phase' : null;
 }
 
-/** What a move to `target` will do, said before it is pressed (D8). */
-function moveEffect(frozen: boolean, target: PhaseFigures): string {
+/** What a move to `target` will do, said before it is pressed (D4, D8). */
+function moveEffect(frozen: boolean, status: Item['status'], target: PhaseFigures): string {
   if (target.state === 'planned') {
-    return 'It is frozen at the bottom of that phase: out of the queue, and out of every agent’s sight until the phase is released.';
+    const freezes =
+      'frozen at the bottom of that phase: out of the queue, and out of every agent’s sight until the phase is released.';
+    return status === 'deferred'
+      ? `It stops being deferred, and is ${freezes}`
+      : `It is ${freezes}`;
   }
   return frozen
     ? 'That phase is released, so this one joins the bottom of the queue, unfrozen, linked to it.'
@@ -1263,7 +1269,7 @@ export function MovePhaseDialog({ item, onCancel, onDone }: MovePhaseDialogProps
       subject={item}
       {...(target === undefined
         ? {}
-        : { message: <p>{moveEffect(item.frozen === true, target)}</p> })}
+        : { message: <p>{moveEffect(item.frozen === true, item.status, target)}</p> })}
       confirmLabel="Move to phase"
       onCancel={onCancel}
       onSubmit={(note, fields) =>

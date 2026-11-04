@@ -923,7 +923,20 @@ describe('a ticket and its phase (spec:roadmap RM-48)', () => {
     expect(server.matching(PATH, 'POST')).toHaveLength(0);
   });
 
-  it('disables a planned target for a ticket that is not pending, naming the rule', async () => {
+  it('offers a planned target to a deferred ticket, saying it stops being deferred', async () => {
+    const user = userEvent.setup();
+    await opened(item(ID, { title: 'Next up', status: 'deferred' }));
+    await user.click(screen.getByRole('button', { name: 'Move to phase…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Move this ticket to a phase' });
+    const select = within(dialog).getByRole('combobox', { name: 'Phase' });
+    expect(await within(select).findByRole('option', { name: /Birds/ })).toBeEnabled();
+    await user.selectOptions(select, 'demo-p0002');
+    expect(dialog).toHaveTextContent('It stops being deferred, and is frozen at the bottom');
+    await user.selectOptions(select, 'demo-p0003');
+    expect(dialog).not.toHaveTextContent('stops being deferred');
+  });
+
+  it('disables a planned target for a ticket neither pending nor deferred, naming the rule', async () => {
     const user = userEvent.setup();
     await opened(item(ID, { title: 'Next up', status: 'in_progress' }));
     await user.click(screen.getByRole('button', { name: 'Move to phase…' }));
@@ -932,7 +945,7 @@ describe('a ticket and its phase (spec:roadmap RM-48)', () => {
     ).getByRole('combobox', { name: 'Phase' });
     const birds = await within(select).findByRole('option', { name: /Birds/ });
     expect(birds).toBeDisabled();
-    expect(birds).toHaveTextContent('only a pending ticket can be frozen');
+    expect(birds).toHaveTextContent('only a pending or deferred ticket can be frozen');
     expect(within(select).getByRole('option', { name: /Fish/ })).toBeEnabled();
   });
 
@@ -942,6 +955,9 @@ describe('a ticket and its phase (spec:roadmap RM-48)', () => {
     const pending = { status: 'pending' } as const;
     // Pending may freeze, and a pulled one may freeze again in its own phase.
     expect(phaseMoveRefusal(pending, planned)).toBeNull();
+    // Deferred may freeze too: the move resumes it.
+    expect(phaseMoveRefusal({ status: 'deferred' }, planned)).toBeNull();
+    expect(phaseMoveRefusal({ status: 'deferred' }, released)).toBeNull();
     expect(phaseMoveRefusal({ ...pending, phase: PHASE }, planned)).toBeNull();
     // Frozen here is no change; frozen elsewhere moves over, even to a planned one.
     expect(phaseMoveRefusal({ ...pending, phase: PHASE, frozen: true }, planned)).toBe(
@@ -949,8 +965,10 @@ describe('a ticket and its phase (spec:roadmap RM-48)', () => {
     );
     expect(phaseMoveRefusal({ ...pending, phase: 'demo-p0002', frozen: true }, planned)).toBeNull();
     // Any other status cannot freeze, but can take a released phase's link.
-    for (const status of ['in_progress', 'failed', 'deferred', 'review', 'done'] as const) {
-      expect(phaseMoveRefusal({ status }, planned)).toBe('only a pending ticket can be frozen');
+    for (const status of ['in_progress', 'failed', 'review', 'done'] as const) {
+      expect(phaseMoveRefusal({ status }, planned)).toBe(
+        'only a pending or deferred ticket can be frozen',
+      );
       expect(phaseMoveRefusal({ status }, released)).toBeNull();
     }
     // A link it already has is no change, unless frozen: it then thaws.
