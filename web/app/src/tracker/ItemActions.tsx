@@ -84,10 +84,37 @@ export interface ItemActionsProps {
 const REASON_OPTIONS = BLOCK_REASONS.map((value) => ({ value, label: blockReasonLabel(value) }));
 
 /**
+ * Whether the element given the returned ref has gone off the top of the window:
+ * not one that is still below it, on a short window with a long header. Never
+ * without `IntersectionObserver`, which leaves the page as it is unscrolled.
+ */
+function useScrolledPast(enabled: boolean) {
+  const target = useRef<HTMLDivElement>(null);
+  const [past, setPast] = useState(false);
+  useEffect(() => {
+    const element = target.current;
+    if (!enabled || element === null || typeof IntersectionObserver === 'undefined') {
+      setPast(false);
+      return undefined;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      const entry = entries[entries.length - 1];
+      if (entry !== undefined) {
+        setPast(!entry.isIntersecting && entry.boundingClientRect.top < 0);
+      }
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [enabled]);
+  return [target, past] as const;
+}
+
+/**
  * The item page's writes (D15): note, status, block or unblock, defer or
- * resume (rag-t0017), confirm or send back an item in review (rag-t0024; in
- * a panel of their own, green and amber, rag-t0041, that stays at the top of the
- * window on the way down the ticket: owner, 2026-11-05),
+ * resume (rag-t0017), confirm or send back an item in review (rag-t0024; on
+ * a row of their own, green and amber: rag-t0041, and once that row is off the
+ * top of the window, in a panel pinned there with Note and the ticket's id:
+ * owner, 2026-11-05),
  * approve or ratify, edit, and publish a draft or make one (2026-10-30: a
  * draft's Publish is a row of its own, first, as the thing to do next).
  *
@@ -169,6 +196,20 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
     onWritten();
   };
   const subject = { id: item.id, title: item.title };
+  const review = item.status === 'review';
+  const [reviewRow, pinned] = useScrolledPast(review);
+  const verdict = (
+    <>
+      <Button size="sm" variant="good" onClick={show('confirm')}>
+        <Icon name="check" size={14} />
+        Confirm
+      </Button>
+      <Button size="sm" variant="caution" onClick={show('sendBack')}>
+        <Icon name="rotate-ccw" size={14} />
+        Send back
+      </Button>
+    </>
+  );
   const send = (body: ItemUpdate) => (note: string, fields: Parameters<typeof updateItem>[2]) =>
     updateItem(item.id, { ...body, note }, fields);
 
@@ -269,31 +310,35 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
             )}
           </div>
         )}
+        {/* The owner's verdict on work in review, on a row of its own under the
+            rest: Confirm in the done green, Send back in the blocked amber
+            (rag-t0041). */}
+        {review && (
+          <div className={writeStyles.actions} role="group" aria-label="Review" ref={reviewRow}>
+            {verdict}
+          </div>
+        )}
       </div>
-      {/* The owner's verdict on work in review, in a panel of its own under the
-          rest: Confirm in the done green, Send back in the blocked amber
-          (rag-t0041), then Note and the ticket's id, for what a reader wants
-          mid-ticket. It stays at the top of the window while the ticket is read
-          (owner, 2026-11-05), so it is a child of the page's column and not of
-          the rows above: a sticky box travels only within its parent. */}
-      {item.status === 'review' && (
-        <div className={styles.reviewPanel} role="group" aria-label="Review">
-          <Button size="sm" variant="good" onClick={show('confirm')}>
-            <Icon name="check" size={14} />
-            Confirm
-          </Button>
-          <Button size="sm" variant="caution" onClick={show('sendBack')}>
-            <Icon name="rotate-ccw" size={14} />
-            Send back
-          </Button>
-          <Button size="sm" onClick={show('note')}>
-            <Icon name="message-square" size={14} />
-            Note
-          </Button>
-          <span className={styles.reviewId}>
-            <code className={styles.id}>{item.id}</code>
-            <CopyButton text={item.id} />
-          </span>
+      {/* The same verdict once that row has gone off the top of the window, with
+          Note and the id, which went with it (owner, 2026-11-05). A zero-height
+          sticky anchor, so showing the panel moves nothing on the page, and a
+          child of the page's column, not of the rows above: a sticky box travels
+          only within its parent. */}
+      {review && (
+        <div className={styles.reviewPin}>
+          {pinned && (
+            <div className={styles.reviewPanel} role="group" aria-label="Review (pinned)">
+              {verdict}
+              <Button size="sm" onClick={show('note')}>
+                <Icon name="message-square" size={14} />
+                Note
+              </Button>
+              <span className={styles.reviewId}>
+                <code className={styles.id}>{item.id}</code>
+                <CopyButton text={item.id} />
+              </span>
+            </div>
+          )}
         </div>
       )}
 

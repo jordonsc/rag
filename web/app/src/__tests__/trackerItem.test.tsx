@@ -8,7 +8,7 @@
 
 import { resolve } from 'node:path';
 
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { ItemView } from '../tracker/ItemView';
@@ -536,12 +536,9 @@ describe('the item page', () => {
     const row = screen.getByRole('group', { name: 'Review' });
     const confirm = within(row).getByRole('button', { name: 'Confirm' });
     const sendBack = within(row).getByRole('button', { name: 'Send back' });
-    const note = within(row).getByRole('button', { name: 'Note' });
-    const copy = within(row).getByRole('button', { name: `Copy ${RECORD.id}` });
-    expect(within(row).getAllByRole('button')).toEqual([confirm, sendBack, note, copy]);
-    expect(within(row).getByText(RECORD.id)).toBeInTheDocument();
+    expect(within(row).getAllByRole('button')).toEqual([confirm, sendBack]);
     // Under the other writes, not among them.
-    const first = screen.getAllByRole('button', { name: 'Note' })[0]!.parentElement!;
+    const first = screen.getByRole('button', { name: 'Note' }).parentElement!;
     expect(first).not.toContainElement(confirm);
     expect(first.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // The done green and the blocked amber (the design system's tinted controls).
@@ -549,46 +546,122 @@ describe('the item page', () => {
     expect(sendBack).toHaveClass('caution');
   });
 
-  it('adds a note from the review panel, as the other Note does', async () => {
-    const user = userEvent.setup();
-    server.onceOn(PATH, { body: { ...RECORD, status: 'review' } }, 'GET');
-    open();
-    await screen.findByRole('heading', { name: 'Next up' });
+  describe('the review panel (owner, 2026-11-05)', () => {
+    /** Stands in for the browser's observer: the test says where the row went. */
+    function fakeObserver() {
+      let report: IntersectionObserverCallback | null = null;
+      vi.stubGlobal(
+        'IntersectionObserver',
+        class {
+          constructor(callback: IntersectionObserverCallback) {
+            report = callback;
+          }
+          observe() {}
+          disconnect() {
+            report = null;
+          }
+        },
+      );
+      return (isIntersecting: boolean, top: number) =>
+        act(() =>
+          report?.(
+            [{ isIntersecting, boundingClientRect: { top } } as IntersectionObserverEntry],
+            {} as IntersectionObserver,
+          ),
+        );
+    }
+    const panel = () => screen.queryByRole('group', { name: 'Review (pinned)' });
 
-    const row = screen.getByRole('group', { name: 'Review' });
-    await user.click(within(row).getByRole('button', { name: 'Note' }));
-    const dialog = screen.getByRole('dialog', { name: 'Add a note' });
-    await user.type(within(dialog).getByLabelText('Note'), 'Reading it');
-    await user.click(within(dialog).getByRole('button', { name: 'Add note' }));
-    await waitFor(() => expect(server.matching(PATH, 'POST')).toHaveLength(1));
-    expect(server.last(PATH, 'POST').body).toEqual({
-      note: 'Reading it',
-      author_email: 'alice@example.com',
-      surface: 'web',
+    async function openInReview() {
+      server.onceOn(PATH, { body: { ...RECORD, status: 'review' } }, 'GET');
+      open();
+      await screen.findByRole('heading', { name: 'Next up' });
+    }
+
+    it('is not there while the row is on screen, so nothing is drawn twice', async () => {
+      const rowAt = fakeObserver();
+      await openInReview();
+      expect(panel()).toBeNull();
+      rowAt(true, 300);
+      expect(panel()).toBeNull();
+      expect(screen.getAllByRole('button', { name: 'Note' })).toHaveLength(1);
+      expect(screen.getAllByRole('button', { name: `Copy ${ID}` })).toHaveLength(1);
+      expect(screen.getAllByText(ID)).toHaveLength(1);
     });
-  });
 
-  // jsdom has no scrollport, so what makes the panel follow is asserted where it
-  // lives: a sticky box travels only within its parent, so that has to be the
-  // page's column, holding what is read, and the rule has to be there.
-  it('keeps the review panel at the top of the window down the whole ticket', async () => {
-    server.onceOn(PATH, { body: { ...RECORD, status: 'review' } }, 'GET');
-    open();
-    await screen.findByRole('heading', { name: 'Next up' });
+    it('holds the verdict, Note and the id once the row is off the top', async () => {
+      const rowAt = fakeObserver();
+      await openInReview();
+      rowAt(false, -40);
 
-    const panel = screen.getByRole('group', { name: 'Review' });
-    expect(panel).toHaveClass('reviewPanel');
-    const column = panel.parentElement!;
-    expect(column.tagName).toBe('ARTICLE');
-    expect(column).toContainElement(screen.getByText('Body'));
-    expect(column).toContainElement(screen.getByText(/^History/));
+      const pinned = panel()!;
+      expect(within(pinned).getAllByRole('button')).toEqual([
+        within(pinned).getByRole('button', { name: 'Confirm' }),
+        within(pinned).getByRole('button', { name: 'Send back' }),
+        within(pinned).getByRole('button', { name: 'Note' }),
+        within(pinned).getByRole('button', { name: `Copy ${ID}` }),
+      ]);
+      expect(within(pinned).getByText(ID)).toBeInTheDocument();
 
-    const css = read(resolve(SRC, 'tracker/item.module.css'));
-    const rule = /\.reviewPanel \{([^}]*)\}/.exec(css)?.[1] ?? '';
-    expect(rule).toMatch(/position: sticky;/);
-    expect(rule).toMatch(/top: 0;/);
-    // Text sliding beneath must not show through it.
-    expect(rule).toMatch(/background: var\(--rag-surface\);/);
+      rowAt(true, 10);
+      expect(panel()).toBeNull();
+    });
+
+    it('stays away while the row is below the window, not yet reached', async () => {
+      const rowAt = fakeObserver();
+      await openInReview();
+      rowAt(false, 900);
+      expect(panel()).toBeNull();
+    });
+
+    it('stays away without an observer', async () => {
+      await openInReview();
+      expect(screen.getByRole('group', { name: 'Review' })).toBeInTheDocument();
+      expect(panel()).toBeNull();
+    });
+
+    it('adds a note from the panel, as the other Note does', async () => {
+      const user = userEvent.setup();
+      const rowAt = fakeObserver();
+      await openInReview();
+      rowAt(false, -40);
+
+      await user.click(within(panel()!).getByRole('button', { name: 'Note' }));
+      const dialog = screen.getByRole('dialog', { name: 'Add a note' });
+      await user.type(within(dialog).getByLabelText('Note'), 'Reading it');
+      await user.click(within(dialog).getByRole('button', { name: 'Add note' }));
+      await waitFor(() => expect(server.matching(PATH, 'POST')).toHaveLength(1));
+      expect(server.last(PATH, 'POST').body).toEqual({
+        note: 'Reading it',
+        author_email: 'alice@example.com',
+        surface: 'web',
+      });
+    });
+
+    // jsdom has no scrollport, so what makes it follow is asserted where it lives:
+    // a sticky box travels only within its parent, so that has to be the page's
+    // column, holding what is read, and the rule has to be there.
+    it('hangs from a zero-height sticky anchor that travels the whole ticket', async () => {
+      const rowAt = fakeObserver();
+      await openInReview();
+      rowAt(false, -40);
+
+      const pin = panel()!.parentElement!;
+      expect(pin).toHaveClass('reviewPin');
+      const column = pin.parentElement!;
+      expect(column.tagName).toBe('ARTICLE');
+      expect(column).toContainElement(screen.getByText('Body'));
+      expect(column).toContainElement(screen.getByText(/^History/));
+
+      const css = read(resolve(SRC, 'tracker/item.module.css'));
+      const anchor = /\.reviewPin \{([^}]*)\}/.exec(css)?.[1] ?? '';
+      expect(anchor).toMatch(/position: sticky;/);
+      expect(anchor).toMatch(/top: 0;/);
+      expect(anchor).toMatch(/height: 0;/);
+      // Text sliding beneath must not show through it.
+      const look = /\.reviewPanel \{([^}]*)\}/.exec(css)?.[1] ?? '';
+      expect(look).toMatch(/background: var\(--rag-surface\);/);
+    });
   });
 
   it('gives Send back a note box twice the height of the others (rag-t0045)', async () => {

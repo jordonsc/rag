@@ -288,7 +288,8 @@
   min-width: 0;
 }
 
-/* The item's writes. */
+/* The item's writes: the main row, and under it a review item's Confirm and
+   Send back on a row of their own (rag-t0041). */
 .actionRows {
   display: flex;
   flex-direction: column;
@@ -296,21 +297,30 @@
 }
 
 /*
- * A review item's Confirm and Send back (rag-t0041), Note and its id, in a panel
- * of their own under the other writes, which stays at the top of the window while
- * the ticket is read (owner, 2026-11-05). It travels the whole of `.view`, its parent, and no
- * ancestor up to the page may be a scroll container, or it pins to a box that
- * never scrolls.
- *
- * The background is opaque and the z-index puts it over the body sliding beneath
- * it. The ring, in the page's colour, is what fills the rounded corners' cut-outs
- * so no text shows through them; it is the same colour as the gutters and the gap
- * beneath, so it is invisible until the panel is pinned. Dialogs (100) stay above.
+ * Where a review item's panel hangs from (owner, 2026-11-05). It has no height, so
+ * the panel appearing or wrapping moves nothing on the page. The negative margin
+ * takes back the gap `.view` puts before it, so a review ticket is laid out as any
+ * other and the anchor sits flush under the row: it is already at the top of the
+ * window, not a gap below it, the moment the row has gone. It travels the whole of `.view`, its parent, and no ancestor up to
+ * the page may be a scroll container, or it pins to a box that never scrolls.
  */
-.reviewPanel {
+.reviewPin {
   position: sticky;
   top: 0;
   z-index: 1;
+  height: 0;
+  margin-top: calc(-1 * var(--rag-space-4));
+}
+
+/*
+ * The panel: Confirm, Send back, Note and the id, shown only once the row holding
+ * Confirm and Send back has gone off the top of the window.
+ *
+ * The background is opaque and the anchor's z-index puts it over the body sliding
+ * beneath it, under every dialog (100). The ring, in the page's colour, fills the
+ * rounded corners' cut-outs so no text shows through them.
+ */
+.reviewPanel {
   display: flex;
   align-items: center;
   flex-wrap: wrap;

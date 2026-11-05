@@ -411,21 +411,29 @@ rest and on hover on every ground (the "fails without the lift" case stays for `
 is light enough to pass unlifted); `trackerItem.test.tsx` the row, its order, its place under the rest, and none for
 other statuses.
 
-**The review panel follows the reader** (owner, 2026-11-05). That row is now a panel of its own (`.reviewPanel`, the
-same `role="group"`, *Review*, in the same place under the other writes), `position: sticky; top: 0`, so Confirm and
-Send back stay on screen all the way down a long ticket. **Note** is a third button right of Send back and the
-ticket's **id with its copy icon** follows it (owner, same day), placed after the buttons rather than at the far edge
-so *Copied* appearing moves nothing under the pointer; at 375 px the id wraps to a second line of the panel. Note stays
-in the main row too, so a review ticket shows two at rest. The other writes do not follow. It is a child
-of the page's column (`.view`) rather than of `.actionRows`, because a sticky box travels only within its parent: inside
-the rows it would have left with them. `ItemActions` returns a fragment for that, and the dialogs sit beside the panel
-(all portalled, so none takes a place or a gap in the column). The surface is opaque, `z-index: 1` puts it over the
-body and under every dialog (100), and a ring of `--rag-bg` (`box-shadow`, 8 px) covers what would show through the
-rounded corners; it matches the gutters, so it cannot be seen until the panel is pinned. The top bar scrolls away, so
-nothing sits above it. Measured in headless Chromium (Vite on a scratch port, the ticket faked by route interception, a
-60-section body), at 1400×900 and 375×700: the panel at 326 and 462 px at rest, at `top: 0` at mid-page and at the
-foot, no horizontal scroll, a dialog's scrim over it. jsdom has no scrollport, so `trackerItem.test.tsx` asserts the
-parent and the rule's source; it cannot see the pinning itself.
+**The review panel follows the reader** (owner, 2026-11-05). The review row above is unchanged and stays where it is.
+Once it has gone off the top of the window, a panel (`role="group"`, *Review (pinned)*, `.reviewPanel`) shows at the top
+of the window, holding Confirm, Send back, **Note** and the ticket's **id with its copy icon**, and leaves again when the
+row comes back. So nothing is drawn twice on screen: unscrolled there is no panel, one Note and one id. The other writes
+do not follow. The id follows the buttons rather than sitting at the far edge, so *Copied* appearing moves nothing under
+the pointer; at 375 px it wraps to a second line of the panel.
+
+An `IntersectionObserver` on the row decides (`useScrolledPast` in `ItemActions.tsx`): off screen **and** above the
+window, so a row still below a short window shows no panel; without the API the panel never shows. It hangs from a
+zero-height sticky anchor (`.reviewPin`), which is why it moves nothing on the page when it appears or wraps: the box
+that holds its place has no size, and a sticky box that grew would shove the ticket down as it pinned. `margin-top` of
+minus `.view`'s gap takes that gap back and puts the anchor flush under the row, so the panel is at the top of the
+window the moment the row goes, not a gap below it and drifting up. The anchor is a child of the page's column rather
+than of `.actionRows`, because a sticky box travels only within its parent (`ItemActions` returns a fragment for that;
+the dialogs sit beside it and are all portalled). Its `z-index: 1` puts the panel over the body and under every dialog
+(100), and a ring of `--rag-bg` (`box-shadow`, 8 px) covers what would show through the rounded corners.
+
+Measured in headless Chromium (Vite on a scratch port, the ticket faked by route interception, a 60-section body), at
+1400×900 and 375×700: at rest and with the row still on screen, no panel, one Note, one id; 5 px past the row and at the
+foot, the panel at `top: 0` (42 and 74 px tall); back at the top, gone; the page's height the same throughout, and no
+horizontal scroll. The body sits exactly 32 px lower than on a pending ticket: the row and its gap, nothing from the
+anchor. `trackerItem.test.tsx` drives a fake observer for when the panel shows, and asserts the anchor's parent and the
+rule's source, since jsdom has no scrollport and cannot see the pinning itself.
 
 **Copying the id** (rag-t0042). A copy icon (the registry's `copy`, a `check` while it has copied) right after the id
 in the item page's top row, named *Copy <id>*, with "Copied" (or "Could not copy") in a live status for 1.5 s.

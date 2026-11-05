@@ -85,8 +85,7 @@ function png(name = 'shot.png'): File {
 async function openDialog(button: string, title: string) {
   const user = userEvent.setup();
   await screen.findByRole('heading', { name: 'Next up' });
-  // A review ticket's panel repeats Note; its first is the main row's.
-  await user.click(screen.getAllByRole('button', { name: button })[0]!);
+  await user.click(screen.getByRole('button', { name: button }));
   return { user, dialog: screen.getByRole('dialog', { name: title }) };
 }
 
