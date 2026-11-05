@@ -638,6 +638,24 @@ describe('the item page', () => {
       });
     });
 
+    it('keeps the text between opening from the row and opening from the panel', async () => {
+      const user = userEvent.setup();
+      const rowAt = fakeObserver();
+      await openInReview();
+
+      const row = screen.getByRole('group', { name: 'Review' });
+      await user.click(within(row).getByRole('button', { name: 'Send back' }));
+      let dialog = screen.getByRole('dialog', { name: 'Send this ticket back?' });
+      await user.type(within(dialog).getByLabelText('Note (optional)'), 'Wrong colour');
+      rowAt(false, -40);
+      await user.keyboard('{Escape}');
+      expect(screen.queryByRole('dialog')).toBeNull();
+
+      await user.click(within(panel()!).getByRole('button', { name: 'Send back' }));
+      dialog = screen.getByRole('dialog', { name: 'Send this ticket back?' });
+      expect(within(dialog).getByLabelText('Note (optional)')).toHaveValue('Wrong colour');
+    });
+
     // jsdom has no scrollport, so what makes it follow is asserted where it lives:
     // a sticky box travels only within its parent, so that has to be the page's
     // column, holding what is read, and the rule has to be there.

@@ -879,7 +879,8 @@ window or the dialog resizes, and it is reset each time the dialog opens. Its
 scrim is `--rag-scrim-light` (black at 28 %) rather than `--rag-shadow` (55 %),
 so the page under a dialog moved aside stays legible; the drawer keeps the
 darker one. The keyboard is unchanged: focus to the dialog on open, the Tab
-trap, Escape, focus back on close.
+trap, Escape, focus back on close (without scrolling to the opener, since the page
+can be scrolled behind an open dialog).
 
 Icons are a fixed registry (`ui/src/icons/registry.ts`) over `lucide-react`.
 Names arrive as strings — a column declares one, a nav item declares one — so a

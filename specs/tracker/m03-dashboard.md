@@ -435,6 +435,14 @@ horizontal scroll. The body sits exactly 32 px lower than on a pending ticket: t
 anchor. `trackerItem.test.tsx` drives a fake observer for when the panel shows, and asserts the anchor's parent and the
 rule's source, since jsdom has no scrollport and cannot see the pinning itself.
 
+**Closing a dialog keeps your place** (owner's report, 2026-11-05). The page scrolls behind an open dialog, so a Send
+back opened from the row could be closed with that row off screen, and `useFocusTrap`'s plain `focus()` on the opener
+threw the page back to it: from `scrollY` 1500 to 0, the panel gone. Clicking the pinned button with the dialog open did
+the same, and a second click at that spot then landed on the top bar and left the page. The return now passes
+`preventScroll`. Measured in headless Chromium for Send back and Confirm, by Esc, the X, a click away and a click on
+the pinned button: `scrollY` stays 1500, the panel stays, and the text comes back from the panel's button. This does not
+explain the report's lost text, which was not reproduced (see the ledger).
+
 **Copying the id** (rag-t0042). A copy icon (the registry's `copy`, a `check` while it has copied) right after the id
 in the item page's top row, named *Copy <id>*, with "Copied" (or "Could not copy") in a live status for 1.5 s.
 `tracker/CopyButton.tsx`'s `copyText` uses `navigator.clipboard` in a secure context and otherwise, as on the LAN's

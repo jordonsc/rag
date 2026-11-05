@@ -81,6 +81,10 @@ function focusable(root: HTMLElement): HTMLElement[] {
  * **Focus returns to whatever opened it.** Otherwise closing a dialog drops
  * focus onto `<body>`, and a keyboard user who dismisses a dialog has to tab
  * from the top of the page to get back to the button they pressed.
+ *
+ * **Without scrolling to it.** The page can be scrolled behind an open dialog,
+ * so the opener may be off screen by the time it closes, and a plain `focus()`
+ * would throw the reader back to it, away from what they had scrolled to read.
  */
 function useFocusTrap(open: boolean, ref: RefObject<HTMLDivElement | null>) {
   const restoreTo = useRef<HTMLElement | null>(null);
@@ -93,7 +97,7 @@ function useFocusTrap(open: boolean, ref: RefObject<HTMLDivElement | null>) {
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     ref.current?.focus();
     return () => {
-      restoreTo.current?.focus();
+      restoreTo.current?.focus({ preventScroll: true });
     };
   }, [open, ref]);
 

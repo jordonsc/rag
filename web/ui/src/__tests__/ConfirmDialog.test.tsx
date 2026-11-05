@@ -1,6 +1,37 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { ConfirmDialog } from '../components/overlays';
+import { useState } from 'react';
+import { ConfirmDialog, Dialog } from '../components/overlays';
+
+function Opener() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button onClick={() => setOpen(true)}>Open</button>
+      <Dialog open={open} onClose={() => setOpen(false)} title="A dialog">
+        Body
+      </Dialog>
+    </>
+  );
+}
+
+describe('Dialog closing', () => {
+  // The page can be scrolled behind an open dialog: going back to an opener now
+  // off screen must not take the reader with it.
+  it('gives focus back to what opened it, without scrolling to it', async () => {
+    const user = userEvent.setup();
+    render(<Opener />);
+    const opener = screen.getByRole('button', { name: 'Open' });
+    await user.click(opener);
+    const focus = vi.spyOn(opener, 'focus');
+
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(opener).toHaveFocus();
+  });
+});
 
 describe('ConfirmDialog', () => {
   it('renders nothing when closed', () => {
