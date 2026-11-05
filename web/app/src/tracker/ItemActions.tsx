@@ -19,6 +19,7 @@ import { asApiError, isAbort, type LedgerApiError } from '../api';
 import writeStyles from '../writes/writes.module.css';
 import { listItems, setItemPhase, updateItem } from './api';
 import { AttachTextarea, useAttachments } from './attach';
+import { CopyButton } from './CopyButton';
 import {
   ApprovalDialog,
   LABELS_HELP,
@@ -271,7 +272,8 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
       </div>
       {/* The owner's verdict on work in review, in a panel of its own under the
           rest: Confirm in the done green, Send back in the blocked amber
-          (rag-t0041). It stays at the top of the window while the ticket is read
+          (rag-t0041), then Note and the ticket's id, for what a reader wants
+          mid-ticket. It stays at the top of the window while the ticket is read
           (owner, 2026-11-05), so it is a child of the page's column and not of
           the rows above: a sticky box travels only within its parent. */}
       {item.status === 'review' && (
@@ -284,6 +286,14 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
             <Icon name="rotate-ccw" size={14} />
             Send back
           </Button>
+          <Button size="sm" onClick={show('note')}>
+            <Icon name="message-square" size={14} />
+            Note
+          </Button>
+          <span className={styles.reviewId}>
+            <code className={styles.id}>{item.id}</code>
+            <CopyButton text={item.id} />
+          </span>
         </div>
       )}
 

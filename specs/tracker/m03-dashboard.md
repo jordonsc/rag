@@ -413,7 +413,10 @@ other statuses.
 
 **The review panel follows the reader** (owner, 2026-11-05). That row is now a panel of its own (`.reviewPanel`, the
 same `role="group"`, *Review*, in the same place under the other writes), `position: sticky; top: 0`, so Confirm and
-Send back stay on screen all the way down a long ticket. Only these two follow; the other writes do not. It is a child
+Send back stay on screen all the way down a long ticket. **Note** is a third button right of Send back and the
+ticket's **id with its copy icon** follows it (owner, same day), placed after the buttons rather than at the far edge
+so *Copied* appearing moves nothing under the pointer; at 375 px the id wraps to a second line of the panel. Note stays
+in the main row too, so a review ticket shows two at rest. The other writes do not follow. It is a child
 of the page's column (`.view`) rather than of `.actionRows`, because a sticky box travels only within its parent: inside
 the rows it would have left with them. `ItemActions` returns a fragment for that, and the dialogs sit beside the panel
 (all portalled, so none takes a place or a gap in the column). The surface is opaque, `z-index: 1` puts it over the

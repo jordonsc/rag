@@ -536,14 +536,36 @@ describe('the item page', () => {
     const row = screen.getByRole('group', { name: 'Review' });
     const confirm = within(row).getByRole('button', { name: 'Confirm' });
     const sendBack = within(row).getByRole('button', { name: 'Send back' });
-    expect(within(row).getAllByRole('button')).toEqual([confirm, sendBack]);
+    const note = within(row).getByRole('button', { name: 'Note' });
+    const copy = within(row).getByRole('button', { name: `Copy ${RECORD.id}` });
+    expect(within(row).getAllByRole('button')).toEqual([confirm, sendBack, note, copy]);
+    expect(within(row).getByText(RECORD.id)).toBeInTheDocument();
     // Under the other writes, not among them.
-    const first = screen.getByRole('button', { name: 'Note' }).parentElement!;
+    const first = screen.getAllByRole('button', { name: 'Note' })[0]!.parentElement!;
     expect(first).not.toContainElement(confirm);
     expect(first.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // The done green and the blocked amber (the design system's tinted controls).
     expect(confirm).toHaveClass('good');
     expect(sendBack).toHaveClass('caution');
+  });
+
+  it('adds a note from the review panel, as the other Note does', async () => {
+    const user = userEvent.setup();
+    server.onceOn(PATH, { body: { ...RECORD, status: 'review' } }, 'GET');
+    open();
+    await screen.findByRole('heading', { name: 'Next up' });
+
+    const row = screen.getByRole('group', { name: 'Review' });
+    await user.click(within(row).getByRole('button', { name: 'Note' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add a note' });
+    await user.type(within(dialog).getByLabelText('Note'), 'Reading it');
+    await user.click(within(dialog).getByRole('button', { name: 'Add note' }));
+    await waitFor(() => expect(server.matching(PATH, 'POST')).toHaveLength(1));
+    expect(server.last(PATH, 'POST').body).toEqual({
+      note: 'Reading it',
+      author_email: 'alice@example.com',
+      surface: 'web',
+    });
   });
 
   // jsdom has no scrollport, so what makes the panel follow is asserted where it

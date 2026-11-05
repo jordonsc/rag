@@ -296,9 +296,9 @@
 }
 
 /*
- * A review item's Confirm and Send back, in a panel of their own under the other
- * writes (rag-t0041), which stays at the top of the window while the ticket is
- * read (owner, 2026-11-05). It travels the whole of `.view`, its parent, and no
+ * A review item's Confirm and Send back (rag-t0041), Note and its id, in a panel
+ * of their own under the other writes, which stays at the top of the window while
+ * the ticket is read (owner, 2026-11-05). It travels the whole of `.view`, its parent, and no
  * ancestor up to the page may be a scroll container, or it pins to a box that
  * never scrolls.
  *
@@ -320,6 +320,15 @@
   border: 1px solid var(--rag-border);
   border-radius: var(--rag-radius-l);
   box-shadow: 0 0 0 var(--rag-space-2) var(--rag-bg);
+}
+
+/* After the buttons rather than at the panel's far edge, so "Copied" appearing
+   beside the icon moves nothing under the pointer. The gap is the identity row's,
+   which `.copy`'s negative margin is drawn for. */
+.reviewId {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rag-space-3);
 }
 
 /* The id's copy button and its "Copied" (rag-t0042): a row-sized button would
