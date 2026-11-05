@@ -6,6 +6,8 @@
  * by the owner 2026-10-27).
  */
 
+import { resolve } from 'node:path';
+
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -13,6 +15,7 @@ import { ItemView } from '../tracker/ItemView';
 import { dependencyCandidates, editBody } from '../tracker/ItemActions';
 import { NOTE_ROWS, phaseMoveRefusal } from '../tracker/dialogs';
 import { mountAt } from './harness';
+import { SRC, read } from './sources';
 import {
   EVENTS,
   TrackerServer,
@@ -541,6 +544,29 @@ describe('the item page', () => {
     // The done green and the blocked amber (the design system's tinted controls).
     expect(confirm).toHaveClass('good');
     expect(sendBack).toHaveClass('caution');
+  });
+
+  // jsdom has no scrollport, so what makes the panel follow is asserted where it
+  // lives: a sticky box travels only within its parent, so that has to be the
+  // page's column, holding what is read, and the rule has to be there.
+  it('keeps the review panel at the top of the window down the whole ticket', async () => {
+    server.onceOn(PATH, { body: { ...RECORD, status: 'review' } }, 'GET');
+    open();
+    await screen.findByRole('heading', { name: 'Next up' });
+
+    const panel = screen.getByRole('group', { name: 'Review' });
+    expect(panel).toHaveClass('reviewPanel');
+    const column = panel.parentElement!;
+    expect(column.tagName).toBe('ARTICLE');
+    expect(column).toContainElement(screen.getByText('Body'));
+    expect(column).toContainElement(screen.getByText(/^History/));
+
+    const css = read(resolve(SRC, 'tracker/item.module.css'));
+    const rule = /\.reviewPanel \{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(rule).toMatch(/position: sticky;/);
+    expect(rule).toMatch(/top: 0;/);
+    // Text sliding beneath must not show through it.
+    expect(rule).toMatch(/background: var\(--rag-surface\);/);
   });
 
   it('gives Send back a note box twice the height of the others (rag-t0045)', async () => {

@@ -84,8 +84,9 @@ const REASON_OPTIONS = BLOCK_REASONS.map((value) => ({ value, label: blockReason
 
 /**
  * The item page's writes (D15): note, status, block or unblock, defer or
- * resume (rag-t0017), confirm or send back an item in review (rag-t0024; on
- * a second row of their own, green and amber: rag-t0041),
+ * resume (rag-t0017), confirm or send back an item in review (rag-t0024; in
+ * a panel of their own, green and amber, rag-t0041, that stays at the top of the
+ * window on the way down the ticket: owner, 2026-11-05),
  * approve or ratify, edit, and publish a draft or make one (2026-10-30: a
  * draft's Publish is a row of its own, first, as the thing to do next).
  *
@@ -171,106 +172,110 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
     updateItem(item.id, { ...body, note }, fields);
 
   return (
-    <div className={styles.actionRows}>
-      {item.draft === true && (
-        <div className={writeStyles.actions} role="group" aria-label="Draft">
-          <Button size="sm" variant="accent" onClick={show('publish')}>
-            <Icon name="eye" size={14} />
-            Publish
-          </Button>
-        </div>
-      )}
-      <div className={writeStyles.actions}>
-        <Button size="sm" onClick={show('note')}>
-          <Icon name="message-square" size={14} />
-          Note
-        </Button>
-        {statuses.length > 0 && (
-          <Button size="sm" onClick={show('status')}>
-            <Icon name="circle-dot" size={14} />
-            Status…
-          </Button>
+    <>
+      <div className={styles.actionRows}>
+        {item.draft === true && (
+          <div className={writeStyles.actions} role="group" aria-label="Draft">
+            <Button size="sm" variant="accent" onClick={show('publish')}>
+              <Icon name="eye" size={14} />
+              Publish
+            </Button>
+          </div>
         )}
-        {(item.queued || frozen) &&
-          (item.blocked ? (
-            <Button size="sm" variant="caution" onClick={show('unblock')}>
-              <Icon name="lock-open" size={14} />
-              Unblock
+        <div className={writeStyles.actions}>
+          <Button size="sm" onClick={show('note')}>
+            <Icon name="message-square" size={14} />
+            Note
+          </Button>
+          {statuses.length > 0 && (
+            <Button size="sm" onClick={show('status')}>
+              <Icon name="circle-dot" size={14} />
+              Status…
+            </Button>
+          )}
+          {(item.queued || frozen) &&
+            (item.blocked ? (
+              <Button size="sm" variant="caution" onClick={show('unblock')}>
+                <Icon name="lock-open" size={14} />
+                Unblock
+              </Button>
+            ) : (
+              <Button size="sm" onClick={show('block')}>
+                <Icon name="lock" size={14} />
+                Block…
+              </Button>
+            ))}
+          {item.status === 'deferred' ? (
+            <Button size="sm" onClick={show('resume')}>
+              <Icon name="circle-play" size={14} />
+              Resume
             </Button>
           ) : (
-            <Button size="sm" onClick={show('block')}>
-              <Icon name="lock" size={14} />
-              Block…
-            </Button>
-          ))}
-        {item.status === 'deferred' ? (
-          <Button size="sm" onClick={show('resume')}>
-            <Icon name="circle-play" size={14} />
-            Resume
-          </Button>
-        ) : (
-          statuses.includes('deferred') && (
-            <Button size="sm" onClick={show('defer')}>
-              <Icon name="circle-pause" size={14} />
-              Defer
-            </Button>
-          )
-        )}
-        {item.approval === 'agent' && (
-          <Button size="sm" variant="accent" onClick={show('ratify')}>
-            <Icon name="shield-check" size={14} />
-            Ratify
-          </Button>
-        )}
-        {item.approval === 'unapproved' && (
-          <Button size="sm" variant="accent" onClick={show('approve')}>
-            <Icon name="shield-check" size={14} />
-            Approve
-          </Button>
-        )}
-        {(item.approval === 'owner' || item.approval === 'ratified') && (
-          <Button size="sm" variant="ghost" onClick={show('withdraw')}>
-            Withdraw approval
-          </Button>
-        )}
-        {item.draft !== true && (item.queued || frozen) && (
-          <Button size="sm" variant="ghost" onClick={show('makeDraft')}>
-            <Icon name="eye-off" size={14} />
-            Make draft
-          </Button>
-        )}
-        <Button size="sm" onClick={show('edit')}>
-          <Icon name="pencil" size={14} />
-          Edit…
-        </Button>
-        {!gate.ready && <span className={writeStyles.gate}>{TRACKER_IDENTITY_NEEDED}</span>}
-      </div>
-      {/* A request can never have a phase (D4): it is the owner's idea. */}
-      {item.type !== 'request' && (
-        <div className={writeStyles.actions} role="group" aria-label="Phase">
-          {frozen && (
-            <Button size="sm" onClick={show('pull')}>
-              <Icon name="list-todo" size={14} />
-              Pull to queue
+            statuses.includes('deferred') && (
+              <Button size="sm" onClick={show('defer')}>
+                <Icon name="circle-pause" size={14} />
+                Defer
+              </Button>
+            )
+          )}
+          {item.approval === 'agent' && (
+            <Button size="sm" variant="accent" onClick={show('ratify')}>
+              <Icon name="shield-check" size={14} />
+              Ratify
             </Button>
           )}
-          <Button size="sm" onClick={show('movePhase')}>
-            <Icon name="map" size={14} />
-            Move to phase…
-          </Button>
-          {item.phase !== undefined && item.phase !== null && item.phase !== '' && (
-            <Button size="sm" variant="ghost" onClick={show('removePhase')}>
-              <Icon name="x" size={14} />
-              Remove from phase
+          {item.approval === 'unapproved' && (
+            <Button size="sm" variant="accent" onClick={show('approve')}>
+              <Icon name="shield-check" size={14} />
+              Approve
             </Button>
           )}
+          {(item.approval === 'owner' || item.approval === 'ratified') && (
+            <Button size="sm" variant="ghost" onClick={show('withdraw')}>
+              Withdraw approval
+            </Button>
+          )}
+          {item.draft !== true && (item.queued || frozen) && (
+            <Button size="sm" variant="ghost" onClick={show('makeDraft')}>
+              <Icon name="eye-off" size={14} />
+              Make draft
+            </Button>
+          )}
+          <Button size="sm" onClick={show('edit')}>
+            <Icon name="pencil" size={14} />
+            Edit…
+          </Button>
+          {!gate.ready && <span className={writeStyles.gate}>{TRACKER_IDENTITY_NEEDED}</span>}
         </div>
-      )}
-      {/* The owner's verdict on work in review, on a row of its own under the
+        {/* A request can never have a phase (D4): it is the owner's idea. */}
+        {item.type !== 'request' && (
+          <div className={writeStyles.actions} role="group" aria-label="Phase">
+            {frozen && (
+              <Button size="sm" onClick={show('pull')}>
+                <Icon name="list-todo" size={14} />
+                Pull to queue
+              </Button>
+            )}
+            <Button size="sm" onClick={show('movePhase')}>
+              <Icon name="map" size={14} />
+              Move to phase…
+            </Button>
+            {item.phase !== undefined && item.phase !== null && item.phase !== '' && (
+              <Button size="sm" variant="ghost" onClick={show('removePhase')}>
+                <Icon name="x" size={14} />
+                Remove from phase
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
+      {/* The owner's verdict on work in review, in a panel of its own under the
           rest: Confirm in the done green, Send back in the blocked amber
-          (rag-t0041). */}
+          (rag-t0041). It stays at the top of the window while the ticket is read
+          (owner, 2026-11-05), so it is a child of the page's column and not of
+          the rows above: a sticky box travels only within its parent. */}
       {item.status === 'review' && (
-        <div className={writeStyles.actions} role="group" aria-label="Review">
+        <div className={styles.reviewPanel} role="group" aria-label="Review">
           <Button size="sm" variant="good" onClick={show('confirm')}>
             <Icon name="check" size={14} />
             Confirm
@@ -517,7 +522,7 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
       {open === 'edit' && (
         <EditItemDialog item={item} onCancel={close} onDone={done} onSavedInPlace={onWritten} />
       )}
-    </div>
+    </>
   );
 }
 

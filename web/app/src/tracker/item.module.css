@@ -288,12 +288,38 @@
   min-width: 0;
 }
 
-/* The item's writes: the main row, and under it a review item's Confirm and
-   Send back on a row of their own (rag-t0041). */
+/* The item's writes. */
 .actionRows {
   display: flex;
   flex-direction: column;
   gap: var(--rag-space-2);
+}
+
+/*
+ * A review item's Confirm and Send back, in a panel of their own under the other
+ * writes (rag-t0041), which stays at the top of the window while the ticket is
+ * read (owner, 2026-11-05). It travels the whole of `.view`, its parent, and no
+ * ancestor up to the page may be a scroll container, or it pins to a box that
+ * never scrolls.
+ *
+ * The background is opaque and the z-index puts it over the body sliding beneath
+ * it. The ring, in the page's colour, is what fills the rounded corners' cut-outs
+ * so no text shows through them; it is the same colour as the gutters and the gap
+ * beneath, so it is invisible until the panel is pinned. Dialogs (100) stay above.
+ */
+.reviewPanel {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--rag-space-2);
+  padding: var(--rag-space-2) var(--rag-space-3);
+  background: var(--rag-surface);
+  border: 1px solid var(--rag-border);
+  border-radius: var(--rag-radius-l);
+  box-shadow: 0 0 0 var(--rag-space-2) var(--rag-bg);
 }
 
 /* The id's copy button and its "Copied" (rag-t0042): a row-sized button would
