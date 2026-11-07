@@ -125,11 +125,15 @@ export function formatElapsed(seconds: number): string {
 /**
  * The ETA (D9, D12, amended by rag-t0062): `eta_days` worded from hours up
  * ("32 hours", "1.6 days", "6 weeks"); "done" with nothing remaining, "—"
- * when it is unknown (`spoken` says "unknown", for a screen reader).
+ * when it is unknown (`spoken` says "unknown", for a screen reader). The
+ * adjusted ETA (D34) may also be `'infinite'`: "∞", read "infinite".
  */
-export function etaParts(days: number | null): Parts & { spoken?: string } {
+export function etaParts(days: number | 'infinite' | null): Parts & { spoken?: string } {
   if (days === null) {
     return { value: '—', unit: '', spoken: 'unknown' };
+  }
+  if (days === 'infinite') {
+    return { value: '∞', unit: '', spoken: 'infinite' };
   }
   if (days <= 0) {
     return { value: 'done', unit: '' };
@@ -137,8 +141,8 @@ export function etaParts(days: number | null): Parts & { spoken?: string } {
   return durationParts(days * 86_400, 'hour');
 }
 
-/** The ETA as one string: "1.6 days", "done", "—". */
-export function formatEta(days: number | null): string {
+/** The ETA as one string: "1.6 days", "done", "—", "∞". */
+export function formatEta(days: number | 'infinite' | null): string {
   const { value, unit } = etaParts(days);
   return joinParts({ value, unit });
 }
@@ -161,10 +165,17 @@ export const ETA_TOOLTIP =
   'Remaining ÷ velocity, in days of active work at this pace. ' +
   'An idle project takes longer in calendar days.';
 
+/** What the adjusted ETA's tooltip says (D34). */
+export const ADJ_ETA_TOOLTIP =
+  'Remaining ÷ adjusted velocity, in days of active work at this pace. ' +
+  'Infinite while tickets are added as fast as they are done, or faster.';
+
 /** The tooltips (D14), the native `title` as `linkTooltip` gives one. */
 export function velocityTooltips(velocity: Velocity): {
   velocity: string;
+  adjVelocity: string;
   eta: string;
+  adjEta: string;
   inProgress: string;
   pending: string;
 } {
@@ -175,7 +186,12 @@ export function velocityTooltips(velocity: Velocity): {
       `${week.done} done in the last 7 days over ${hours(week.active_seconds)} of active time ` +
       `(24 h: ${day.done} over ${hours(day.active_seconds)}). ` +
       'Active time leaves out gaps of over 2 hours between writes.',
+    adjVelocity:
+      `Velocity less the tickets added: ${week.done} done and ${week.added} added in the last ` +
+      `7 days (24 h: ${day.done} done and ${day.added} added), over the same active time. ` +
+      'Negative while the queue grows.',
     eta: ETA_TOOLTIP,
+    adjEta: ADJ_ETA_TOOLTIP,
     inProgress: `Includes ${velocity.in_review} in review.`,
     pending: `Includes ${velocity.blocked} blocked. Deferred tickets (${velocity.deferred}) are left out.`,
   };

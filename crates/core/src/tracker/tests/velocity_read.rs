@@ -62,6 +62,132 @@ fn velocity_has_a_floor_of_an_hour_and_the_eta_is_unrounded() {
     assert_eq!(eta_days(5, 0.0), None);
 }
 
+#[test]
+fn the_adjusted_velocity_nets_added_off_done_and_its_eta_may_be_infinite() {
+    // D33: (done − added) over the same floored active time, signed.
+    assert_eq!(adj_velocity_per_day(56, 14, 7 * 24 * H), 6.0);
+    assert_eq!(adj_velocity_per_day(3, 0, H / 3), 72.0);
+    assert_eq!(adj_velocity_per_day(1, 3, H / 3), -48.0);
+    assert_eq!(adj_velocity_per_day(0, 7, 7 * 24 * H), -1.0);
+    assert_eq!(adj_velocity_per_day(4, 4, 24 * H), 0.0);
+    assert_eq!(adj_velocity_per_day(0, 0, 0), 0.0);
+    // D34: remaining ÷ adjusted velocity while the queue shrinks...
+    assert_eq!(adj_eta_days(12, 56, 14, 6.0), Some(2.0));
+    // ...0 with nothing remaining, whatever the pace...
+    assert_eq!(adj_eta_days(0, 1, 3, -48.0), Some(0.0));
+    assert_eq!(adj_eta_days(0, 0, 0, 0.0), Some(0.0));
+    // ...infinite when it holds or grows...
+    assert_eq!(adj_eta_days(5, 4, 4, 0.0), Some(f64::INFINITY));
+    assert_eq!(adj_eta_days(5, 1, 3, -48.0), Some(f64::INFINITY));
+    assert_eq!(adj_eta_days(5, 0, 2, -1.0), Some(f64::INFINITY));
+    // ...and unknown when nothing was done or added, as the plain ETA is.
+    assert_eq!(adj_eta_days(5, 0, 0, 0.0), None);
+}
+
+#[tokio::test]
+async fn adj_eta_is_written_as_a_number_null_or_infinite() {
+    let w = |adj_eta_days| VelocityWindow {
+        done: 0,
+        added: 0,
+        active_seconds: 0,
+        velocity_per_day: 0.0,
+        eta_days: None,
+        adj_velocity_per_day: 0.0,
+        adj_eta_days,
+    };
+    let json = |eta| serde_json::to_value(w(eta)).unwrap()["adj_eta_days"].clone();
+    assert_eq!(json(Some(2.5)), json!(2.5));
+    assert_eq!(json(None), serde_json::Value::Null);
+    assert_eq!(json(Some(f64::INFINITY)), json!("infinite"));
+}
+
+#[tokio::test]
+async fn added_counts_first_entries_as_the_burn_down_does() {
+    // D33: created, or published from a creation draft, or released from a
+    // phase, in the window; not a request, not a draft now, not frozen, and a
+    // reopen is no second addition.
+    let f = fixture().await;
+    let s = &f.store;
+    let a = create(s, "p", "a").await;
+    let b = create(s, "p", "b").await;
+    create(s, "p", "c").await;
+    finish(s, &a).await;
+    // Reopened: still added once.
+    set_status(s, &a, ItemStatus::Pending).await;
+    finish(s, &a).await;
+    set_status(s, &b, ItemStatus::Deferred).await;
+    // A request is never counted.
+    request(s, "p", "an idea").await;
+    // A draft is added at its publication, not before.
+    let d = s
+        .create_item(
+            NewItem {
+                draft: true,
+                ..new_item("p", "a draft")
+            },
+            &web(),
+        )
+        .await
+        .unwrap()
+        .item
+        .id;
+    let v = s.velocity("p", Utc::now()).await.unwrap();
+    assert_eq!((v.windows.week.added, v.windows.day.added), (3, 3));
+    s.update_item(
+        &d,
+        ItemUpdate {
+            draft: Some(false),
+            ..Default::default()
+        },
+        &web(),
+    )
+    .await
+    .unwrap();
+    // Frozen in a phase: not added until released.
+    let phase = s
+        .create_phase(
+            NewPhase {
+                project: "p".into(),
+                title: "Later".into(),
+                body: String::new(),
+                place: Place::Bottom,
+                note: None,
+            },
+            &mcp(),
+        )
+        .await
+        .unwrap()
+        .phase
+        .id;
+    for t in ["f1", "f2"] {
+        s.create_item_in_phase(new_item("p", t), &phase, &mcp())
+            .await
+            .unwrap();
+    }
+    let v = s.velocity("p", Utc::now()).await.unwrap();
+    let week = &v.windows.week;
+    assert_eq!((week.done, week.added), (1, 4));
+    // c and d pending; a done, b deferred: in no remaining.
+    assert_eq!(v.remaining, 2);
+    // Seconds of writes: the one-hour floor, (1 − 4) an hour is −72 a day, and
+    // a growing queue never empties.
+    assert_eq!(week.adj_velocity_per_day, -72.0);
+    assert_eq!(week.adj_eta_days, Some(f64::INFINITY));
+    assert_eq!(week.velocity_per_day, 24.0);
+    s.release_phase(&phase, Place::Bottom, None, &mcp())
+        .await
+        .unwrap();
+    let now = Utc::now();
+    let v = s.velocity("p", now).await.unwrap();
+    assert_eq!(v.windows.week.added, 6);
+    // The same count as the report's burn-down over the same 7 days.
+    let r = s.report("p", ReportWindow::Week, now).await.unwrap();
+    let burned: i64 = r.buckets.iter().map(|b| b.added).sum();
+    assert_eq!(burned, v.windows.week.added);
+    assert_eq!(r.velocity, v.windows.week);
+    assert_spans_match_rows(s).await;
+}
+
 // ---- The figures (VL-05) ----------------------------------------------------
 
 const NOW: &str = "2026-11-02T12:00:00Z";
@@ -215,6 +341,12 @@ async fn the_concepts_example_reads_eight_a_day_and_seven_days() {
     assert_eq!(day.active_seconds, 24 * H);
     assert_eq!(day.velocity_per_day, 9.0);
     assert_eq!(day.eta_days, Some(51.0 / 9.0));
+    // Every ticket was created a month ago: nothing added, so the adjusted
+    // figures are the plain ones.
+    assert_eq!((week.added, day.added), (0, 0));
+    assert_eq!(week.adj_velocity_per_day, 8.0);
+    assert_eq!(week.adj_eta_days, Some(6.375));
+    assert_eq!(day.adj_eta_days, Some(51.0 / 9.0));
     assert_spans_match_rows(s).await;
 }
 
@@ -245,19 +377,28 @@ async fn the_figures_have_the_routes_shape() {
     for w in ["24h", "7d"] {
         assert_eq!(
             keys(&v["windows"][w]),
-            ["active_seconds", "done", "eta_days", "velocity_per_day"]
+            [
+                "active_seconds",
+                "added",
+                "adj_eta_days",
+                "adj_velocity_per_day",
+                "done",
+                "eta_days",
+                "velocity_per_day"
+            ]
         );
     }
     // An unknown project: zeros, and nothing remaining is an ETA of 0.
+    let zero = json!({
+        "done": 0, "added": 0, "active_seconds": 0, "velocity_per_day": 0.0, "eta_days": 0.0,
+        "adj_velocity_per_day": 0.0, "adj_eta_days": 0.0
+    });
     assert_eq!(
         v,
         json!({
             "project": "none", "now": NOW, "in_progress": 0, "in_review": 0, "pending": 0,
             "blocked": 0, "deferred": 0, "remaining": 0,
-            "windows": {
-                "24h": {"done": 0, "active_seconds": 0, "velocity_per_day": 0.0, "eta_days": 0.0},
-                "7d": {"done": 0, "active_seconds": 0, "velocity_per_day": 0.0, "eta_days": 0.0}
-            }
+            "windows": {"24h": zero, "7d": zero}
         })
     );
     // An invalid name is refused.
@@ -499,13 +640,21 @@ async fn the_frozen_check_of_the_velocity_read_uses_its_partial_index() {
 #[tokio::test]
 async fn every_statement_of_the_velocity_read_uses_an_index() {
     let f = fixture().await;
-    let wanted = [
-        "idx_items_project",
-        "idx_item_spans_project_started",
-        "COVERING INDEX idx_events_activity",
+    let wanted: [&[&str]; 4] = [
+        &["idx_items_project"],
+        &["idx_item_spans_project_started"],
+        &["COVERING INDEX idx_events_activity"],
+        // Added (D33): the counted status spans started and the drafts ended in
+        // the window, and each ticket's earlier counted spans, every one from a
+        // covering partial index, so no span row is read (rag-t0071).
+        &[
+            "COVERING INDEX idx_item_spans_counted ",
+            "COVERING INDEX idx_item_spans_drafts",
+            "COVERING INDEX idx_item_spans_counted_item",
+        ],
     ];
     assert_eq!(READS.len(), wanted.len());
-    for (sql, index) in READS.iter().zip(wanted) {
+    for (sql, indexes) in READS.iter().zip(wanted) {
         let explain = format!("EXPLAIN QUERY PLAN {sql}");
         let mut q = sqlx::query_as::<_, (i64, i64, i64, String)>(&explain);
         for _ in 0..sql.matches('?').count() {
@@ -522,10 +671,12 @@ async fn every_statement_of_the_velocity_read_uses_an_index() {
             plan.iter().all(|d| !d.starts_with("SCAN")),
             "a full scan in {plan:?} for {sql}"
         );
-        assert!(
-            plan.iter()
-                .any(|d| d.starts_with("SEARCH") && d.contains(index)),
-            "{index} unused in {plan:?} for {sql}"
-        );
+        for index in indexes {
+            assert!(
+                plan.iter()
+                    .any(|d| d.starts_with("SEARCH") && d.contains(index)),
+                "{index} unused in {plan:?} for {sql}"
+            );
+        }
     }
 }

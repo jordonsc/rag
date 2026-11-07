@@ -1,12 +1,14 @@
 /**
  * The velocity widget (spec:velocity D11–D14): one row under the queue page's
- * header, `Velocity 8/day · In progress 3 · Pending 48 · ETA 7 days`, the
- * window pill (`7 d` | `24 h`) and **Report**. Each figure is a `Stat`
+ * header, `Velocity 8/day · Adj. Velocity 6/day · In progress 3 · Pending 48 ·
+ * ETA 7 days · Adj. ETA 9 days`, the window pill (`7 d` | `24 h`) and
+ * **Report**. The adjusted figures (D33, D34, rag-t0071) net the tickets
+ * added off those done: the velocity may be negative and the ETA "∞". Each figure is a `Stat`
  * (`Stat.tsx`, owner request rag-t0062): an accent caption beside its value
  * in a mini tile, the report's tile in small (owner, 2026-11-03), read as
  * "Velocity: 8/day".
  *
- * The pill moves Velocity and ETA only; the counts are what is open now,
+ * The pill moves the velocities and ETAs only; the counts are what is open now,
  * whatever the window (D13, C5). The choice is kept per browser for every
  * project (`velocity.ts`). Each figure explains itself on hover (D14). On a
  * phone the row wraps between figures, never inside one.
@@ -63,6 +65,12 @@ export function VelocityBar({ project, velocity }: { project: string; velocity: 
         />
         <Stat
           variant="inline"
+          label="Adj. Velocity"
+          {...velocityParts(figures.adj_velocity_per_day)}
+          title={tips.adjVelocity}
+        />
+        <Stat
+          variant="inline"
           label="In progress"
           value={String(velocity.in_progress)}
           unit=""
@@ -76,6 +84,12 @@ export function VelocityBar({ project, velocity }: { project: string; velocity: 
           title={tips.pending}
         />
         <Stat variant="inline" label="ETA" {...etaParts(figures.eta_days)} title={tips.eta} />
+        <Stat
+          variant="inline"
+          label="Adj. ETA"
+          {...etaParts(figures.adj_eta_days)}
+          title={tips.adjEta}
+        />
       </ul>
       <Segmented
         value={choice}

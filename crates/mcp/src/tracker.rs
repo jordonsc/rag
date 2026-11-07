@@ -2143,8 +2143,35 @@ fn velocity_line(v: &Value) -> Option<String> {
             d => format!("ETA {}", format_eta(d)),
         },
     };
-    Some(format!(
+    let mut line = format!(
         "Velocity (7 d): {}/day · 24 h: {}/day · {eta}",
+        rate(per_day(week)?),
+        rate(per_day(day)?)
+    );
+    if let Some(adjusted) = adjusted_part(week, day) {
+        line.push_str(" · ");
+        line.push_str(&adjusted);
+    }
+    Some(line)
+}
+
+/// The adjusted half of the velocity line (spec:velocity D33, D34, owner
+/// request rag-t0071): `Adj. velocity (7 d): -3/day · 24 h: 2/day · Adj. ETA
+/// infinite`, the rate signed and the ETA the 7-day one (`done`, `unknown`, or
+/// `infinite` when the queue is not shrinking). `None` from a server that does
+/// not send the figures, so the plain half still reads.
+fn adjusted_part(week: &Value, day: &Value) -> Option<String> {
+    let per_day = |w: &Value| w.get("adj_velocity_per_day").and_then(Value::as_f64);
+    let eta = match week.get("adj_eta_days")? {
+        Value::Null => "unknown".to_string(),
+        Value::String(s) if s == "infinite" => "infinite".to_string(),
+        e => match e.as_f64()? {
+            d if d <= 0.0 => "done".to_string(),
+            d => format_eta(d),
+        },
+    };
+    Some(format!(
+        "Adj. velocity (7 d): {}/day · 24 h: {}/day · Adj. ETA {eta}",
         rate(per_day(week)?),
         rate(per_day(day)?)
     ))

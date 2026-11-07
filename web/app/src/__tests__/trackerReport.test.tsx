@@ -76,7 +76,15 @@ function weekReport(overrides: Partial<Report> = {}): Report {
     window: '7d',
     start: '2026-11-01T13:00:00Z',
     end: '2026-11-08T13:00:00Z',
-    velocity: { done: 20, active_seconds: 216_000, velocity_per_day: 8, eta_days: 7 },
+    velocity: {
+      done: 20,
+      active_seconds: 216_000,
+      velocity_per_day: 8,
+      eta_days: 7,
+      added: 0,
+      adj_velocity_per_day: 8,
+      adj_eta_days: 7,
+    },
     buckets: hours('2026-11-01T13:00:00Z', 168),
     states: {
       pending: state({
@@ -117,7 +125,15 @@ function dayReport(): Report {
   return weekReport({
     window: '24h',
     start: '2026-11-07T13:00:00Z',
-    velocity: { done: 0, active_seconds: 7_200, velocity_per_day: 0, eta_days: null },
+    velocity: {
+      done: 0,
+      active_seconds: 7_200,
+      velocity_per_day: 0,
+      eta_days: null,
+      added: 0,
+      adj_velocity_per_day: 0,
+      adj_eta_days: null,
+    },
   });
 }
 
@@ -131,8 +147,24 @@ const VELOCITY_NOW: Velocity = {
   deferred: 4,
   remaining: 51,
   windows: {
-    '24h': { done: 2, active_seconds: 7_200, velocity_per_day: 24, eta_days: 3 },
-    '7d': { done: 20, active_seconds: 216_000, velocity_per_day: 8, eta_days: 7 },
+    '24h': {
+      done: 2,
+      active_seconds: 7_200,
+      velocity_per_day: 24,
+      eta_days: 3,
+      added: 0,
+      adj_velocity_per_day: 24,
+      adj_eta_days: 3,
+    },
+    '7d': {
+      done: 20,
+      active_seconds: 216_000,
+      velocity_per_day: 8,
+      eta_days: 7,
+      added: 0,
+      adj_velocity_per_day: 8,
+      adj_eta_days: 7,
+    },
   },
 };
 
@@ -262,29 +294,62 @@ describe('the blocks', () => {
     const tiles = within(list).getAllByRole('listitem');
     expect(tiles.map((li) => li.getAttribute('aria-label'))).toEqual([
       'Velocity: 8/day',
+      'Adj. Velocity: 8/day',
       'In progress: 3',
       'Pending: 48',
       'ETA: 7 days',
+      'Adj. ETA: 7 days',
       'Done: 20 tickets',
     ]);
     expect(tiles.map((li) => li.textContent)).toEqual([
       'Velocity: 8/day',
+      'Adj. Velocity: 8/day',
       'In progress: 3',
       'Pending: 48',
       'ETA: 7 days',
+      'Adj. ETA: 7 days',
       'Done: 20 tickets',
     ]);
     // The unit is set apart from the value it follows.
-    expect(within(tiles[4]!).getByText('tickets').parentElement).toHaveTextContent('20 tickets');
+    expect(within(tiles[6]!).getByText('tickets').parentElement).toHaveTextContent('20 tickets');
   });
 
   it('words a fractional ETA tile from hours up (rag-t0062)', async () => {
     week = weekReport({
-      velocity: { done: 20, active_seconds: 216_000, velocity_per_day: 8, eta_days: 140 },
+      velocity: {
+        done: 20,
+        active_seconds: 216_000,
+        velocity_per_day: 8,
+        eta_days: 140,
+        added: 0,
+        adj_velocity_per_day: 8,
+        adj_eta_days: 140,
+      },
     });
     open();
     const list = await figures();
     expect(within(list).getByRole('listitem', { name: 'ETA: 4.6 months' })).toBeInTheDocument();
+  });
+
+  it('shows the adjusted tiles negative and infinite while the queue grows (rag-t0071)', async () => {
+    week = weekReport({
+      velocity: {
+        done: 2,
+        active_seconds: 216_000,
+        velocity_per_day: 0.8,
+        eta_days: 63.75,
+        added: 7,
+        adj_velocity_per_day: -2,
+        adj_eta_days: 'infinite',
+      },
+    });
+    open();
+    const list = await figures();
+    expect(
+      within(list).getByRole('listitem', { name: 'Adj. Velocity: -2/day' }),
+    ).toBeInTheDocument();
+    const eta = within(list).getByRole('listitem', { name: 'Adj. ETA: infinite' });
+    expect(within(eta).getByText('∞')).toBeInTheDocument();
   });
 
   it('gives each figure its tooltip', async () => {
@@ -402,7 +467,15 @@ describe('the blocks', () => {
 
   it('says so under its chart when nothing was done in the window', async () => {
     week = weekReport({
-      velocity: { done: 0, active_seconds: 0, velocity_per_day: 0, eta_days: null },
+      velocity: {
+        done: 0,
+        active_seconds: 0,
+        velocity_per_day: 0,
+        eta_days: null,
+        added: 0,
+        adj_velocity_per_day: 0,
+        adj_eta_days: null,
+      },
       buckets: hours('2026-11-01T13:00:00Z', 168).map((b) => ({ ...b, added: 0, done: 0 })),
       mttc: { count: 0, mean_seconds: null, median_seconds: null, never_in_progress: 0 },
       mttr: { count: 0, mean_seconds: null, median_seconds: null, confirmed: 0, sent_back: 0 },

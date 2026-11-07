@@ -238,6 +238,11 @@ function Blocks({
       <ul className={stat.tiles} aria-label="Figures">
         <Stat label="Velocity" {...velocityParts(figures.velocity_per_day)} title={tips.velocity} />
         <Stat
+          label="Adj. Velocity"
+          {...velocityParts(figures.adj_velocity_per_day)}
+          title={tips.adjVelocity}
+        />
+        <Stat
           label="In progress"
           value={String(velocity.in_progress)}
           unit=""
@@ -245,6 +250,7 @@ function Blocks({
         />
         <Stat label="Pending" value={String(velocity.pending)} unit="" title={tips.pending} />
         <Stat label="ETA" {...etaParts(figures.eta_days)} title={tips.eta} />
+        <Stat label="Adj. ETA" {...etaParts(figures.adj_eta_days)} title={tips.adjEta} />
         <Stat
           label="Done"
           value={String(figures.done)}

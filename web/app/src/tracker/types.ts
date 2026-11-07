@@ -333,6 +333,15 @@ export interface VelocityFigures {
   velocity_per_day: number;
   /** Remaining ÷ velocity in days, unrounded (D9, rag-t0062): 0 when nothing remains, `null` when unknown. */
   eta_days: number | null;
+  /** Tickets added in the window: their first entry into a counted state (D33). */
+  added: number;
+  /** (Done − added) per 24 h of active time (D33, rag-t0071); negative when the queue grows. */
+  adj_velocity_per_day: number;
+  /**
+   * Remaining ÷ adjusted velocity in days (D34): 0 when nothing remains, `null`
+   * when nothing was done or added, `'infinite'` when the queue is not shrinking.
+   */
+  adj_eta_days: number | 'infinite' | null;
 }
 
 /**

@@ -366,10 +366,13 @@ specs and concepts move out of the project's repository into it, keeping their p
   project's tickets get done over the last 24 hours and 7 days, measured over its **active
   time** (gaps of over 2 hours between writes are idle, so a project left alone does not
   read as slow), with the counts now (in progress, review folded in; pending, blocked
-  folded in; deferred apart) and the ETA of what remains. Every figure is a range read of
+  folded in; deferred apart) and the ETA of what remains, plus an **adjusted** velocity and
+  ETA that net the tickets added off those done (rag-t0071: the velocity negative while the
+  queue grows, the ETA `"infinite"` while it is not shrinking). Every figure is a range read of
   `item_spans`, a ticket's history as intervals kept in step by every write and backfilled
   from the events once, when an older database is opened. `tracker_queue` ends with its line
-  (`Velocity (7 d): 42/day · 24 h: 51/day · ETA 1.6 days`, the ETA worded from hours to months). `GET /tracker/{project}/report?window=24h|7d`
+  (`Velocity (7 d): 42/day · 24 h: 51/day · ETA 1.6 days · Adj. velocity (7 d): 30/day · 24 h: -2/day ·
+  Adj. ETA 2.2 days`, the ETAs worded from hours to months). `GET /tracker/{project}/report?window=24h|7d`
   is the report: an hourly burn-down (remaining, added, done) over the last 7 days whatever the
   window, and over the window the time in each state and the mean times to completion and to
   resolution, leaving out any ticket that is a draft now, drawn by the web UI's

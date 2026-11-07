@@ -452,8 +452,10 @@ planned or not of this project, one it misses, or two directions that disagree).
   "deferred": 7,
   "remaining": 162,
   "windows": {
-    "24h": {"done": 89, "active_seconds": 86400, "velocity_per_day": 89.0, "eta_days": 1.8202},
-    "7d":  {"done": 380, "active_seconds": 486940, "velocity_per_day": 67.4, "eta_days": 2.4036}
+    "24h": {"done": 89, "added": 97, "active_seconds": 86400, "velocity_per_day": 89.0, "eta_days": 1.8202,
+            "adj_velocity_per_day": -8.0, "adj_eta_days": "infinite"},
+    "7d":  {"done": 380, "added": 301, "active_seconds": 486940, "velocity_per_day": 67.4, "eta_days": 2.4036,
+            "adj_velocity_per_day": 14.0172, "adj_eta_days": 11.5572}
   }
 }
 ```
@@ -465,11 +467,20 @@ planned or not of this project, one it misses, or two directions that disagree).
   **unrounded** (a number with a fraction; a client words it, from hours to months: owner request rag-t0062,
   where it was an integer rounded up before), **`0` with nothing remaining** and **`null` when unknown** (work
   remains and nothing was done in the window).
-* An unknown project answers the same shape with zeros (and `eta_days` 0.0), not a 404; an invalid project name is
+* The **adjusted** figures (spec:velocity D33, D34; owner request rag-t0071) net the tickets added off those done:
+  `added` (tickets that first entered a counted state in the window, the report burn-down's `added`),
+  `adj_velocity_per_day` = (`done` − `added`) per 24 hours of the same active time, **signed** (negative while the
+  queue grows), and `adj_eta_days` = `remaining ÷ adj_velocity_per_day` in days, unrounded: **`0` with nothing
+  remaining**, **`null` when unknown** (work remains and nothing was done or added in the window), and the string
+  **`"infinite"`** when the queue is not shrinking (work remains and as many were added as done, or more). JSON has
+  no number for infinity, hence the string.
+* An unknown project answers the same shape with zeros (and `eta_days` and `adj_eta_days` 0.0), not a 404; an invalid project name is
   400. Read-only: it writes no event and takes no author fields.
 * `Cache-Control: no-store` and **no `ETag`**: the windows move with the clock, so the figures change while
   nothing is written. The dashboard's widget reads it beside the queue view; `tracker_queue` ends with a line read
-  from it (`Velocity (7 d): 67/day · 24 h: 89/day · ETA 2.4 days`), the ETA worded as the widget words it.
+  from it (`Velocity (7 d): 67/day · 24 h: 89/day · ETA 2.4 days · Adj. velocity (7 d): 14/day · 24 h: -8/day ·
+  Adj. ETA 1.7 weeks`), the ETAs worded as the widget words them (`Adj. ETA infinite`, `unknown`, `done`); a server
+  without the adjusted figures gets the line without its adjusted half.
 
 #### `GET /tracker/{project}/report?window=24h|7d` — the velocity report (spec:velocity D27)
 ```json
@@ -987,8 +998,16 @@ slow; the design is `specs/velocity/master.md` (D1–D10, D16–D27), built in `
 * **Velocity** = done ÷ active time, per 24 hours of active time, with active time **at least 1 hour** (so twenty
   minutes that closed three tickets is 72 a day, not 216); 0 with nothing done. For a project at work all day it
   is its calendar rate; for one that works an hour a week, the rate it works at when it works.
-* **ETA** = remaining ÷ velocity, **rounded up**, in days of active work at that pace: 0 with nothing remaining,
-  `null` (unknown) with work remaining and a velocity of 0. An idle project takes longer in calendar days.
+* **ETA** = remaining ÷ velocity, **unrounded** (rag-t0062), in days of active work at that pace: 0 with nothing
+  remaining, `null` (unknown) with work remaining and a velocity of 0. An idle project takes longer in calendar days.
+* **Added** in a window: the tickets that first entered a counted state in it (created, or first released or pulled
+  from a phase), each once; one that was a draft until then is added at its publication if that came later. A
+  reopen is no second addition, and a request or a ticket that is a draft now is never added. The same count as
+  the report burn-down's `added` over the same stretch.
+* **Adjusted velocity** = (done − added) ÷ the same active time, per 24 hours: the rate the queue shrinks at,
+  **negative** while it grows. **Adjusted ETA** = remaining ÷ adjusted velocity: 0 with nothing remaining,
+  unknown with nothing done or added in the window, and **infinite** while the queue is not shrinking (owner
+  request rag-t0071).
 * **The windows** are rolling: the last 24 hours and the last 7 × 24 hours, ending now.
 * **Where the figures come from.** Every status, block and draft change of a ticket opens and closes an
   `item_spans` row (one a ticket a state, on the tracks `status`, `blocked` and `draft`) in the same transaction

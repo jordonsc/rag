@@ -94,8 +94,8 @@ pub use records::{
 pub use report::{Bucket, Mttc, Mttr, Report, ReportStates, ReportWindow, StateTime};
 pub use roadmap::{PhaseFigures, Roadmap, RoadmapQueue};
 pub use velocity::{
-    active_seconds, eta_days, velocity_per_day, Velocity, VelocityWindow, VelocityWindows,
-    IDLE_GAP, MIN_ACTIVE,
+    active_seconds, adj_eta_days, adj_velocity_per_day, eta_days, velocity_per_day, Velocity,
+    VelocityWindow, VelocityWindows, IDLE_GAP, MIN_ACTIVE,
 };
 
 // ---- Errors -----------------------------------------------------------------
@@ -1453,6 +1453,22 @@ CREATE INDEX IF NOT EXISTS idx_item_spans_item ON item_spans(item_id, track, sta
 -- ROADMAP_INDEXES_SQL: no column of `item_spans` is an added one.
 CREATE INDEX IF NOT EXISTS idx_item_spans_frozen ON item_spans(item_id, ended_event)
     WHERE state = 'frozen';
+-- spec:velocity D33, the velocity read's `added` (`velocity::ADDED_SQL`): the
+-- status spans in a counted state by time and by ticket, and the draft spans by
+-- their end, each covering what the read asks, so it reads no span row. Without
+-- them it fetched every span of the week's twice over to keep a few (rag-t0071).
+-- The predicates must stay word for word the read's, or SQLite will not use them;
+-- `state` is in the counted ones because SQLite does not take a `NOT IN` as
+-- covered by the predicate, and would read the row to check it.
+CREATE INDEX IF NOT EXISTS idx_item_spans_counted
+    ON item_spans(project, started_at, item_id, started_event, state)
+    WHERE track = 'status' AND state NOT IN ('frozen', 'done', 'cancelled');
+CREATE INDEX IF NOT EXISTS idx_item_spans_counted_item
+    ON item_spans(item_id, started_event, state)
+    WHERE track = 'status' AND state NOT IN ('frozen', 'done', 'cancelled');
+CREATE INDEX IF NOT EXISTS idx_item_spans_drafts
+    ON item_spans(project, ended_at, item_id, started_event)
+    WHERE track = 'draft';
 -- Activity (D6) is a range read of a project's events by time.
 CREATE INDEX IF NOT EXISTS idx_events_project_ts ON events(project, ts);
 

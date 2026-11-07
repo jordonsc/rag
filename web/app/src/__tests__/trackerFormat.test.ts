@@ -79,6 +79,9 @@ describe('the ETA', () => {
     expect(formatEta(null)).toBe('—');
     expect(etaParts(null)).toEqual({ value: '—', unit: '', spoken: 'unknown' });
     expect(etaParts(1.6)).toEqual({ value: '1.6', unit: 'days' });
+    // The adjusted ETA may be infinite (D34, rag-t0071).
+    expect(etaParts('infinite')).toEqual({ value: '∞', unit: '', spoken: 'infinite' });
+    expect(formatEta('infinite')).toBe('∞');
   });
 });
 

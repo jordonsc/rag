@@ -340,11 +340,7 @@ fn assert_velocity_shape(v: &Value) {
     );
     assert_eq!(keys(&v["windows"]), ["24h", "7d"], "{v}");
     for w in ["24h", "7d"] {
-        assert_eq!(
-            keys(&v["windows"][w]),
-            ["active_seconds", "done", "eta_days", "velocity_per_day"],
-            "{v}"
-        );
+        assert_eq!(keys(&v["windows"][w]), WINDOW_KEYS, "{v}");
     }
 }
 
@@ -389,6 +385,11 @@ async fn velocity_answers_the_figures_for_a_project_with_tickets() {
         // hours, the ETA unrounded (rag-t0062).
         assert_eq!(win["velocity_per_day"], 24.0, "{v}");
         assert_eq!(win["eta_days"], 2.0 / 24.0, "{v}");
+        // Three added and one done (D33): −2 an hour of the floor is −48 a day,
+        // and a growing queue's adjusted ETA is infinite (D34).
+        assert_eq!(win["added"], 3, "{v}");
+        assert_eq!(win["adj_velocity_per_day"], -48.0, "{v}");
+        assert_eq!(win["adj_eta_days"], "infinite", "{v}");
     }
     // A read writes nothing: the queue view's ETag is unchanged.
     let before = get(&t.app, "/tracker/p").await.headers[header::ETAG].clone();
@@ -424,8 +425,13 @@ async fn velocity_is_zeros_for_an_unknown_project_and_400_for_an_invalid_name() 
             ),
             (&json!(0), &json!(0), &json!(0.0))
         );
-        // Nothing remains: an ETA of 0, not unknown.
+        // Nothing remains: an ETA of 0, not unknown, adjusted or not.
         assert_eq!(win["eta_days"], 0.0);
+        assert_eq!(win["adj_eta_days"], 0.0);
+        assert_eq!(
+            (&win["added"], &win["adj_velocity_per_day"]),
+            (&json!(0), &json!(0.0))
+        );
     }
     let r = get(&t.app, "/tracker/bad%20name/velocity").await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
@@ -433,6 +439,17 @@ async fn velocity_is_zeros_for_an_unknown_project_and_400_for_an_invalid_name() 
 }
 
 // ---- The report (spec:velocity m03, VL-11) -----------------------------------------
+
+/// A velocity window's keys (D26, D33, D34), sorted.
+const WINDOW_KEYS: [&str; 7] = [
+    "active_seconds",
+    "added",
+    "adj_eta_days",
+    "adj_velocity_per_day",
+    "done",
+    "eta_days",
+    "velocity_per_day",
+];
 
 /// D27's shape, with every key and no others.
 fn assert_report_shape(v: &Value) {
@@ -446,11 +463,7 @@ fn assert_report_shape(v: &Value) {
         ["buckets", "end", "mttc", "mttr", "project", "start", "states", "velocity", "window"],
         "{v}"
     );
-    assert_eq!(
-        keys(&v["velocity"]),
-        ["active_seconds", "done", "eta_days", "velocity_per_day"],
-        "{v}"
-    );
+    assert_eq!(keys(&v["velocity"]), WINDOW_KEYS, "{v}");
     for b in v["buckets"].as_array().unwrap() {
         assert_eq!(keys(b), ["added", "done", "remaining", "start"], "{b}");
     }

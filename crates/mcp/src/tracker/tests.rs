@@ -2666,6 +2666,41 @@ fn the_velocity_line_writes_rates_as_the_widget_does() {
     assert_eq!(rate(123.4), "123");
 }
 
+/// The adjusted half (D33, D34, rag-t0071): signed rates, and an adjusted ETA
+/// that may be infinite; an older server without the figures keeps the plain
+/// line, as the tests above show.
+#[test]
+fn the_velocity_line_adds_the_adjusted_figures_when_the_server_sends_them() {
+    let adjusted = |week: f64, day: f64, eta: Value| {
+        let mut v = velocity_view(8.0, 9.0, json!(51.0 / 8.0), 51);
+        v["windows"]["7d"]["adj_velocity_per_day"] = json!(week);
+        v["windows"]["24h"]["adj_velocity_per_day"] = json!(day);
+        v["windows"]["7d"]["adj_eta_days"] = eta;
+        velocity_line(&v).unwrap()
+    };
+    let plain = "Velocity (7 d): 8/day · 24 h: 9/day · ETA 6 days";
+    assert_eq!(
+        adjusted(6.0, 2.4, json!(3.2)),
+        format!("{plain} · Adj. velocity (7 d): 6/day · 24 h: 2.4/day · Adj. ETA 3.2 days")
+    );
+    assert_eq!(
+        adjusted(-3.0, -0.04, json!("infinite")),
+        format!("{plain} · Adj. velocity (7 d): -3/day · 24 h: 0/day · Adj. ETA infinite")
+    );
+    assert_eq!(
+        adjusted(-2.45, 0.0, Value::Null),
+        format!("{plain} · Adj. velocity (7 d): -2.5/day · 24 h: 0/day · Adj. ETA unknown")
+    );
+    assert_eq!(
+        adjusted(-1.0, -1.0, json!(0.0)),
+        format!("{plain} · Adj. velocity (7 d): -1/day · 24 h: -1/day · Adj. ETA done")
+    );
+    // Signed rates, half away from zero as the widget's `formatRate`.
+    assert_eq!(rate(-10.5), "-11");
+    assert_eq!(rate(-2.45), "-2.5");
+    assert_eq!(rate(-0.04), "0");
+}
+
 /// The ETA's wording (rag-t0062): the same cases as `formatEta` in
 /// `web/app/src/__tests__/trackerFormat.test.ts`, so the line and the widget agree.
 #[test]

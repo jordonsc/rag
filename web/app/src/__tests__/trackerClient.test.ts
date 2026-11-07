@@ -259,8 +259,24 @@ describe('the velocity read (spec:velocity VL-07)', () => {
     deferred: 4,
     remaining: 51,
     windows: {
-      '24h': { done: 2, active_seconds: 7200, velocity_per_day: 24, eta_days: 3 },
-      '7d': { done: 20, active_seconds: 216000, velocity_per_day: 8, eta_days: 7 },
+      '24h': {
+        done: 2,
+        active_seconds: 7200,
+        velocity_per_day: 24,
+        eta_days: 3,
+        added: 0,
+        adj_velocity_per_day: 24,
+        adj_eta_days: 3,
+      },
+      '7d': {
+        done: 20,
+        active_seconds: 216000,
+        velocity_per_day: 8,
+        eta_days: 7,
+        added: 0,
+        adj_velocity_per_day: 8,
+        adj_eta_days: 7,
+      },
     },
   };
 

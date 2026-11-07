@@ -2,11 +2,18 @@
 //! tickets get done, measured over its **active time** so an idle project does
 //! not read as slow (R3), and the ETA of what remains at that pace.
 //!
-//! Every figure is computed on request (D25: no counters, no rollups) from three
+//! The adjusted velocity and ETA (D33, D34, owner request rag-t0071) net the
+//! tickets added in the window off those done, so a queue that grows as fast as
+//! it is worked reads as not shrinking.
+//!
+//! Every figure is computed on request (D25: no counters, no rollups) from four
 //! range reads: the project's items as they are now (`idx_items_project`), the
 //! `done` spans started in the last 7 days (`idx_item_spans_project_started`),
-//! and the `ts` of the window's events (`idx_events_activity`), joined into one
-//! row. The statements are constants so a test can pin their query plans (D30).
+//! the `ts` of the window's events (`idx_events_activity`), joined into one
+//! row, and the spans that added a ticket in the window. The statements are
+//! constants so a test can pin their query plans (D30).
+
+use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use serde::Serialize;
@@ -65,6 +72,10 @@ pub struct VelocityWindow {
     /// Tickets that reached `done` in the window, each counted once however
     /// often it did, and still counted if reopened since (D3, R11).
     pub done: i64,
+    /// Tickets added in the window: their first entry into a counted state
+    /// (the burn-down's `added`, D16 and spec:roadmap D22), or, for one that
+    /// was a draft until then, its publication if that came later (D33).
+    pub added: i64,
     /// The window's active time in seconds (D6).
     pub active_seconds: i64,
     /// `done ÷ max(active, MIN_ACTIVE)`, per 24 hours of active time (D8).
@@ -73,6 +84,25 @@ pub struct VelocityWindow {
     /// request rag-t0062): 0 with nothing remaining, `None` (unknown) with work
     /// remaining and a velocity of 0.
     pub eta_days: Option<f64>,
+    /// `(done − added) ÷ max(active, MIN_ACTIVE)`, per 24 hours of active time
+    /// (D33, owner request rag-t0071): the rate the queue shrinks at, negative
+    /// when it grows.
+    pub adj_velocity_per_day: f64,
+    /// `remaining ÷ adjusted velocity` days (D34): 0 with nothing remaining,
+    /// `None` (unknown) with nothing done or added in the window, and infinite
+    /// when the queue is not shrinking. Infinity is written `"infinite"`, as
+    /// JSON has no number for it.
+    #[serde(serialize_with = "adj_eta_json")]
+    pub adj_eta_days: Option<f64>,
+}
+
+/// `adj_eta_days` as JSON: a number, `null`, or `"infinite"`.
+fn adj_eta_json<S: serde::Serializer>(eta: &Option<f64>, s: S) -> Result<S::Ok, S::Error> {
+    match eta {
+        Some(d) if d.is_infinite() => s.serialize_str("infinite"),
+        Some(d) => s.serialize_f64(*d),
+        None => s.serialize_none(),
+    }
 }
 
 /// The active time in `[start, now]` (D6), in seconds, from the sorted Unix
@@ -119,6 +149,38 @@ pub fn eta_days(remaining: i64, velocity_per_day: f64) -> Option<f64> {
     }
 }
 
+/// The queue's net rate per 24 hours of active time (D33): `(done − added) ÷
+/// max(active, MIN_ACTIVE)`, negative when more were added than done, and 0
+/// when the two are equal.
+pub fn adj_velocity_per_day(done: i64, added: i64, active_seconds: i64) -> f64 {
+    let net = done - added;
+    if net == 0 {
+        return 0.0;
+    }
+    net as f64 * DAY as f64 / active_seconds.max(MIN_ACTIVE) as f64
+}
+
+/// The adjusted ETA in days (D34): 0 with nothing remaining; `remaining ÷
+/// adjusted velocity` while the queue shrinks; `None` (unknown) when nothing was
+/// done or added in the window, as the plain ETA is with no velocity; and
+/// infinite when the queue holds or grows, as it would never empty at this pace.
+pub fn adj_eta_days(
+    remaining: i64,
+    done: i64,
+    added: i64,
+    adj_velocity_per_day: f64,
+) -> Option<f64> {
+    if remaining <= 0 {
+        Some(0.0)
+    } else if adj_velocity_per_day > 0.0 {
+        Some(remaining as f64 / adj_velocity_per_day)
+    } else if done == 0 && added == 0 {
+        None
+    } else {
+        Some(f64::INFINITY)
+    }
+}
+
 /// The project's counted tickets as they are now, by status and block (D1, D2,
 /// D4): not requests, not drafts, not frozen in a phase (spec:roadmap D20), and
 /// only the statuses some count holds.
@@ -155,9 +217,54 @@ pub(super) const DONE_SQL: &str = "SELECT s.item_id, MAX(s.started_at) FROM item
 pub(super) const ACTIVITY_SQL: &str = "SELECT group_concat(ts) FROM events \
      WHERE project = ? AND draft = 0 AND roadmap = 0 AND ts >= ? AND ts <= ?";
 
+/// A counted `status` span of the span `s`'s ticket that began before it, by
+/// event id: the subquery [`ADDED_SQL`] asks `NOT EXISTS` of.
+macro_rules! counted_before {
+    () => {
+        "(SELECT 1 FROM item_spans p INDEXED BY idx_item_spans_counted_item \
+         WHERE p.item_id = s.item_id AND p.started_event < s.started_event \
+         AND p.track = 'status' AND p.state NOT IN ('frozen', 'done', 'cancelled'))"
+    };
+}
+
+/// The tickets added in `[start, now]` (D33), as the report's burn-down counts
+/// them (`report.rs`, `first!` and `burn_down`): each ticket's first `status`
+/// span in a counted state (not `frozen`, `done` or `cancelled`; no such span
+/// before it, by event id), and the `draft` span it was created under, if any
+/// (a `draft` span with no counted `status` span before it, of a ticket that has
+/// one). A ticket is added at the later of the two: [`read`] takes each ticket's
+/// latest time. The first part reads the counted status spans started in the
+/// window, the second the drafts published in it; a part outside the window
+/// leaves the other's time standing, as the burn-down's does. Not requests (D1),
+/// not drafts now (D2). Binds `project, start, now` for each part.
+///
+/// Every span it reads comes from a partial covering index (`mod.rs`,
+/// `idx_item_spans_counted`, `_counted_item`, `_drafts`), pinned by `INDEXED BY`
+/// so a plan that would fetch span rows fails rather than slows: through the
+/// general indexes it read each of the week's spans twice to keep a few, and
+/// cost the read more than its whole budget (rag-t0071). `CROSS JOIN` keeps the
+/// spans outside the items, as the report's read does.
+pub(super) const ADDED_SQL: &str = concat!(
+    "SELECT s.item_id, s.started_at FROM item_spans s INDEXED BY idx_item_spans_counted \
+     CROSS JOIN items i ON i.id = s.item_id \
+     WHERE s.project = ? AND s.started_at >= ? AND s.started_at <= ? \
+     AND s.track = 'status' AND s.state NOT IN ('frozen', 'done', 'cancelled') \
+     AND i.type <> 'request' AND i.draft = 0 AND NOT EXISTS ",
+    counted_before!(),
+    " UNION ALL \
+     SELECT s.item_id, s.ended_at FROM item_spans s INDEXED BY idx_item_spans_drafts \
+     CROSS JOIN items i ON i.id = s.item_id \
+     WHERE s.project = ? AND s.ended_at >= ? AND s.ended_at <= ? \
+     AND s.track = 'draft' AND i.type <> 'request' AND i.draft = 0 AND NOT EXISTS ",
+    counted_before!(),
+    " AND EXISTS (SELECT 1 FROM item_spans q INDEXED BY idx_item_spans_counted_item \
+       WHERE q.item_id = s.item_id \
+       AND q.track = 'status' AND q.state NOT IN ('frozen', 'done', 'cancelled'))"
+);
+
 /// Every statement [`TrackerStore::velocity`] runs, for the plan test.
 #[cfg(test)]
-pub(super) const READS: &[&str] = &[COUNTS_SQL, DONE_SQL, ACTIVITY_SQL];
+pub(super) const READS: &[&str] = &[COUNTS_SQL, DONE_SQL, ACTIVITY_SQL, ADDED_SQL];
 
 pub(super) fn iso(t: DateTime<Utc>) -> String {
     t.to_rfc3339_opts(SecondsFormat::Secs, true)
@@ -167,9 +274,11 @@ pub(super) fn unix(ts: &str) -> Option<i64> {
     DateTime::parse_from_rfc3339(ts).ok().map(|d| d.timestamp())
 }
 
-/// One window's figures from its done count, its events' times and the start.
+/// One window's figures from its done and added counts, its events' times and
+/// the start.
 fn window(
     done: i64,
+    added: i64,
     times: &[i64],
     start: DateTime<Utc>,
     now: DateTime<Utc>,
@@ -177,11 +286,15 @@ fn window(
 ) -> VelocityWindow {
     let active = active_seconds(times, start.timestamp(), now.timestamp(), IDLE_GAP);
     let velocity = velocity_per_day(done, active);
+    let adjusted = adj_velocity_per_day(done, added, active);
     VelocityWindow {
         done,
+        added,
         active_seconds: active,
         velocity_per_day: velocity,
         eta_days: eta_days(remaining, velocity),
+        adj_velocity_per_day: adjusted,
+        adj_eta_days: adj_eta_days(remaining, done, added, adjusted),
     }
 }
 
@@ -205,8 +318,8 @@ pub(super) async fn read(
         deferred: 0,
         remaining: 0,
         windows: VelocityWindows {
-            day: window(0, &[], day_start, now, 0),
-            week: window(0, &[], week_start, now, 0),
+            day: window(0, 0, &[], day_start, now, 0),
+            week: window(0, 0, &[], week_start, now, 0),
         },
     };
     let counts: Vec<(String, i64, i64)> = sqlx::query_as(COUNTS_SQL)
@@ -239,6 +352,27 @@ pub(super) async fn read(
     let done_week = done.len() as i64;
     let done_day = done.iter().filter(|(_, at)| *at >= day_s).count() as i64;
 
+    // Added (D33): each ticket at the latest of its parts' times, all of them in
+    // the week by the read's bounds. RFC 3339 UTC to the second compares as text.
+    let parts: Vec<(String, String)> = sqlx::query_as(ADDED_SQL)
+        .bind(project)
+        .bind(&week_s)
+        .bind(&now_s)
+        .bind(project)
+        .bind(&week_s)
+        .bind(&now_s)
+        .fetch_all(&mut *conn)
+        .await?;
+    let mut added_at: HashMap<String, String> = HashMap::new();
+    for (item, at) in parts {
+        let latest = added_at.entry(item).or_default();
+        if at > *latest {
+            *latest = at;
+        }
+    }
+    let added_week = added_at.len() as i64;
+    let added_day = added_at.values().filter(|at| **at >= day_s).count() as i64;
+
     let events: Option<String> = sqlx::query_scalar(ACTIVITY_SQL)
         .bind(project)
         .bind(&week_s)
@@ -261,8 +395,15 @@ pub(super) async fn read(
         .collect();
 
     v.windows = VelocityWindows {
-        day: window(done_day, &day_times, day_start, now, v.remaining),
-        week: window(done_week, &week_times, week_start, now, v.remaining),
+        day: window(done_day, added_day, &day_times, day_start, now, v.remaining),
+        week: window(
+            done_week,
+            added_week,
+            &week_times,
+            week_start,
+            now,
+            v.remaining,
+        ),
     };
     Ok(v)
 }

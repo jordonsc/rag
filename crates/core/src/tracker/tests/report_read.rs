@@ -719,7 +719,15 @@ async fn an_unknown_project_gets_an_empty_report_of_the_routes_shape() {
     assert_eq!(v["window"], "7d");
     assert_eq!(
         keys(&v["velocity"]),
-        ["active_seconds", "done", "eta_days", "velocity_per_day"]
+        [
+            "active_seconds",
+            "added",
+            "adj_eta_days",
+            "adj_velocity_per_day",
+            "done",
+            "eta_days",
+            "velocity_per_day"
+        ]
     );
     assert_eq!(
         keys(&v["states"]),

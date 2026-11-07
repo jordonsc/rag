@@ -43,8 +43,24 @@ function velocity(overrides: Partial<Velocity> = {}): Velocity {
     deferred: 4,
     remaining: 51,
     windows: {
-      '24h': { done: 2, active_seconds: 7_200, velocity_per_day: 24, eta_days: 3 },
-      '7d': { done: 20, active_seconds: 216_000, velocity_per_day: 8, eta_days: 7 },
+      '24h': {
+        done: 2,
+        active_seconds: 7_200,
+        velocity_per_day: 24,
+        eta_days: 3,
+        added: 4,
+        adj_velocity_per_day: -24,
+        adj_eta_days: 'infinite',
+      },
+      '7d': {
+        done: 20,
+        active_seconds: 216_000,
+        velocity_per_day: 8,
+        eta_days: 7,
+        added: 5,
+        adj_velocity_per_day: 6,
+        adj_eta_days: 3.2,
+      },
     },
     ...overrides,
   };
@@ -125,6 +141,8 @@ describe('the row', () => {
     expect(within(row).getByRole('listitem', { name: 'In progress: 3' })).toBeInTheDocument();
     expect(within(row).getByRole('listitem', { name: 'Pending: 48' })).toBeInTheDocument();
     expect(within(row).getByRole('listitem', { name: 'ETA: 7 days' })).toBeInTheDocument();
+    expect(within(row).getByRole('listitem', { name: 'Adj. Velocity: 6/day' })).toBeInTheDocument();
+    expect(within(row).getByRole('listitem', { name: 'Adj. ETA: 3.2 days' })).toBeInTheDocument();
     expect(windowChoice('7 d')).toHaveAttribute('aria-checked', 'true');
 
     const header = screen.getByRole('heading', { name: 'demo', level: 1 }).closest('header')!;
@@ -157,6 +175,12 @@ describe('the row', () => {
     expect(windowChoice('24 h')).toHaveAttribute('aria-checked', 'true');
     expect(within(bar()).getByRole('listitem', { name: 'Velocity: 24/day' })).toBeInTheDocument();
     expect(within(bar()).getByRole('listitem', { name: 'ETA: 3 days' })).toBeInTheDocument();
+    // The adjusted figures follow the pill: a growing queue, negative and never done.
+    expect(
+      within(bar()).getByRole('listitem', { name: 'Adj. Velocity: -24/day' }),
+    ).toBeInTheDocument();
+    const adjEta = within(bar()).getByRole('listitem', { name: 'Adj. ETA: infinite' });
+    expect(within(adjEta).getByText('∞')).toBeInTheDocument();
     expect(within(bar()).getByRole('listitem', { name: 'In progress: 3' })).toBeInTheDocument();
     expect(within(bar()).getByRole('listitem', { name: 'Pending: 48' })).toBeInTheDocument();
 
@@ -244,8 +268,24 @@ describe('the wording', () => {
       blocked: 0,
       remaining: 0,
       windows: {
-        '24h': { done: 2, active_seconds: 7_200, velocity_per_day: 24, eta_days: 0 },
-        '7d': { done: 20, active_seconds: 216_000, velocity_per_day: 8, eta_days: 0 },
+        '24h': {
+          done: 2,
+          active_seconds: 7_200,
+          velocity_per_day: 24,
+          eta_days: 0,
+          added: 0,
+          adj_velocity_per_day: 24,
+          adj_eta_days: 0,
+        },
+        '7d': {
+          done: 20,
+          active_seconds: 216_000,
+          velocity_per_day: 8,
+          eta_days: 0,
+          added: 0,
+          adj_velocity_per_day: 8,
+          adj_eta_days: 0,
+        },
       },
     });
     open();
@@ -255,7 +295,14 @@ describe('the wording', () => {
   });
 
   it('shows “—” for an unknown ETA, read as “unknown”', async () => {
-    current = week({ done: 0, velocity_per_day: 0, eta_days: null });
+    current = week({
+      done: 0,
+      velocity_per_day: 0,
+      eta_days: null,
+      added: 0,
+      adj_velocity_per_day: 0,
+      adj_eta_days: null,
+    });
     open();
     const eta = within(await findBar()).getByRole('listitem', { name: 'ETA: unknown' });
     expect(within(eta).getByText('—')).toBeInTheDocument();
@@ -292,16 +339,20 @@ describe('the wording', () => {
     // Names first: what a screen reader that takes the name hears.
     expect(items.map((li) => li.getAttribute('aria-label'))).toEqual([
       'Velocity: 8/day',
+      'Adj. Velocity: 6/day',
       'In progress: 3',
       'Pending: 48',
       'ETA: 7 days',
+      'Adj. ETA: 3.2 days',
     ]);
     // The content reads the same (a hidden colon), for one that reads it.
     expect(items.map((li) => li.textContent)).toEqual([
       'Velocity: 8/day',
+      'Adj. Velocity: 6/day',
       'In progress: 3',
       'Pending: 48',
       'ETA: 7 days',
+      'Adj. ETA: 3.2 days',
     ]);
     // The value is its own element, the unit apart inside it.
     const velocity = items[0]!;
@@ -321,6 +372,16 @@ describe('the wording', () => {
       'title',
       'Remaining ÷ velocity, in days of active work at this pace. ' +
         'An idle project takes longer in calendar days.',
+    );
+    expect(within(row).getByRole('listitem', { name: 'Adj. Velocity: 6/day' })).toHaveAttribute(
+      'title',
+      'Velocity less the tickets added: 20 done and 5 added in the last 7 days ' +
+        '(24 h: 2 done and 4 added), over the same active time. Negative while the queue grows.',
+    );
+    expect(within(row).getByRole('listitem', { name: 'Adj. ETA: 3.2 days' })).toHaveAttribute(
+      'title',
+      'Remaining ÷ adjusted velocity, in days of active work at this pace. ' +
+        'Infinite while tickets are added as fast as they are done, or faster.',
     );
     expect(within(row).getByRole('listitem', { name: 'In progress: 3' })).toHaveAttribute(
       'title',
@@ -366,8 +427,24 @@ describe('when the read fails, or there is nothing to count', () => {
       deferred: 0,
       remaining: 0,
       windows: {
-        '24h': { done: 0, active_seconds: 0, velocity_per_day: 0, eta_days: 0 },
-        '7d': { done: 0, active_seconds: 0, velocity_per_day: 0, eta_days: 0 },
+        '24h': {
+          done: 0,
+          active_seconds: 0,
+          velocity_per_day: 0,
+          eta_days: 0,
+          added: 0,
+          adj_velocity_per_day: 0,
+          adj_eta_days: 0,
+        },
+        '7d': {
+          done: 0,
+          active_seconds: 0,
+          velocity_per_day: 0,
+          eta_days: 0,
+          added: 0,
+          adj_velocity_per_day: 0,
+          adj_eta_days: 0,
+        },
       },
     });
     open();
@@ -385,8 +462,24 @@ describe('when the read fails, or there is nothing to count', () => {
       deferred: 1,
       remaining: 0,
       windows: {
-        '24h': { done: 0, active_seconds: 0, velocity_per_day: 0, eta_days: 0 },
-        '7d': { done: 0, active_seconds: 0, velocity_per_day: 0, eta_days: 0 },
+        '24h': {
+          done: 0,
+          active_seconds: 0,
+          velocity_per_day: 0,
+          eta_days: 0,
+          added: 0,
+          adj_velocity_per_day: 0,
+          adj_eta_days: 0,
+        },
+        '7d': {
+          done: 0,
+          active_seconds: 0,
+          velocity_per_day: 0,
+          eta_days: 0,
+          added: 0,
+          adj_velocity_per_day: 0,
+          adj_eta_days: 0,
+        },
       },
     });
     open();
