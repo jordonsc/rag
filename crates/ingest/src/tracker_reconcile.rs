@@ -121,7 +121,7 @@ fn doc_hash(d: &DocForIndex) -> String {
     ))
 }
 
-/// An item's searchable text: its title, what it is, its labels (when it has
+/// An item's searchable text: its title, what it is (and whether it is blocked), its labels (when it has
 /// any), its phase (when it has one, saying whether it is frozen there: frozen
 /// tickets are searchable, spec:roadmap D28), its body and its notes.
 pub fn item_text(i: &ItemForIndex) -> String {
@@ -129,6 +129,12 @@ pub fn item_text(i: &ItemForIndex) -> String {
         "{}\n{} {} · {} · {}",
         i.title, i.project, i.id, i.item_type, i.status
     );
+    // Blocked (rag-t0072): in the text, so a block or unblock changes the hash
+    // and rewrites the point with its `blocked` payload; an unblocked item's
+    // text is as it was, so adding this re-indexed only the blocked ones.
+    if i.blocked {
+        t.push_str(" · blocked");
+    }
     if !i.labels.is_empty() {
         t.push_str("\nLabels: ");
         t.push_str(&i.labels.join(", "));
@@ -203,6 +209,7 @@ pub fn doc_unit(d: &DocForIndex, hash: String, chunker: &Chunker) -> anyhow::Res
                 kind: d.kind.as_str().into(),
                 item_type: None,
                 status: None,
+                blocked: None,
                 title: d.title.clone(),
                 revision: Some(d.revision),
                 citation: citation.clone(),
@@ -243,6 +250,7 @@ pub fn item_unit(
                 kind: "item".into(),
                 item_type: Some(i.item_type.as_str().into()),
                 status: Some(i.status.as_str().into()),
+                blocked: Some(i.blocked),
                 title: i.title.clone(),
                 revision: None,
                 citation: i.id.clone(),
@@ -283,6 +291,7 @@ pub fn phase_unit(
                 kind: "phase".into(),
                 item_type: None,
                 status: Some(p.state.as_str().into()),
+                blocked: None,
                 title: p.title.clone(),
                 revision: None,
                 citation: p.id.clone(),

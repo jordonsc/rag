@@ -31,6 +31,9 @@ pub struct ItemForIndex {
     pub project: String,
     pub item_type: ItemType,
     pub status: ItemStatus,
+    /// Whether it is blocked (rag-t0072): the search filters on it, and it is
+    /// in the item's text, so a block or unblock re-indexes the item.
+    pub blocked: bool,
     pub title: String,
     pub body: String,
     /// Its labels (rag-t0027), sorted case-insensitively; empty when none.
@@ -95,6 +98,7 @@ type ItemIndexRow = (
     String,
     Option<String>,
     i64,
+    i64,
 );
 
 impl TrackerStore {
@@ -152,13 +156,13 @@ impl TrackerStore {
         }
 
         let rows: Vec<ItemIndexRow> = sqlx::query_as(
-            "SELECT i.id, i.project, i.type, i.status, i.title, i.body, p.title, i.frozen \
-             FROM items i LEFT JOIN phases p ON p.id = i.phase_id ORDER BY i.id",
+            "SELECT i.id, i.project, i.type, i.status, i.title, i.body, p.title, i.frozen, \
+             i.blocked FROM items i LEFT JOIN phases p ON p.id = i.phase_id ORDER BY i.id",
         )
         .fetch_all(&mut *tx)
         .await?;
         let mut items = Vec::with_capacity(rows.len());
-        for (id, project, item_type, status, title, body, phase_title, frozen) in rows {
+        for (id, project, item_type, status, title, body, phase_title, frozen, blocked) in rows {
             let notes = notes.remove(&id).unwrap_or_default();
             let labels = labels.remove(&id).unwrap_or_default();
             let phase = phase_title.map(|title| ItemPhase {
@@ -170,6 +174,7 @@ impl TrackerStore {
                 project,
                 item_type: item_type.parse()?,
                 status: status.parse()?,
+                blocked: blocked != 0,
                 title,
                 body,
                 labels,
@@ -294,6 +299,7 @@ mod tests {
         assert_eq!(snap.items.len(), 1);
         let i = &snap.items[0];
         assert_eq!(i.status, ItemStatus::InProgress);
+        assert!(!i.blocked);
         assert_eq!(i.item_type, ItemType::Recon);
         assert_eq!(i.labels, vec!["Heat", "physics"]);
         // The status note and the bare note, in order; not the generated create

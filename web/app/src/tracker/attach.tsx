@@ -237,7 +237,7 @@ export function AttachButton({ attacher, target }: AttachButtonProps) {
       </Button>
       <input
         ref={picker}
-        className={styles.picker}
+        className={styles.filePicker}
         type="file"
         multiple
         tabIndex={-1}

@@ -1200,8 +1200,11 @@ indexed as **`corpus = tracker`** by `rag-ingest reconcile-tracker`, which every
 ```
 `filters` is optional and each of its fields too: `corpus` is `code`, `wiki`, `ledger` or `tracker` (anything else is
 a 400); `repo` is the project; `path_prefix` matches a document's path (a ticket's `rel_path` is its id, so a path
-prefix leaves tickets out). `rerank` (default `true`) and `top_k` (default 8) as for any search. 503 without a Voyage
-key.
+prefix leaves tickets out). **`ticket_states`** (rag-t0072), with `corpus: "tracker"` only (on another corpus it is a
+400), is a list of ticket states: any of `pending`, `in_progress`, `review`, `deferred`, `failed`, `done`, `cancelled`
+and `blocked` (anything else is a 400). A ticket passes when its status is listed, or `blocked` is listed and it is
+blocked; documents and phases are no tickets and always pass. Absent or empty, every ticket passes. `rerank` (default
+`true`) and `top_k` (default 8) as for any search. 503 without a Voyage key.
 
 Response: `{"query", "top_k", "reranked", "candidates", "timings", "results": [hit, …]}`. A tracker hit:
 
@@ -1212,17 +1215,19 @@ Response: `{"query", "top_k", "reranked", "candidates", "timings", "results": [h
 | `rel_path` | the document's path, or the ticket's id |
 | `language` | `"markdown"` |
 | `start_line`, `end_line` | the chunk's 1-based line range in the document body; `0` on tickets |
-| `text` | the chunk, after a heading line `<title> · <project>:<path>`; a ticket's text is its title, `<project> <id> · <type> · <status>`, `Labels: …` when it has labels (rag-t0027), its body and its `Notes:` |
+| `text` | the chunk, after a heading line `<title> · <project>:<path>`; a ticket's text is its title, `<project> <id> · <type> · <status>` (then ` · blocked` when it is blocked, rag-t0072), `Labels: …` when it has labels (rag-t0027), its body and its `Notes:` |
 | `title` | the document's or ticket's title |
 | `kind` | `spec`, `milestone`, `concept`, `doc` or `item` |
 | `tracker_id` | the document id (`ubu-d0007`) or ticket id (`ubu-t0042`) |
 | `revision` | the document revision the chunk is from (documents only) |
 | `type`, `status` | the ticket's type and status (tickets only) |
+| `blocked` | whether the ticket is blocked (tickets only, rag-t0072; absent on a point indexed before it, which reads as not blocked: a block changes a ticket's text, so a blocked ticket's point always carries it) |
 | `citation` | **`<project>:<path>@r<revision>`** for a document chunk, the ticket id for a ticket |
 | `ann_score`, `rerank_score` | as for any hit |
 | `path` | `""` (tracker points have no file) |
 
-A web filter is this route with `"filters": {"corpus": "tracker", "repo": <project>}`; a hit links to
+A web filter is this route with `"filters": {"corpus": "tracker", "repo": <project>, "ticket_states": […]}` (the
+search page's project select lists `GET /tracker/projects`, and its ticket states default to pending and blocked); a hit links to
 `/projects/{project}/doc/{rel_path}` for a document and `/projects/{project}/ticket/{tracker_id}` for a ticket.
 
 

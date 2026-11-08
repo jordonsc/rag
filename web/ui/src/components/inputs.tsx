@@ -406,6 +406,9 @@ export interface CheckboxSetProps {
   invalid?: boolean;
   id?: string;
   'aria-describedby'?: string;
+  /** The group's name, when a visible label elsewhere names it. */
+  'aria-labelledby'?: string;
+  'aria-label'?: string;
 }
 
 /**

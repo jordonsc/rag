@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 
 use rag_core::error::Error;
 use rag_core::tracker::{
-    Actor, Approval, Edit, ItemPhase, ItemStatus, ItemType, ItemUpdate, NewConcept, NewDocument,
-    NewItem, NewPhase, PhaseState, PhaseUpdate, Place, Surface, TrackerStore,
+    Actor, Approval, BlockReason, Edit, ItemPhase, ItemStatus, ItemType, ItemUpdate, NewConcept,
+    NewDocument, NewItem, NewPhase, PhaseState, PhaseUpdate, Place, Surface, TrackerStore,
 };
 use uuid::Uuid;
 
@@ -463,6 +463,36 @@ async fn a_deferred_item_stays_indexed_with_its_status() {
     assert!(p[0].text.contains("· deferred"), "{}", p[0].text);
 }
 
+#[tokio::test]
+async fn a_block_rewrites_the_item_with_blocked_in_its_text_and_payload() {
+    // rag-t0072: the search's ticket-state filter reads `blocked` off the point.
+    let f = fx().await;
+    let item = f.item("Fit the solar film").await;
+    f.reconcile().await.unwrap();
+    assert!(f.index.of(&item).iter().all(|x| x.blocked == Some(false)));
+    let block = |reason: Option<BlockReason>, blocked: Option<bool>| ItemUpdate {
+        block_reason: reason,
+        blocked,
+        ..Default::default()
+    };
+    f.store
+        .update_item(&item, block(Some(BlockReason::Redesign), None), &actor())
+        .await
+        .unwrap();
+    assert_eq!(f.reconcile().await.unwrap().changed.len(), 1);
+    let p = f.index.of(&item);
+    assert!(p.iter().all(|x| x.blocked == Some(true)), "{p:#?}");
+    assert!(p[0].text.contains("· pending · blocked"), "{}", p[0].text);
+    f.store
+        .update_item(&item, block(None, Some(false)), &actor())
+        .await
+        .unwrap();
+    assert_eq!(f.reconcile().await.unwrap().changed.len(), 1);
+    let p = f.index.of(&item);
+    assert!(p.iter().all(|x| x.blocked == Some(false)), "{p:#?}");
+    assert!(!p[0].text.contains("blocked"), "{}", p[0].text);
+}
+
 #[test]
 fn item_text_carries_what_the_item_is() {
     let i = ItemForIndex {
@@ -470,6 +500,7 @@ fn item_text_carries_what_the_item_is() {
         project: "ubu".into(),
         item_type: ItemType::Gate,
         status: ItemStatus::Failed,
+        blocked: false,
         title: "Standard gate".into(),
         body: String::new(),
         labels: Vec::new(),
@@ -489,6 +520,7 @@ fn item_text_carries_its_labels_only_when_it_has_some() {
         project: "ubu".into(),
         item_type: ItemType::Dev,
         status: ItemStatus::Pending,
+        blocked: false,
         title: "Gas buoyancy".into(),
         body: "Parcels rise.".into(),
         labels: vec!["Gases".into(), "Physics".into()],
@@ -518,6 +550,7 @@ fn a_ticket() -> ItemForIndex {
         project: "ubu".into(),
         item_type: ItemType::Dev,
         status: ItemStatus::Pending,
+        blocked: false,
         title: "Wolves".into(),
         body: "Pack hunting.".into(),
         labels: vec!["Creatures".into()],

@@ -285,7 +285,23 @@ struct FilterBody {
     repo: Option<String>,
     language: Option<String>,
     path_prefix: Option<String>,
+    /// The tracker's ticket states (rag-t0072): item statuses and `blocked`,
+    /// with `corpus: "tracker"` only. Absent or empty: every ticket.
+    #[serde(default)]
+    ticket_states: Vec<String>,
 }
+
+/// What `filters.ticket_states` takes: every item status, and `blocked`.
+const TICKET_STATES: &[&str] = &[
+    "pending",
+    "in_progress",
+    "review",
+    "deferred",
+    "failed",
+    "done",
+    "cancelled",
+    "blocked",
+];
 
 /// `POST /search` response. `results` carry both the ANN score and (when reranked)
 /// the rerank score; cite via `repo` + `rel_path` + line range.
@@ -914,6 +930,7 @@ async fn ledger_search(
         path_prefix: None,
         topic_type: body.topic_type,
         status: body.status,
+        ticket_states: Vec::new(),
     };
     let requested_top_k = body.top_k.unwrap_or(0);
     let query = body.query.clone();
@@ -1074,6 +1091,24 @@ fn parse_filters(f: Option<FilterBody>) -> Result<SearchFilters, ApiError> {
             ))
         })?),
     };
+    if let Some(bad) = f
+        .ticket_states
+        .iter()
+        .find(|s| !TICKET_STATES.contains(&s.as_str()))
+    {
+        return Err(ApiError::BadRequest(format!(
+            "invalid ticket state {bad:?} (expected one of {})",
+            TICKET_STATES.join(", ")
+        )));
+    }
+    if !f.ticket_states.is_empty() && corpus != Some(Corpus::Tracker) {
+        return Err(ApiError::BadRequest(
+            "ticket_states filters tracker tickets: it needs corpus \"tracker\"".into(),
+        ));
+    }
+    let mut ticket_states = f.ticket_states;
+    ticket_states.sort_unstable();
+    ticket_states.dedup();
     Ok(SearchFilters {
         corpus,
         repo: f.repo,
@@ -1081,6 +1116,7 @@ fn parse_filters(f: Option<FilterBody>) -> Result<SearchFilters, ApiError> {
         path_prefix: f.path_prefix,
         topic_type: None,
         status: None,
+        ticket_states,
     })
 }
 
@@ -1158,12 +1194,45 @@ mod tests {
     use super::*;
 
     fn corpus(name: &str) -> Result<SearchFilters, ApiError> {
+        states(name, &[])
+    }
+
+    fn states(name: &str, states: &[&str]) -> Result<SearchFilters, ApiError> {
         parse_filters(Some(FilterBody {
             corpus: Some(name.into()),
             repo: None,
             language: None,
             path_prefix: None,
+            ticket_states: states.iter().map(|s| s.to_string()).collect(),
         }))
+    }
+
+    /// rag-t0072: the tracker's ticket states, deduplicated; a word that is no
+    /// state, or the filter on another corpus, is a 400.
+    #[test]
+    fn search_filters_take_ticket_states_on_the_tracker_only() {
+        let f = states("tracker", &["pending", "blocked", "pending"])
+            .ok()
+            .unwrap();
+        assert_eq!(f.ticket_states, ["blocked", "pending"]);
+        assert!(corpus("tracker").ok().unwrap().ticket_states.is_empty());
+        match states("tracker", &["queued"]) {
+            Err(ApiError::BadRequest(m)) => assert!(m.contains("\"queued\""), "{m}"),
+            _ => panic!("an unknown state must be a 400"),
+        }
+        match states("ledger", &["pending"]) {
+            Err(ApiError::BadRequest(m)) => assert!(m.contains("tracker"), "{m}"),
+            _ => panic!("ticket states on the ledger must be a 400"),
+        }
+        // The body names it `ticket_states`, and leaving it out is no filter.
+        let body: SearchBody = serde_json::from_value(serde_json::json!({
+            "query": "q", "filters": {"corpus": "tracker", "ticket_states": ["review"]}
+        }))
+        .unwrap();
+        assert_eq!(
+            parse_filters(body.filters).ok().unwrap().ticket_states,
+            ["review"]
+        );
     }
 
     /// `POST /search` takes `corpus: "tracker"` (m05 TS-02), beside the others.

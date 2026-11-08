@@ -459,10 +459,11 @@ specs and concepts move out of the project's repository into it, keeping their p
   the ledger's style. `rag-serve` touches a trigger file after each successful tracker write
   (`server.tracker_reindex_trigger`), so a change is searchable within seconds; a 15-minute
   timer is the backstop. `search_corpus` takes `corpus: "tracker"` (and `repo` for the
-  project), as does `POST /search` (`"filters": {"corpus": "tracker"}`). A tracker hit
+  project), as does `POST /search` (`"filters": {"corpus": "tracker"}`, and `"ticket_states"`:
+  statuses and `blocked`, a ticket passing on any one, documents and phases always: rag-t0072). A tracker hit
   carries `repo` (the project), `rel_path` (the document path, or the ticket or phase id), `title`,
   `kind` (`spec`, `milestone`, `concept`, `doc`, `item` or `phase`), `tracker_id` (what `tracker_get`
-  takes), `revision`, `type` and `status` (tickets; a phase's `status` is its state), a line range (documents), and
+  takes), `revision`, `type`, `status` and `blocked` (tickets; a phase's `status` is its state), a line range (documents), and
   **`citation`**: `<project>:<path>@r<revision>` for a document chunk, the phase id for a phase, the ticket id for a
   ticket. The corpus sync never purges tracker or ledger points.
 

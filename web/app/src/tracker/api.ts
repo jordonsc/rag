@@ -74,6 +74,7 @@ import type {
   SpecsResponse,
   TrackerAuthor,
   Report,
+  TicketState,
   TrackerSearchResponse,
   Velocity,
   VelocityWindow,
@@ -969,20 +970,30 @@ export const TRACKER_CORPUS = 'tracker';
  * with `filters.corpus = "tracker"` (D13, m05), and `repo` for one project.
  * An embed, a vector search and a rerank: call it on a submitted query.
  */
+/**
+ * The tracker's search. `states` narrows the tickets (rag-t0072): item
+ * statuses and `blocked`, a ticket passing on any one; documents and phases are
+ * no tickets and always pass. Absent or empty: every ticket.
+ */
 export function searchTracker(
-  req: { query: string; project?: string; top_k?: number },
+  req: { query: string; project?: string; top_k?: number; states?: readonly TicketState[] },
   signal?: AbortSignal,
 ): Promise<TrackerSearchResponse> {
   if (req.query.trim() === '') {
     refuse('A search needs something to look for.');
   }
   const project = req.project?.trim() ?? '';
+  const states = req.states ?? [];
   return request<TrackerSearchResponse>('/search', {
     signal,
     json: {
       query: req.query,
       ...(req.top_k === undefined ? {} : { top_k: req.top_k }),
-      filters: { corpus: TRACKER_CORPUS, ...(project === '' ? {} : { repo: project }) },
+      filters: {
+        corpus: TRACKER_CORPUS,
+        ...(project === '' ? {} : { repo: project }),
+        ...(states.length === 0 ? {} : { ticket_states: [...states] }),
+      },
     },
   });
 }

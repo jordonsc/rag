@@ -187,6 +187,10 @@ pub struct TrackerPayload {
     /// An item's status or a phase's state; absent on documents.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// Whether an item is blocked (rag-t0072: the search's ticket-state filter);
+    /// absent on documents and phases.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<bool>,
     /// The document's, item's or phase's title.
     pub title: String,
     /// The document revision this chunk is from; absent on items.
@@ -259,6 +263,11 @@ pub struct SearchHit {
     /// The tracker document revision the chunk is from (document hits only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision: Option<i64>,
+    /// Whether a tracker item is blocked (item hits only, rag-t0072). Absent on a
+    /// point indexed before the field, which reads as not blocked: a block
+    /// changes an item's text, so a blocked item's point carries it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<bool>,
 }
 
 /// Payload filters narrowing a search. `corpus`/`repo`/`language` map to Qdrant
@@ -274,6 +283,11 @@ pub struct SearchFilters {
     pub topic_type: Option<String>,
     /// The `status` payload filter: a ledger topic's or a tracker item's status.
     pub status: Option<String>,
+    /// The tracker's ticket-state filter (rag-t0072): item statuses and
+    /// `blocked`. A ticket matches when its status is listed, or `blocked` is
+    /// listed and it is blocked; a document or phase is no ticket and always
+    /// passes. Empty: no filter.
+    pub ticket_states: Vec<String>,
 }
 
 /// A ranked, citable result. `ann_score` is the vector similarity; `rerank_score`
@@ -320,6 +334,11 @@ pub struct RankedHit {
     /// The tracker document revision the chunk is from (document hits only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision: Option<i64>,
+    /// Whether a tracker item is blocked (item hits only, rag-t0072). Absent on a
+    /// point indexed before the field, which reads as not blocked: a block
+    /// changes an item's text, so a blocked item's point carries it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<bool>,
 }
 
 impl RankedHit {
@@ -344,6 +363,7 @@ impl RankedHit {
             tracker_id: h.tracker_id.clone(),
             kind: h.kind.clone(),
             revision: h.revision,
+            blocked: h.blocked,
         }
     }
 }

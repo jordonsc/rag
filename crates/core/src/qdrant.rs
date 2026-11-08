@@ -531,6 +531,10 @@ fn hit_from_payload(score: f32, p: &HashMap<String, Value>) -> SearchHit {
             Some(Kind::IntegerValue(i)) => Some(*i),
             _ => None,
         }),
+        blocked: p.get("blocked").and_then(|v| match v.kind.as_ref() {
+            Some(Kind::BoolValue(b)) => Some(*b),
+            _ => None,
+        }),
     }
 }
 
@@ -565,11 +569,49 @@ fn payload_filter(f: &SearchFilters) -> Option<Filter> {
     if let Some(s) = &f.status {
         conds.push(Condition::matches("status", s.clone()));
     }
+    if let Some(t) = ticket_states_filter(&f.ticket_states) {
+        conds.push(t.into());
+    }
     if conds.is_empty() {
         None
     } else {
         Some(Filter::must(conds))
     }
+}
+
+/// The tracker's ticket-state filter (rag-t0072), as one nested condition: a
+/// point passes when it is no ticket (a document or phase: `kind` is not
+/// `item`), when it is a ticket whose `status` is listed, or, with `blocked`
+/// listed, when it is a ticket that is blocked. `None` for an empty list.
+fn ticket_states_filter(states: &[String]) -> Option<Filter> {
+    if states.is_empty() {
+        return None;
+    }
+    let statuses: Vec<String> = states
+        .iter()
+        .filter(|s| s.as_str() != "blocked")
+        .cloned()
+        .collect();
+    let mut any = vec![Filter::must_not([Condition::matches("kind", "item".to_string())]).into()];
+    if !statuses.is_empty() {
+        any.push(
+            Filter::must([
+                Condition::matches("kind", "item".to_string()),
+                Condition::matches("status", statuses),
+            ])
+            .into(),
+        );
+    }
+    if states.iter().any(|s| s == "blocked") {
+        any.push(
+            Filter::must([
+                Condition::matches("kind", "item".to_string()),
+                Condition::matches("blocked", true),
+            ])
+            .into(),
+        );
+    }
+    Some(Filter::should(any))
 }
 
 /// `field == value AND hash_field != keep_hash`.
@@ -653,6 +695,7 @@ mod tests {
             kind: "concept".into(),
             item_type: None,
             status: None,
+            blocked: None,
             title: "Power".into(),
             revision: Some(4),
             citation: "ubu:concepts/power.md@r4".into(),
@@ -684,6 +727,47 @@ mod tests {
         .unwrap();
         let hit = hit_from_payload(0.1, &code.into());
         assert!(hit.citation.is_none() && hit.tracker_id.is_none() && hit.revision.is_none());
+        assert_eq!(hit.blocked, None);
+        // An item's `blocked` reads back (rag-t0072).
+        let item = Payload::try_from(serde_json::json!({
+            "corpus": "tracker", "repo": "ubu", "rel_path": "ubu-t0001", "kind": "item",
+            "status": "pending", "blocked": true, "text": "x"
+        }))
+        .unwrap();
+        assert_eq!(hit_from_payload(0.1, &item.into()).blocked, Some(true));
+    }
+
+    /// rag-t0072: documents and phases always pass; a ticket passes on a listed
+    /// status, or on `blocked` when it is blocked; nothing listed is no filter.
+    #[test]
+    fn the_ticket_state_filter_passes_non_tickets_and_listed_tickets() {
+        assert!(ticket_states_filter(&[]).is_none());
+        let states = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let f = ticket_states_filter(&states(&["pending", "blocked"])).unwrap();
+        assert!(f.must.is_empty() && f.must_not.is_empty());
+        assert_eq!(
+            f.should.len(),
+            3,
+            "not a ticket, a listed status, or blocked"
+        );
+        let dbg = format!("{f:?}");
+        assert!(dbg.contains("\"pending\"") && dbg.contains("\"blocked\""));
+        assert!(!dbg.contains("\"done\""));
+        // Statuses alone: no blocked branch.
+        let f = ticket_states_filter(&states(&["done", "cancelled"])).unwrap();
+        assert_eq!(f.should.len(), 2);
+        assert!(!format!("{f:?}").contains("\"blocked\""));
+        // Blocked alone: no status branch.
+        let f = ticket_states_filter(&states(&["blocked"])).unwrap();
+        assert_eq!(f.should.len(), 2);
+        // Joined to the other filters as one condition.
+        let all = payload_filter(&SearchFilters {
+            corpus: Some(Corpus::Tracker),
+            ticket_states: states(&["pending"]),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(all.must.len(), 2);
     }
 
     #[test]

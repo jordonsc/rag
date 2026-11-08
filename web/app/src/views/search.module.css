@@ -28,6 +28,21 @@
   min-width: 8rem;
 }
 
+/* The tracker's ticket-state filter (rag-t0072): a caption and its boxes on
+   one line, wrapping under the bar on a phone. */
+.states {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--rag-space-3);
+  margin-top: calc(-1 * var(--rag-space-2));
+}
+
+.statesLabel {
+  color: var(--rag-dim);
+  font-size: var(--rag-text-s);
+}
+
 .hint {
   margin: 0;
   color: var(--rag-dim);

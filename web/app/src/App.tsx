@@ -1,8 +1,10 @@
+import { useEffect } from 'react';
 import { Icon, TopNav, type TopNavItem } from '@rag/ui';
 import { Route, Routes, useLocation, useNavigate } from 'react-router';
 
 import styles from './App.module.css';
 import { IdentityControl } from './identity';
+import { appOfPath, storeLastApp } from './lastApp';
 import { OpenTopic } from './ledger/OpenTopic';
 import { ArchivedView } from './views/ArchivedView';
 import { CreateView } from './views/CreateView';
@@ -103,6 +105,14 @@ export function App() {
   const navigate = useNavigate();
   const location = useLocation();
   const tracker = inTracker(location.pathname);
+
+  // Remember which application is open, for Search's default corpus (rag-t0072).
+  useEffect(() => {
+    const app = appOfPath(location.pathname);
+    if (app !== null) {
+      storeLastApp(app);
+    }
+  }, [location.pathname]);
 
   return (
     <div className={styles.shell}>

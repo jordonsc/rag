@@ -851,6 +851,18 @@ describe('New concept', () => {
 
 // ---- Search: the tracker corpus (TC-07) -------------------------------------
 
+/** A tracker search answer with no hits. */
+function emptySearch(query: string) {
+  return {
+    query,
+    top_k: 8,
+    reranked: true,
+    candidates: 0,
+    timings: { embed_ms: 1, search_ms: 1, rerank_ms: 1, total_ms: 3 },
+    results: [] as unknown[],
+  };
+}
+
 describe('searching the tracker', () => {
   it('sends corpus tracker, draws document and item hits, and opens one', async () => {
     const user = userEvent.setup();
@@ -901,9 +913,10 @@ describe('searching the tracker', () => {
     mount(<SearchView />, { route: '/?q=power+plant&corpus=tracker&repo=demo' });
 
     await screen.findByText('2 results in the tracker');
+    // No `states` in the address: pending and blocked tickets (rag-t0072).
     expect(server.last('/search', 'POST').body).toEqual({
       query: 'power plant',
-      filters: { corpus: 'tracker', repo: 'demo' },
+      filters: { corpus: 'tracker', repo: 'demo', ticket_states: ['pending', 'blocked'] },
     });
     // The ledger's type and status filters do not apply here.
     expect(screen.queryByRole('combobox', { name: 'Topic type' })).not.toBeInTheDocument();
@@ -951,13 +964,128 @@ describe('searching the tracker', () => {
     expect(screen.getByTestId('address')).toHaveTextContent('/projects/demo/roadmap/demo-p0001');
   });
 
-  it('offers the corpus as a filter and keeps the ledger as the default', async () => {
+  it('offers the corpus as a filter, the tracker by default', async () => {
     const user = userEvent.setup();
     mount(<SearchView />, { route: '/' });
     const corpus = screen.getByRole('combobox', { name: 'Corpus' });
-    expect(corpus).toHaveValue('');
-    await user.selectOptions(corpus, 'tracker');
+    expect(corpus).toHaveValue('tracker');
     await user.type(screen.getByRole('searchbox', { name: 'Search the tracker' }), 'power{enter}');
-    expect(screen.getByTestId('address')).toHaveTextContent('/?q=power&corpus=tracker');
+    // The corpus and the states are always written (rag-t0072).
+    expect(screen.getByTestId('address')).toHaveTextContent(
+      '/?q=power&corpus=tracker&states=pending%2Cblocked',
+    );
+    await user.selectOptions(corpus, 'ledger');
+    expect(screen.getByRole('searchbox', { name: 'Search the ledger' })).toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Ticket status' })).not.toBeInTheDocument();
+  });
+
+  it('lists the projects that use the tracker in a select (rag-t0072)', async () => {
+    const summary = (name: string) => ({ name, created_at: STAMP, queued: 1, blocked: 0 });
+    server.onceOn('/tracker/projects', { body: { projects: [summary('zeta'), summary('alpha')] } });
+    mount(<SearchView />, { route: '/?corpus=tracker' });
+    const project = screen.getByRole('combobox', { name: 'Project' });
+    await waitFor(() =>
+      expect(
+        within(project)
+          .getAllByRole('option')
+          .map((o) => o.textContent),
+      ).toEqual(['Any project', 'alpha', 'zeta']),
+    );
+    expect(project).toHaveValue('');
+    // The ledger's project stays a text box: its projects are not the tracker's.
+    expect(screen.queryByText(/Project is matched exactly/)).not.toBeInTheDocument();
+  });
+
+  it('filters tickets by state, pending and blocked by default, several at once (rag-t0072)', async () => {
+    const user = userEvent.setup();
+    server.on('/search', { body: emptySearch('power') }, 'POST');
+    mount(<SearchView />, { route: '/?corpus=tracker' });
+    const states = screen.getByRole('group', { name: 'Ticket status' });
+    const box = (name: string) => within(states).getByRole('checkbox', { name });
+    expect(
+      within(states)
+        .getAllByRole('checkbox')
+        .map((c) => c.parentElement?.textContent),
+    ).toEqual([
+      'Pending',
+      'Blocked',
+      'In progress',
+      'Review',
+      'Deferred',
+      'Failed',
+      'Done',
+      'Cancelled',
+    ]);
+    expect(box('Pending')).toBeChecked();
+    expect(box('Blocked')).toBeChecked();
+    expect(box('Review')).not.toBeChecked();
+
+    await user.click(box('Review'));
+    await user.click(box('Pending'));
+    await user.type(screen.getByRole('searchbox', { name: 'Search the tracker' }), 'power{enter}');
+    expect(screen.getByTestId('address')).toHaveTextContent('states=blocked%2Creview');
+    await waitFor(() =>
+      expect(server.last('/search', 'POST').body).toEqual({
+        query: 'power',
+        filters: { corpus: 'tracker', ticket_states: ['blocked', 'review'] },
+      }),
+    );
+  });
+
+  it('searches tickets in every state when none is ticked (rag-t0072)', async () => {
+    server.on('/search', { body: emptySearch('power') }, 'POST');
+    mount(<SearchView />, { route: '/?q=power&corpus=tracker&states=' });
+    await waitFor(() =>
+      expect(server.last('/search', 'POST').body).toEqual({
+        query: 'power',
+        filters: { corpus: 'tracker' },
+      }),
+    );
+    const states = screen.getByRole('group', { name: 'Ticket status' });
+    expect(
+      within(states)
+        .getAllByRole('checkbox')
+        .every((c) => !(c as HTMLInputElement).checked),
+    ).toBe(true);
+  });
+
+  it('shows a ticket hit’s state, blocked winning over pending (rag-t0072)', async () => {
+    const hit = (id: string, title: string, status: string, blocked?: boolean) => ({
+      corpus: 'tracker',
+      repo: 'demo',
+      rel_path: id,
+      start_line: 0,
+      end_line: 0,
+      text: title,
+      ann_score: 0.5,
+      title,
+      citation: id,
+      tracker_id: id,
+      kind: 'item',
+      type: 'dev',
+      status,
+      ...(blocked === undefined ? {} : { blocked }),
+    });
+    server.on(
+      '/search',
+      {
+        body: {
+          ...emptySearch('wolves'),
+          results: [
+            hit('demo-t0001', 'Wolves', 'pending', true),
+            hit('demo-t0002', 'Sheep', 'review', false),
+            hit('demo-t0003', 'Goats', 'pending'),
+          ],
+        },
+      },
+      'POST',
+    );
+    mount(<SearchView />, { route: '/?q=wolves&corpus=tracker' });
+    await screen.findByText('3 results in the tracker');
+    const row = (title: string) => screen.getAllByText(title)[0]!.closest('tr')!;
+    expect(within(row('Wolves')).getByText('Blocked')).toBeInTheDocument();
+    expect(within(row('Sheep')).getByText('Review')).toBeInTheDocument();
+    // A point indexed before `blocked` reads as not blocked.
+    expect(within(row('Goats')).getByText('Pending')).toBeInTheDocument();
   });
 });

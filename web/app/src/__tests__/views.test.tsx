@@ -42,7 +42,7 @@ describe('SearchView', () => {
    * empty table or a permanent spinner would read as breakage.
    */
   it('opens on a prompt, asks the server nothing, and names the listing that does work', () => {
-    mount(<SearchView />);
+    mount(<SearchView />, { route: '/?corpus=ledger' });
     expect(screen.getByText('Search the ledger')).toBeInTheDocument();
     expect(screen.getByText(/there is no browse-everything list/i)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Archived topics' })).toHaveAttribute(
@@ -55,7 +55,7 @@ describe('SearchView', () => {
   it('searches on submit rather than on a keystroke', async () => {
     const user = userEvent.setup();
     server.on(/\/ledger\/search/, liveSearch());
-    mount(<SearchView />);
+    mount(<SearchView />, { route: '/?corpus=ledger' });
 
     await user.type(screen.getByLabelText('Search the ledger'), 'same origin');
     expect(globalThis.fetch).not.toHaveBeenCalled();
@@ -70,20 +70,22 @@ describe('SearchView', () => {
   it('puts the query and filters in the address so a result set can be sent to someone', async () => {
     const user = userEvent.setup();
     server.on(/\/ledger\/search/, liveSearch());
-    mount(<SearchView />);
+    mount(<SearchView />, { route: '/?corpus=ledger' });
 
     await user.type(screen.getByLabelText('Search the ledger'), 'same origin');
     await user.selectOptions(screen.getByLabelText('Status'), 'accepted');
     await user.click(screen.getByRole('button', { name: 'Search' }));
 
     await waitFor(() =>
-      expect(screen.getByTestId('address')).toHaveTextContent('q=same+origin&status=accepted'),
+      expect(screen.getByTestId('address')).toHaveTextContent(
+        'q=same+origin&corpus=ledger&status=accepted',
+      ),
     );
   });
 
   it('runs the search the address already carries', async () => {
     server.on(/\/ledger\/search/, liveSearch());
-    mount(<SearchView />, { route: '/?q=origin&repo=rag&type=decision' });
+    mount(<SearchView />, { route: '/?corpus=ledger&q=origin&repo=rag&type=decision' });
 
     await waitFor(() => expect(server.count(/\/ledger\/search/)).toBe(1));
     expect(server.last().body).toEqual({ query: 'origin', repo: 'rag', type: 'decision' });
@@ -92,7 +94,7 @@ describe('SearchView', () => {
   it('renders a hit as a row and opens the topic on a click', async () => {
     const user = userEvent.setup();
     server.on(/\/ledger\/search/, liveSearch());
-    mount(<SearchView />, { route: '/?q=origin' });
+    mount(<SearchView />, { route: '/?corpus=ledger&q=origin' });
 
     const row = await screen.findByText('Serve the viewer from the same origin');
     const table = within(screen.getByRole('table'));
@@ -108,13 +110,13 @@ describe('SearchView', () => {
 
   it('says nothing matched rather than showing an empty page', async () => {
     server.on(/\/ledger\/search/, liveSearch([]));
-    mount(<SearchView />, { route: '/?q=nothing at all' });
+    mount(<SearchView />, { route: '/?corpus=ledger&q=nothing at all' });
     expect(await screen.findByText(/Nothing matched/)).toBeInTheDocument();
   });
 
   it('reports a failed search and offers to run it again', async () => {
     server.on(/\/ledger\/search/, { error: 'retrieval is not configured' }, 503);
-    mount(<SearchView />, { route: '/?q=origin' });
+    mount(<SearchView />, { route: '/?corpus=ledger&q=origin' });
 
     expect(await screen.findByText('The search did not run.')).toBeInTheDocument();
     expect(screen.getByText('retrieval is not configured')).toBeInTheDocument();
@@ -123,7 +125,7 @@ describe('SearchView', () => {
   it('warns that the project filter is exact', () => {
     // A half-remembered project name returns nothing rather than narrowing,
     // which is indistinguishable from "there is nothing there".
-    mount(<SearchView />);
+    mount(<SearchView />, { route: '/?corpus=ledger' });
     expect(screen.getByText(/Project is matched exactly/)).toBeInTheDocument();
   });
 });
@@ -412,8 +414,9 @@ describe('App', () => {
     server.on(/\/ledger\/search/, archivedSearch());
     server.on(/\/ledger\/rag-0009$/, RECORD);
 
+    // Search opens on the tracker when no application is remembered (rag-t0072).
     const { unmount } = mount(<App />);
-    expect(screen.getByText('Search the ledger')).toBeInTheDocument();
+    expect(screen.getByText('Search the tracker')).toBeInTheDocument();
     unmount();
 
     mount(<App />, { route: '/archived' });
@@ -445,6 +448,22 @@ describe('App', () => {
     expect(
       screen.getByRole('button', { name: /Signed as alice@example\.com/ }),
     ).toBeInTheDocument();
+  });
+
+  it('opens Search on the application last open, the tracker by default (rag-t0072)', async () => {
+    const user = userEvent.setup();
+    server.on(/\/ledger\/search/, archivedSearch());
+    mount(<App />, { route: '/archived' });
+    const nav = () => within(screen.getByRole('navigation'));
+    await user.click(nav().getByRole('button', { name: 'Search' }));
+    expect(screen.getByRole('combobox', { name: 'Corpus' })).toHaveValue('ledger');
+    expect(screen.getByText('Search the ledger')).toBeInTheDocument();
+
+    await user.click(nav().getByRole('button', { name: 'Tracker' }));
+    expect(screen.getByTestId('address')).toHaveTextContent('/projects');
+    await user.click(nav().getByRole('button', { name: 'Search' }));
+    expect(screen.getByRole('combobox', { name: 'Corpus' })).toHaveValue('tracker');
+    expect(window.localStorage.getItem('rag.lastApp')).toBe('tracker');
   });
 
   it('navigates between the two listings and to the create form', async () => {

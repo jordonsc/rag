@@ -33,7 +33,10 @@
   font-size: var(--rag-text-xs);
 }
 
-/* The file picker behind the Attach button: never drawn, never focused. */
-.picker {
+/* The file picker behind the Attach button: never drawn, never focused. Not
+   `.picker`: the tests' CSS modules are unscoped (vitest.config.ts), so the
+   queue header's `.picker` was hidden by this whenever the two loaded in this
+   order. */
+.filePicker {
   display: none;
 }

@@ -208,7 +208,8 @@ describe('the id box in the shell', () => {
 
   it('refuses a short id away from a project, which has none to assume', async () => {
     const user = userEvent.setup();
-    mount(<App />);
+    // Search on the ledger, which asks the server nothing until it searches.
+    mount(<App />, { route: '/?corpus=ledger' });
 
     await user.type(bar(), 't1630{Enter}');
 
@@ -241,7 +242,8 @@ describe('the id box in the shell', () => {
    */
   it('refuses a malformed id without asking the server', async () => {
     const user = userEvent.setup();
-    mount(<App />);
+    // Search on the ledger, which asks the server nothing until it searches.
+    mount(<App />, { route: '/?corpus=ledger' });
 
     await user.type(bar(), 'demo-1{Enter}');
 
@@ -335,7 +337,7 @@ describe('the search box recognises a pasted id', () => {
   it('offers a direct route, and does not take Enter to get there', async () => {
     const user = userEvent.setup();
     server.on(/\/ledger\/search/, liveSearch());
-    mount(<App />);
+    mount(<App />, { route: '/?corpus=ledger' });
 
     await paste(user, 'demo-0001');
     // Offered on sight, before anything is submitted — a semantic search over
@@ -356,7 +358,7 @@ describe('the search box recognises a pasted id', () => {
   it('opens the topic when the direct route is the one chosen', async () => {
     const user = userEvent.setup();
     server.on(/\/ledger\/demo-0001$/, TOPIC);
-    mount(<App />);
+    mount(<App />, { route: '/?corpus=ledger' });
 
     await paste(user, 'demo-0001');
     await user.click(screen.getByRole('button', { name: 'Open demo-0001' }));
@@ -370,7 +372,7 @@ describe('the search box recognises a pasted id', () => {
     const user = userEvent.setup();
     const marked = { ...RECORD, topic_id: 'ubu-l1652', repo: 'ubu' };
     server.on(/\/ledger\/ubu-l1652$/, marked);
-    mount(<App />);
+    mount(<App />, { route: '/?corpus=ledger' });
 
     await paste(user, 'ubu-l1652');
     await user.click(screen.getByRole('button', { name: 'Open ubu-l1652' }));
@@ -381,7 +383,7 @@ describe('the search box recognises a pasted id', () => {
 
   it('stays out of the way of an ordinary question', async () => {
     const user = userEvent.setup();
-    mount(<App />);
+    mount(<App />, { route: '/?corpus=ledger' });
 
     await paste(user, 'why we chose one origin');
     expect(screen.queryByRole('button', { name: /^Open .+-\d+$/ })).not.toBeInTheDocument();

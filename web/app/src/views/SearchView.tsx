@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   Badge,
   Button,
+  CheckboxSet,
   EmptyState,
   ErrorState,
   Icon,
@@ -26,6 +27,7 @@ import {
   type TopicStatus,
   type TopicType,
 } from '../api';
+import { isApp, readLastApp, storeLastApp, type App } from '../lastApp';
 import { isTopicId, topicPath } from '../ledger/ids';
 import {
   statusLabel,
@@ -35,10 +37,26 @@ import {
   typeLabel,
   typeOptions,
 } from '../ledger/vocab';
-import { searchTracker } from '../tracker/api';
+import { listProjects, searchTracker } from '../tracker/api';
+import { StatusDot } from '../tracker/parts';
 import { docPath, itemPath, phasePath } from '../tracker/paths';
-import type { TrackerHit, TrackerSearchResponse } from '../tracker/types';
-import { docKindIcon, docKindLabel, itemTypeIcon } from '../tracker/vocab';
+import {
+  DEFAULT_TICKET_STATES,
+  ITEM_STATUSES,
+  TICKET_STATES,
+  type ItemStatus,
+  type TicketState,
+  type TrackerHit,
+  type TrackerSearchResponse,
+} from '../tracker/types';
+import {
+  docKindIcon,
+  docKindLabel,
+  dotState,
+  itemStatusLabel,
+  itemTypeIcon,
+  type DotState,
+} from '../tracker/vocab';
 import { snippet } from '../util';
 import styles from './search.module.css';
 
@@ -50,14 +68,49 @@ type Result =
   | { kind: 'error'; error: LedgerApiError };
 
 /**
- * What is searched: the ledger (the default, `POST /ledger/search`) or the
- * tracker's documents and items (`POST /search` with `corpus: "tracker"`,
- * specs/tracker D13). In the URL as `corpus=tracker`.
+ * What is searched: the tracker's documents and tickets (`POST /search` with
+ * `corpus: "tracker"`, specs/tracker D13) or the ledger (`POST /ledger/search`).
+ * In the URL as `corpus=tracker` or `corpus=ledger`; an address naming neither
+ * searches the application last open (`lastApp.ts`, rag-t0072), the tracker
+ * when none is remembered.
  */
 const CORPUS_OPTIONS = [
-  { value: '', label: 'Ledger' },
   { value: 'tracker', label: 'Tracker' },
+  { value: 'ledger', label: 'Ledger' },
 ];
+
+/** The ticket-state filter's options (rag-t0072), in the order offered. */
+const STATE_OPTIONS = TICKET_STATES.map((state) => ({
+  value: state,
+  label: itemStatusLabel(state),
+}));
+
+function isTicketState(value: string): value is TicketState {
+  return TICKET_STATES.some((state) => state === value);
+}
+
+/**
+ * The ticket states an address asks for (rag-t0072): `states=pending,blocked`.
+ * No `states` at all is the default, pending and blocked; an empty `states=`
+ * is every state, the filter off. Words that are no state are dropped.
+ */
+export function parseStates(raw: string | null): TicketState[] {
+  if (raw === null) {
+    return [...DEFAULT_TICKET_STATES];
+  }
+  const asked = raw.split(',').map((s) => s.trim());
+  // In the offered order, once each, whatever order the address had.
+  return TICKET_STATES.filter((state) => asked.includes(state));
+}
+
+/** A ticket hit's dot (rag-t0072): blocked wins as it does on the queue's rows. */
+function hitDotState(hit: TrackerHit): DotState | null {
+  const status = ITEM_STATUSES.find((s) => s === hit.status) as ItemStatus | undefined;
+  if (status === undefined) {
+    return null;
+  }
+  return dotState({ status, blocked: hit.blocked === true });
+}
 
 /** Where a tracker hit opens: its item, its phase, or its document. */
 function trackerHref(hit: TrackerHit): string | null {
@@ -112,20 +165,46 @@ export function SearchView() {
   const [params, setParams] = useSearchParams();
 
   const query = params.get('q') ?? '';
-  const corpus = params.get('corpus') === 'tracker' ? 'tracker' : '';
+  const named = params.get('corpus');
+  const corpus: App = isApp(named) ? named : readLastApp();
   const repo = params.get('repo') ?? '';
   const type = params.get('type') ?? '';
   const status = params.get('status') ?? '';
+  const statesParam = params.get('states');
+  const states = parseStates(statesParam);
+  const statesKey = states.join(',');
 
   // The controls hold a draft; only submitting writes it to the URL, and only
   // the URL starts a search. A search costs an embed, a vector lookup and a
   // rerank — roughly a second — so firing one per keystroke would be several
   // seconds of wasted work per query and a results list that flickers through
   // answers to half-typed questions.
-  const [draft, setDraft] = useState({ query, corpus, repo, type, status });
+  const [draft, setDraft] = useState({ query, corpus, repo, type, status, states });
   useEffect(() => {
-    setDraft({ query, corpus, repo, type, status });
-  }, [query, corpus, repo, type, status]);
+    setDraft({ query, corpus, repo, type, status, states: parseStates(statesKey) });
+  }, [query, corpus, repo, type, status, statesKey]);
+
+  // The projects that use the tracker, for its project select (rag-t0072). Read
+  // once, when the tracker is first chosen, so a ledger search asks for nothing
+  // it does not show; a failure leaves the select with "Any project" and
+  // whatever the address named, which is still a search that runs.
+  const [projects, setProjects] = useState<string[] | null>(null);
+  const wantProjects = draft.corpus === 'tracker' && projects === null;
+  useEffect(() => {
+    if (!wantProjects) {
+      return;
+    }
+    const controller = new AbortController();
+    listProjects(controller.signal)
+      .then((r) => setProjects(r.projects.map((p) => p.name).sort((a, b) => a.localeCompare(b))))
+      .catch((error: unknown) => {
+        if (!isAbort(error)) {
+          setProjects([]);
+        }
+      });
+    return () => controller.abort();
+  }, [wantProjects]);
+  const projectNames = projects ?? [];
 
   const [attempt, setAttempt] = useState(0);
   const [result, setResult] = useState<Result>({ kind: 'idle' });
@@ -138,7 +217,7 @@ export function SearchView() {
     const controller = new AbortController();
     setResult({ kind: 'loading' });
     if (corpus === 'tracker') {
-      searchTracker({ query, project: repo }, controller.signal)
+      searchTracker({ query, project: repo, states: parseStates(statesKey) }, controller.signal)
         .then((response) => setResult({ kind: 'tracker', response }))
         .catch((error: unknown) => {
           if (!isAbort(error)) {
@@ -164,7 +243,7 @@ export function SearchView() {
         setResult({ kind: 'error', error: asApiError(error) });
       });
     return () => controller.abort();
-  }, [query, corpus, repo, type, status, attempt]);
+  }, [query, corpus, repo, type, status, statesKey, attempt]);
 
   /**
    * The typed query, when what was typed is an id rather than a question.
@@ -180,27 +259,34 @@ export function SearchView() {
    * one behaviour here that would be worse than not offering the shortcut at
    * all. The direct route is an explicit second control instead.
    */
-  const directId = draft.corpus === '' && isTopicId(draft.query.trim()) ? draft.query.trim() : null;
+  const directId =
+    draft.corpus === 'ledger' && isTopicId(draft.query.trim()) ? draft.query.trim() : null;
 
   const submit = () => {
     const next = new URLSearchParams();
     if (draft.query.trim() !== '') {
       next.set('q', draft.query.trim());
     }
-    if (draft.corpus !== '') {
-      next.set('corpus', draft.corpus);
-    }
+    // Always named, so the address says what it searched whatever this
+    // browser last had open, and a search is an explicit choice to remember.
+    next.set('corpus', draft.corpus);
+    storeLastApp(draft.corpus);
     if (draft.repo.trim() !== '') {
       next.set('repo', draft.repo.trim());
     }
-    // The type and status filters are the ledger's vocabulary; the tracker
-    // search takes neither, and a filter that is sent but ignored would read
-    // as a narrower result than it is.
-    if (draft.corpus === '' && draft.type !== '') {
+    // The type and status filters are the ledger's vocabulary, the ticket
+    // states the tracker's; a filter that is sent but ignored would read as a
+    // narrower result than it is.
+    if (draft.corpus === 'ledger' && draft.type !== '') {
       next.set('type', draft.type);
     }
-    if (draft.corpus === '' && draft.status !== '') {
+    if (draft.corpus === 'ledger' && draft.status !== '') {
       next.set('status', draft.status);
+    }
+    if (draft.corpus === 'tracker') {
+      // Always written, so the default stays the default: an empty `states=`
+      // is the filter off, which an absent one would not say.
+      next.set('states', draft.states.join(','));
     }
     setParams(next);
     // Same query, same filters, pressed again: the URL does not change, so the
@@ -293,6 +379,18 @@ export function SearchView() {
         ),
     },
     {
+      // A ticket's state, as its queue row shows it (rag-t0072): what the
+      // state filter selected on. Documents and phases have none.
+      key: 'status',
+      header: 'Status',
+      sortable: true,
+      value: (hit) => (hit.kind === 'item' ? (hitDotState(hit) ?? '') : ''),
+      render: (hit) => {
+        const state = hit.kind === 'item' ? hitDotState(hit) : null;
+        return state === null ? null : <StatusDot state={state} />;
+      },
+    },
+    {
       key: 'repo',
       header: 'Project',
       sortable: true,
@@ -328,20 +426,41 @@ export function SearchView() {
         <div className={styles.filter}>
           <Select
             value={draft.corpus}
-            onChange={(value) => setDraft((current) => ({ ...current, corpus: value }))}
+            onChange={(value) => {
+              if (isApp(value)) {
+                setDraft((current) => ({ ...current, corpus: value }));
+              }
+            }}
             options={CORPUS_OPTIONS}
             aria-label="Corpus"
           />
         </div>
         <div className={styles.filter}>
-          <Input
-            value={draft.repo}
-            onChange={(value) => setDraft((current) => ({ ...current, repo: value }))}
-            placeholder="Any project"
-            aria-label="Project"
-          />
+          {draft.corpus === 'tracker' ? (
+            // The projects that use the tracker (rag-t0072), and the one the
+            // address named if the list does not have it.
+            <Select
+              value={draft.repo}
+              onChange={(value) => setDraft((current) => ({ ...current, repo: value }))}
+              options={[
+                { value: '', label: 'Any project' },
+                ...(draft.repo === '' || projectNames.includes(draft.repo) ? [] : [draft.repo]).map(
+                  (name) => ({ value: name, label: name }),
+                ),
+                ...projectNames.map((name) => ({ value: name, label: name })),
+              ]}
+              aria-label="Project"
+            />
+          ) : (
+            <Input
+              value={draft.repo}
+              onChange={(value) => setDraft((current) => ({ ...current, repo: value }))}
+              placeholder="Any project"
+              aria-label="Project"
+            />
+          )}
         </div>
-        {draft.corpus === '' && (
+        {draft.corpus === 'ledger' && (
           <div className={styles.filter}>
             <Select
               value={draft.type}
@@ -351,7 +470,7 @@ export function SearchView() {
             />
           </div>
         )}
-        {draft.corpus === '' && (
+        {draft.corpus === 'ledger' && (
           <div className={styles.filter}>
             <Select
               value={draft.status}
@@ -378,12 +497,36 @@ export function SearchView() {
         </div>
       )}
 
+      {draft.corpus === 'tracker' && (
+        <div className={styles.states}>
+          <span className={styles.statesLabel} id="search-ticket-states">
+            Ticket status
+          </span>
+          <CheckboxSet
+            values={draft.states}
+            onChange={(values) =>
+              setDraft((current) => ({ ...current, states: values.filter(isTicketState) }))
+            }
+            options={STATE_OPTIONS}
+            aria-labelledby="search-ticket-states"
+          />
+        </div>
+      )}
+
       {/* The project filter is an exact match on the indexed field, not a
           substring — worth saying, because a half-remembered project name
-          silently returns nothing rather than narrowing. */}
-      <p className={styles.hint}>
-        Project is matched exactly. Leave it empty to search everything.
-      </p>
+          silently returns nothing rather than narrowing. The tracker's is a
+          list, so there it goes without saying. */}
+      {draft.corpus === 'tracker' ? (
+        <p className={styles.hint}>
+          Ticket status narrows tickets only; documents and phases are always searched. Tick nothing
+          to search tickets in every status.
+        </p>
+      ) : (
+        <p className={styles.hint}>
+          Project is matched exactly. Leave it empty to search everything.
+        </p>
+      )}
 
       {result.kind === 'idle' && (
         <Panel>

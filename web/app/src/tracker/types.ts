@@ -41,6 +41,25 @@ export const ITEM_STATUSES = [
 export type ItemStatus = (typeof ITEM_STATUSES)[number];
 
 /**
+ * What the tracker search's state filter takes (rag-t0072): every status, and
+ * `blocked`, which is a flag rather than a status, in the order offered.
+ */
+export const TICKET_STATES = [
+  'pending',
+  'blocked',
+  'in_progress',
+  'review',
+  'deferred',
+  'failed',
+  'done',
+  'cancelled',
+] as const;
+export type TicketState = (typeof TICKET_STATES)[number];
+
+/** The states searched when the address names none: what is waiting to be done. */
+export const DEFAULT_TICKET_STATES: readonly TicketState[] = ['pending', 'blocked'];
+
+/**
  * Why an item is blocked. `approval` was retired (rag-t0024): work waiting on
  * the owner is the status `review`, and the server refuses the old reason.
  */
@@ -903,6 +922,8 @@ export interface TrackerHit {
   title?: string;
   /** An item's status (item hits only). */
   status?: string;
+  /** Whether an item is blocked (item hits only, rag-t0072); absent reads as not. */
+  blocked?: boolean;
   /** An item's type (item hits only). */
   type?: string;
   /** `<project>:<path>@r<revision>` for a document chunk, the item id for an item. */
