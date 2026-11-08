@@ -77,10 +77,8 @@ describe('the type slot (rag-t0033)', () => {
     const expected: Record<string, Array<[string, string]>> = {
       Done: [['Analysis', 'a-1']],
       Review: [['Design', 'b-2']],
-      Queue: [
-        ['Recon', 'c-3'],
-        ['Dev', 'd-4'],
-      ],
+      'In progress': [['Recon', 'c-3']],
+      Queue: [['Dev', 'd-4']],
       Blocked: [['Dev', 'e-5']],
       Deferred: [['Analysis', 'f-6']],
     };

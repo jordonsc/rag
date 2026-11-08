@@ -101,6 +101,40 @@ function stubRowGeometry() {
 }
 
 describe('the dashboard renders the report', () => {
+  it('draws In progress below Review and above the queue, never in the queue (2026-11-08)', async () => {
+    const base = queueView();
+    view = queueView({
+      review: [item('demo-t0011', { status: 'review', title: 'Look at this' })],
+      queue: base.queue.map((i) =>
+        i.id === 'demo-t0002' || i.id === 'demo-t0005'
+          ? { ...i, status: 'in_progress' as const }
+          : i,
+      ),
+    });
+    open();
+    await screen.findByRole('heading', { name: 'demo' });
+    const regions = screen
+      .getAllByRole('region')
+      .map((region) => region.getAttribute('aria-label'));
+    expect(regions).toEqual(['Done', 'Review', 'In progress', 'Queue', 'Blocked']);
+    const working = within(section('In progress')).getAllByRole('listitem');
+    // In list order, each in its own word.
+    expect(working.map((row) => row.getAttribute('data-id'))).toEqual(['demo-t0002', 'demo-t0005']);
+    expect(within(working[0]!).getByText('In progress')).toBeInTheDocument();
+    expect(within(section('In progress')).getByRole('heading')).toHaveTextContent('In progress 2');
+    // The queue keeps the rest, its gate included, and counts them alone.
+    expect(queueIds()).toEqual(['demo-t0001', 'demo-t0003', 'demo-t0004']);
+    expect(within(section('Queue')).getByRole('heading')).toHaveTextContent(
+      'Queue 2 tickets · 1 gate',
+    );
+  });
+
+  it('draws no In progress section when nothing is in progress', async () => {
+    open();
+    await screen.findByRole('heading', { name: 'demo' });
+    expect(screen.queryByRole('region', { name: 'In progress' })).toBeNull();
+  });
+
   it('draws done, the queue with its gate marker, and blocked, in order', async () => {
     open();
     await screen.findByRole('heading', { name: 'demo' });
@@ -125,7 +159,7 @@ describe('the dashboard renders the report', () => {
       'demo-t0005',
     ]);
     const rows = within(screen.getByRole('list', { name: 'Queue' })).getAllByRole('listitem');
-    expect(within(rows[0]!).getByText('In progress')).toBeInTheDocument();
+    expect(within(rows[0]!).getByText('Pending')).toBeInTheDocument();
     expect(within(rows[0]!).getByText('dev-3')).toBeInTheDocument();
     expect(within(rows[1]!).getByText('Pending')).toBeInTheDocument();
     expect(within(rows[1]!).getByText('Agent-approved')).toBeInTheDocument();
@@ -1518,10 +1552,19 @@ describe('the row polish (rag-t0023, rag-t0025, rag-t0026)', () => {
   }
 
   it('tints an in-progress row, and only that row (rag-t0023)', async () => {
+    // A ticket in progress is drawn in its own section (2026-11-08), still tinted.
+    const base = queueView();
+    view = queueView({
+      queue: base.queue.map((i) =>
+        i.id === 'demo-t0002' ? { ...i, status: 'in_progress' as const } : i,
+      ),
+    });
     open();
     await screen.findByRole('heading', { name: 'demo' });
-    expect(queueRowOf('demo-t0001').className).toMatch(/rowInProgress/);
-    for (const id of ['demo-t0002', 'demo-t0003', 'demo-t0004', 'demo-t0005']) {
+    const working = within(section('In progress')).getAllByRole('listitem');
+    expect(working).toHaveLength(1);
+    expect(working[0]!.className).toMatch(/rowInProgress/);
+    for (const id of ['demo-t0001', 'demo-t0003', 'demo-t0004', 'demo-t0005']) {
       expect(queueRowOf(id).className).not.toMatch(/rowInProgress/);
     }
   });
@@ -1764,7 +1807,7 @@ describe('the row polish (rag-t0023, rag-t0025, rag-t0026)', () => {
     const line2 = row.querySelector('[class*="cellLine2"]')!;
     expect(line2).not.toBeNull();
     // Line one: the status, the id, the title; none of them on line two.
-    for (const text of ['In progress', 'demo-t0001', 'Being built']) {
+    for (const text of ['Pending', 'demo-t0001', 'Being built']) {
       expect(line2.contains(within(row).getByText(text))).toBe(false);
     }
     // Line two: the type and the assignee; no link chips (rag-t0031).

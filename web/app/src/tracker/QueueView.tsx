@@ -65,6 +65,15 @@ function refocusRow(id: string) {
   (row.tabIndex >= 0 ? row : row.querySelector<HTMLElement>('a'))?.focus();
 }
 
+/**
+ * A ticket of the queue's that the In progress section draws (2026-11-08):
+ * in progress and no gate. The queue's lists hold no blocked or review ticket,
+ * so this is all of them.
+ */
+function isWorkInProgress(item: Item): boolean {
+  return item.status === 'in_progress' && item.type !== 'gate';
+}
+
 /** The queue in `order`, any id the order does not name kept at the end. */
 function inOrder(items: readonly Item[], order: readonly string[] | null): Item[] {
   if (order === null) {
@@ -150,7 +159,10 @@ export function QueueView() {
  * them into tickets, whatever their status; filed with *Add request* in the
  * header, never in the queue: rag-t0044),
  * **Review** (red, work waiting on the owner to confirm or review it, each
- * with *Confirm* and *Send back*; rag-t0024), **the queue** in list order (blue in progress, white pending, red failed;
+ * with *Confirm* and *Send back*; rag-t0024), **In progress** (the in-progress
+ * blue: the queue's tickets being worked, in list order, out of the queue's
+ * list; a gate in progress stays in the queue, where its place is its batch:
+ * 2026-11-08), **the queue** in list order (white pending, red failed;
  * gates as full-width markers), **Blocked** (amber, each with its reason,
  * its note and *Unblock*) and **Deferred** (teal, work put aside on purpose,
  * each with *Resume*; rag-t0017). A review, blocked or deferred item keeps its
@@ -318,10 +330,18 @@ function Dashboard({ project }: { project: string }) {
       item.type === 'gate' && narrowed ? !unratified || item.approval === 'agent' : keep(item),
     [keep, unratified, narrowed],
   );
-  const queue = useMemo(
-    () => (view === null ? [] : inOrder(view.queue, pendingOrder).filter(keepInQueue)),
-    [view, pendingOrder, keepInQueue],
+  // In-progress tickets have their own section above the queue (2026-11-08),
+  // in list order; a gate in progress stays in the queue, where its place is
+  // the batch it closes.
+  const ordered = useMemo(
+    () => (view === null ? [] : inOrder(view.queue, pendingOrder)),
+    [view, pendingOrder],
   );
+  const queue = useMemo(
+    () => ordered.filter((item) => !isWorkInProgress(item)).filter(keepInQueue),
+    [ordered, keepInQueue],
+  );
+  const inProgress = useMemo(() => ordered.filter(isWorkInProgress).filter(keep), [ordered, keep]);
   const done = useMemo(() => (view === null ? [] : view.done.filter(keep)), [view, keep]);
   const blocked = useMemo(() => (view === null ? [] : view.blocked.filter(keep)), [view, keep]);
   const deferred = useMemo(
@@ -645,6 +665,38 @@ function Dashboard({ project }: { project: string }) {
                   }
                   detail={<BlockDetail project={project} item={item} />}
                   note={item.blocked ? item.block_note : null}
+                />
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {inProgress.length > 0 && (
+          <section
+            className={cx(styles.section, styles.section_in_progress)}
+            aria-label="In progress"
+          >
+            <header className={styles.sectionHead}>
+              <h2 className={styles.sectionTitle}>
+                In progress <span className={styles.count}>{inProgress.length}</span>
+              </h2>
+            </header>
+            <ul className={styles.flat}>
+              {inProgress.map((item) => (
+                <FlatRow
+                  key={item.id}
+                  project={project}
+                  item={item}
+                  state={dotState(item)}
+                  actions={
+                    <ApprovalControl
+                      id={item.id}
+                      approval={item.approval}
+                      onRatify={() => approve(item, 'ratify')}
+                      onApprove={() => approve(item, 'approve')}
+                    />
+                  }
+                  detail={<BlockDetail project={project} item={item} />}
                 />
               ))}
             </ul>

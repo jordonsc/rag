@@ -206,8 +206,12 @@ describe('labels on the dashboard', () => {
   it('filters by a label from the URL, ignoring case, keeping the gates, with reordering off', async () => {
     openDashboard('/projects/demo?label=physics');
     await screen.findByRole('heading', { name: 'demo' });
-    expect(queueIds()).toEqual(['demo-t0001', 'demo-t0003', 'demo-t0004']);
-    expect(screen.getByRole('button', { name: 'Drag demo-t0001 to reorder' })).toBeDisabled();
+    // demo-t0001 is in progress: drawn in its own section, filtered there too.
+    expect(queueIds()).toEqual(['demo-t0003', 'demo-t0004']);
+    expect(
+      within(screen.getByRole('region', { name: 'In progress' })).getByText('demo-t0001'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Drag demo-t0004 to reorder' })).toBeDisabled();
     expect(screen.getByRole('combobox', { name: 'Label' })).toHaveValue('Physics');
     // The blocked item carries no label, so Blocked is empty and not drawn.
     expect(screen.queryByRole('region', { name: 'Blocked' })).toBeNull();
@@ -226,10 +230,12 @@ describe('labels on the dashboard', () => {
     await user.selectOptions(select, 'Creatures');
     expect(screen.getByTestId('address')).toHaveTextContent('/projects/demo?label=Creatures');
     expect(queueIds()).toEqual(['demo-t0002', 'demo-t0003']);
+    // Nothing of Creatures is in progress: no In progress section.
+    expect(screen.queryByRole('region', { name: 'In progress' })).toBeNull();
     await user.selectOptions(select, '');
     expect(screen.getByTestId('address')).toHaveTextContent(/^\/projects\/demo$/);
-    expect(queueIds()).toHaveLength(5);
-    expect(screen.getByRole('button', { name: 'Drag demo-t0001 to reorder' })).toBeEnabled();
+    expect(queueIds()).toHaveLength(4);
+    expect(screen.getByRole('button', { name: 'Drag demo-t0002 to reorder' })).toBeEnabled();
   });
 
   it('says so when no queued item carries the label, and offers no filter without labels', async () => {

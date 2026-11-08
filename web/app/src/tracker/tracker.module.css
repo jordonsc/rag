@@ -182,6 +182,11 @@
   border-left: 3px solid var(--rag-crit);
 }
 
+/* In progress (2026-11-08): the in-progress blue its rows are tinted with. */
+.section_in_progress {
+  border-left: 3px solid var(--rag-inprogress);
+}
+
 /* The owner's drafts (2026-10-30): dashed, not final yet. */
 .section_drafts {
   border-left: 3px dashed var(--rag-dim);

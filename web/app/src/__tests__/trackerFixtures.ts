@@ -77,8 +77,10 @@ export function queueView(overrides: Partial<QueueView> = {}): QueueView {
       }),
     ],
     queue: [
+      // Pending, not in progress: an in-progress ticket is drawn in its own
+      // section, out of the queue's list (2026-11-08), and the queue's tests
+      // need its head in the list.
       item('demo-t0001', {
-        status: 'in_progress',
         assignee: 'dev-3',
         title: 'Being built',
         links: [{ kind: 'ledger', target: 'demo-0042' }],
