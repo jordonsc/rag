@@ -299,6 +299,40 @@ impl HistoryQuery {
     }
 }
 
+/// `?fields=` on the list reads, the items list and the queue view (ledger
+/// ubu-l3848). `full`, the default, is every field; `summary` leaves each
+/// ticket's `body` out, which is most of a list's weight. The web UI reads the
+/// summary and fetches a ticket's body when it opens it; every other client
+/// keeps the full form by sending nothing.
+#[derive(Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum Fields {
+    #[default]
+    Full,
+    Summary,
+}
+
+#[derive(Deserialize)]
+struct FieldsQuery {
+    #[serde(default)]
+    fields: Fields,
+}
+
+/// `json` with `fields` applied: for `summary`, without the `body` of any
+/// ticket in its top-level lists (`items`, or the queue view's sections).
+fn with_fields(mut json: serde_json::Value, fields: Fields) -> serde_json::Value {
+    if fields == Fields::Summary {
+        if let Some(top) = json.as_object_mut() {
+            for list in top.values_mut().filter_map(serde_json::Value::as_array_mut) {
+                for ticket in list.iter_mut().filter_map(serde_json::Value::as_object_mut) {
+                    ticket.remove("body");
+                }
+            }
+        }
+    }
+    json
+}
+
 fn place_of(
     before: Option<String>,
     after: Option<String>,
@@ -347,10 +381,20 @@ fn etag_matches(headers: &HeaderMap, etag: &str) -> bool {
         .any(|t| t == "*" || t == etag)
 }
 
-async fn queue_view(State(api): St, Path(project): Path<String>, headers: HeaderMap) -> ApiResult {
+async fn queue_view(
+    State(api): St,
+    Path(project): Path<String>,
+    Q(q): Q<FieldsQuery>,
+    headers: HeaderMap,
+) -> ApiResult {
     rag_core::tracker::validate_project(&project)?;
     let view = api.store()?.queue_view(&project).await?;
-    let body = serde_json::to_vec(&view).map_err(|e| ApiError::Internal(e.to_string()))?;
+    let body = match q.fields {
+        Fields::Full => serde_json::to_vec(&view),
+        Fields::Summary => serde_json::to_value(&view)
+            .and_then(|json| serde_json::to_vec(&with_fields(json, Fields::Summary))),
+    }
+    .map_err(|e| ApiError::Internal(e.to_string()))?;
     let etag = format!("\"{}\"", &hash_str(&String::from_utf8_lossy(&body))[..32]);
     let etag_value = HeaderValue::from_str(&etag).map_err(|e| ApiError::Internal(e.to_string()))?;
     let cache = (header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
@@ -457,6 +501,9 @@ struct ItemsQuery {
     /// Only this phase's tickets, frozen ones included (spec:roadmap D20).
     #[serde(default)]
     phase: Option<String>,
+    /// `summary` leaves each ticket's `body` out (ubu-l3848).
+    #[serde(default)]
+    fields: Fields,
 }
 
 async fn items_list(State(api): St, Path(project): Path<String>, Q(q): Q<ItemsQuery>) -> ApiResult {
@@ -475,7 +522,10 @@ async fn items_list(State(api): St, Path(project): Path<String>, Q(q): Q<ItemsQu
         }
         None => store.list_items(&project, status, label).await?,
     };
-    ok(&serde_json::json!({ "project": project, "items": items }))
+    ok(&with_fields(
+        serde_json::json!({ "project": project, "items": items }),
+        q.fields,
+    ))
 }
 
 /// A project's label vocabulary (rag-t0027): each label its items carry, in the

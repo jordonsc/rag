@@ -23,6 +23,7 @@
 //! attachments) live in [`tracker`], with their own state, and are merged in
 //! below. Their contract is `specs/tracker/api.md`.
 
+mod compress;
 mod prompts;
 mod summarise;
 mod tracker;
@@ -220,6 +221,8 @@ async fn main() -> anyhow::Result<()> {
     // The UI rides on the same port as the API — attached last, because it is a
     // fallback: it answers only what the routes above did not.
     let app = web::attach(app, &cfg.server.web_root);
+    // Compression wraps everything, the UI's fallback included (ubu-l3848).
+    let app = compress::attach(app);
 
     let listener = tokio::net::TcpListener::bind(&cfg.server.bind).await?;
     let addr = listener.local_addr()?;

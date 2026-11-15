@@ -45,6 +45,14 @@ Conventions
   event (**Add note**: the one write a note is required for). A phase's **release** and **recall** append one event
   to each ticket they move and then one to the phase, in one transaction (see *Phases and the roadmap*).
 * **Timestamps** are RFC 3339 UTC to the second (`2026-10-27T06:25:33Z`).
+* **Compression** (ubu-l3848). Every response, the web UI's included, is compressed when the request's
+  `Accept-Encoding` takes it: `br` preferred, else `gzip`, by the client's q-values; `Vary: Accept-Encoding` on a
+  compressed one. Only text is compressed (`text/*` but `text/event-stream`, `application/json`, `application/javascript`,
+  `application/xml`, any `+json` or `+xml`), and only past 1 KB: an attachment's image or binary bytes go as stored. A
+  client that sends no `Accept-Encoding` gets the body as before. `crates/serve/src/compress.rs`.
+* **Summary lists** (ubu-l3848). The queue view and the items list take **`fields=summary`**, which leaves each
+  ticket's `body` out (every other field stays); `fields=full`, or none, is every field, the default. Any other value
+  is 400. The web UI reads summaries, and a ticket's body from `GET /tracker/items/{id}` when it opens it.
 * **History.** Record reads (`GET` a ticket, document, spec, milestone, concept or phase) include `events`, oldest first.
   `?history=false` returns the record with `"events": []`. The MCP `tracker_get` sends `history=false` unless the agent asks for the
   history (`history: true`, or `history: N` for the last N, trimmed on the MCP side; rag-t0039).
@@ -371,7 +379,7 @@ in review, `deferred` every deferred ticket and `review` every ticket in review,
 counted under no other bucket but `queued`. **`frozen`** (spec:roadmap D20) counts the tickets frozen in a phase, drafts
 included; a frozen ticket is in **no other bucket**, `queued` and `drafts` among them.
 
-#### `GET /tracker/{project}` — the queue view (D14, R12)
+#### `GET /tracker/{project}?fields=summary|full` — the queue view (D14, R12)
 ```json
 {
   "project": "ubu",
@@ -386,6 +394,9 @@ included; a frozen ticket is in **no other bucket**, `queued` and `drafts` among
   "frozen": 45
 }
 ```
+* **`fields=summary`** (ubu-l3848) leaves each ticket's `body` out; the dashboard reads it so. Its `ETag` is its
+  own (it hashes the body sent), and a matching `If-None-Match` answers 304 as for the full view. Its JSON keys may
+  come in another order than the full view's.
 * **`frozen`** (spec:roadmap D20): how many of the project's tickets are frozen in a phase, drafts included. **Every
   list leaves them out**, so the view is the same with or without a planned phase but for this count. Read them with
   `GET …/phases/{id}?tickets=true` or `GET …/items?phase=<id>`.
@@ -537,9 +548,10 @@ each). Response: `{"project": "ubu", "acknowledged": ["ubu-t0040", "ubu-t0041"]}
 
 ### Tickets
 
-#### `GET /tracker/{project}/items?status=<status>&label=<label>&phase=<phase id>`
+#### `GET /tracker/{project}/items?status=<status>&label=<label>&phase=<phase id>&fields=summary|full`
 `{"project", "items": [Item, …]}`, oldest first, no events. Every ticket of the project **that is not frozen**, done and
-cancelled included;
+cancelled included; `fields=summary` (ubu-l3848) leaves each ticket's `body` out, with every filter as below (the web
+UI's history and dependency picker read it so; the MCP tools read the full default);
 `status` filters (any ticket status, `deferred` and `review` included; `blocked` is a flag, not a status, and is 400).
 `label` (rag-t0027) keeps the tickets carrying it, matched case-insensitively after the same trimming a write gets; a
 blank one is no filter. Both may be given.

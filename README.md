@@ -334,6 +334,12 @@ specs and concepts move out of the project's repository into it, keeping their p
 - **HTTP API:** `/tracker/…` on `rag-serve`, documented route by route, with every request
   and response body, in [`specs/tracker/api.md`](specs/tracker/api.md). The routes answer
   503 when the store cannot open; `/info` reports `tracker_ready`.
+- **Transfer size** (ledger ubu-l3848): every response of `rag-serve`, the web UI's bundle
+  included, is compressed (br, else gzip) when the client's `Accept-Encoding` takes it; images
+  and binary attachments go as stored (`crates/serve/src/compress.rs`). The queue view and the
+  items list take `fields=summary`, which leaves each ticket's `body` out: the dashboard, the
+  history and the dependency picker read it, and a ticket's page reads the body. The full form
+  stays the default, which the MCP tools and other clients read.
 - **Live event feed** (rag-t0036): `GET /tracker/{project}/events/ws` is a WebSocket that
   sends one line per event as its write commits (`#13901 rag web approve rag-t0040 "Title"
   {approval: agent → ratified}: Go ahead. [Owner]`: each change from → to, since rag-t0038;

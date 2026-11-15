@@ -627,6 +627,167 @@ async fn ack_done_acknowledges_and_needs_an_author() {
 
 // ---- Items ----------------------------------------------------------------------
 
+/// ubu-l3848: `?fields=summary` leaves each ticket's body out of the items list,
+/// with every other field and filter as before; the default and `full` keep it.
+#[tokio::test]
+async fn items_list_summary_leaves_bodies_out() {
+    let t = app().await;
+    let mut made = Vec::new();
+    for title in ["a", "b"] {
+        let v = ok(post(
+            &t.app,
+            "/tracker/p/items",
+            w(json!({ "type": "dev", "title": title, "body": format!("{title} body") })),
+        )
+        .await)
+        .await;
+        made.push(v["id"].as_str().unwrap().to_string());
+    }
+    start_and_finish(&t.app, &made[0]).await;
+
+    for uri in ["/tracker/p/items", "/tracker/p/items?fields=full"] {
+        let v = ok(get(&t.app, uri).await).await;
+        assert_eq!(ids(&v["items"]), made, "{uri}");
+        assert_eq!(v["items"][0]["body"], "a body", "{uri}");
+        assert_eq!(v["items"][1]["body"], "b body", "{uri}");
+    }
+    let full = ok(get(&t.app, "/tracker/p/items").await).await;
+    let v = ok(get(&t.app, "/tracker/p/items?fields=summary").await).await;
+    assert_eq!(v["project"], "p");
+    assert_eq!(ids(&v["items"]), made);
+    for (slim, whole) in v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(full["items"].as_array().unwrap())
+    {
+        assert!(slim.get("body").is_none(), "{slim}");
+        let mut whole = whole.clone();
+        whole.as_object_mut().unwrap().remove("body");
+        assert_eq!(slim, &whole, "only the body goes");
+    }
+    // With the filters, as before.
+    let v = ok(get(&t.app, "/tracker/p/items?status=done&fields=summary").await).await;
+    assert_eq!(ids(&v["items"]), vec![made[0].clone()]);
+    assert!(v["items"][0].get("body").is_none());
+
+    // Negative: an unknown form is a 400 in the routes' own shape.
+    let r = get(&t.app, "/tracker/p/items?fields=bodies").await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(r.error().contains("invalid query string"), "{}", r.error());
+}
+
+/// ubu-l3848: the queue view takes `?fields=summary` too, with its own ETag
+/// that a matching If-None-Match still answers with 304.
+#[tokio::test]
+async fn the_queue_view_summary_leaves_bodies_out_and_keeps_its_etag() {
+    let t = app().await;
+    let a = ok(post(
+        &t.app,
+        "/tracker/p/items",
+        w(json!({ "type": "dev", "title": "a", "body": "the long body" })),
+    )
+    .await)
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let b = item(&t.app, "p", "b").await;
+    start_and_finish(&t.app, &b).await;
+
+    let full = get(&t.app, "/tracker/p").await;
+    let v = full.json();
+    assert_eq!(v["queue"][0]["body"], "the long body");
+    assert!(v["done"][0].get("body").is_some());
+
+    let slim = get(&t.app, "/tracker/p?fields=summary").await;
+    let s = ok(slim).await;
+    assert_eq!(ids(&s["queue"]), vec![a.clone()]);
+    assert_eq!(ids(&s["done"]), vec![b.clone()]);
+    for section in ["queue", "done"] {
+        assert!(s[section][0].get("body").is_none(), "{section}");
+        assert_eq!(s[section][0]["title"], v[section][0]["title"]);
+    }
+    assert_eq!(s["frozen"], v["frozen"]);
+
+    let slim = get(&t.app, "/tracker/p?fields=summary").await;
+    let etag = slim.headers[header::ETAG].to_str().unwrap().to_string();
+    assert_ne!(full.headers[header::ETAG].to_str().unwrap(), etag);
+    let req = Request::get("/tracker/p?fields=summary")
+        .header(header::IF_NONE_MATCH, &etag)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(send(&t.app, req).await.status, StatusCode::NOT_MODIFIED);
+    // A write changes it, as it does the full form's.
+    ok(post(
+        &t.app,
+        &format!("/tracker/items/{a}"),
+        w(json!({ "title": "renamed" })),
+    )
+    .await)
+    .await;
+    let req = Request::get("/tracker/p?fields=summary")
+        .header(header::IF_NONE_MATCH, &etag)
+        .body(Body::empty())
+        .unwrap();
+    let r = send(&t.app, req).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json()["queue"][0]["title"], "renamed");
+
+    // Negative: an unknown form is a 400.
+    let r = get(&t.app, "/tracker/p?fields=nope").await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+}
+
+/// ubu-l3848: through the service's compression layer, the JSON lists go
+/// gzip-encoded when asked, and an image attachment's bytes go as they are.
+#[tokio::test]
+async fn lists_are_compressed_and_image_attachments_are_not() {
+    let t = app().await;
+    for n in 0..40 {
+        item(&t.app, "p", &format!("ticket number {n}")).await;
+    }
+    let mut png = PNG.to_vec();
+    png.resize(8 * 1024, 0);
+    let sha = ok(upload(&t.app, "p", "big.png", "image/png", &png).await).await["sha256"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let app = crate::compress::attach(t.app.clone());
+    let fetch = |uri: String| {
+        let app = app.clone();
+        async move {
+            let req = Request::get(uri)
+                .header(header::ACCEPT_ENCODING, "gzip")
+                .body(Body::empty())
+                .unwrap();
+            send(&app, req).await
+        }
+    };
+
+    let plain = get(&t.app, "/tracker/p/items").await.bytes;
+    for uri in ["/tracker/p/items", "/tracker/p"] {
+        let r = fetch(uri.into()).await;
+        assert_eq!(r.status, StatusCode::OK, "{uri}");
+        assert_eq!(r.headers[header::CONTENT_ENCODING], "gzip", "{uri}");
+        if uri == "/tracker/p/items" {
+            use std::io::Read;
+            let mut out = Vec::new();
+            flate2::read::GzDecoder::new(&r.bytes[..])
+                .read_to_end(&mut out)
+                .unwrap();
+            assert_eq!(out, plain);
+            assert!(r.bytes.len() < plain.len() / 3, "{}", r.bytes.len());
+        }
+    }
+
+    // Negative: an image is never compressed again, even when it would shrink.
+    let r = fetch(format!("/tracker/attachments/{sha}")).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.headers.get(header::CONTENT_ENCODING).is_none());
+    assert_eq!(r.bytes, png);
+}
+
 #[tokio::test]
 async fn items_list_filters_by_status() {
     let t = app().await;
