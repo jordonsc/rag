@@ -36,7 +36,7 @@ beforeEach(() => {
   server = new TrackerServer();
   server.on('/tracker/projects', { body: PROJECTS });
   server.on(
-    /^\/tracker\/(demo|other)$/,
+    /^\/tracker\/(demo|other)\?fields=summary$/,
     queueRoute(() => queueView()),
   );
   server.install();

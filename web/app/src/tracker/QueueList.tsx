@@ -18,13 +18,18 @@ import { ApprovalControl, DraftBadge, ParallelBadge, SecondLine, StatusDot } fro
 import { itemPath } from './paths';
 import { RowMenu, type RowMenuAction } from './RowMenu';
 import styles from './tracker.module.css';
-import type { Item, Place } from './types';
+import type { ItemSummary, Place } from './types';
 import { dotState, gateTitle, intensityLabel } from './vocab';
 
-export interface QueueListProps {
+/**
+ * `T` is the ticket shape the caller holds: the dashboard's summaries
+ * (ubu-l3848) or a phase page's whole tickets. Every callback gets back the
+ * caller's own object.
+ */
+export interface QueueListProps<T extends ItemSummary = ItemSummary> {
   project: string;
   /** The queue as it is to be drawn, head first. */
-  items: readonly Item[];
+  items: readonly T[];
   /** Drag and Alt+arrows on. Off while filtered or while a move is in flight. */
   reorderable: boolean;
   /** Why it is off, when it is: the grip's hint says so. */
@@ -32,30 +37,30 @@ export interface QueueListProps {
   /** The server view's revision: a change mid-drag cancels the drag. */
   revision: number | string;
   /** One move: the place to send, and the order to show until the server answers. */
-  onMove: (item: Item, place: Place, order: string[]) => void;
-  onRemove: (item: Item) => void;
+  onMove: (item: T, place: Place, order: string[]) => void;
+  onRemove: (item: T) => void;
   /**
    * Defer it (rag-t0017): it leaves the drawn queue for Deferred, keeping its
    * place. Omitted: no menu entry, as for a frozen ticket (spec:roadmap D5).
    */
-  onDefer?: (item: Item) => void;
+  onDefer?: (item: T) => void;
   /**
    * Make it a draft again (2026-10-30): it leaves the drawn queue for Drafts,
    * keeping its place, and nothing dispatches it. Omitted: no menu entry.
    */
-  onDraft?: (item: Item) => void;
+  onDraft?: (item: T) => void;
   /**
    * Publish a draft (2026-10-30). A queue never draws one, having its own
    * section for them; a phase's frozen list does, and says Publish in place of
    * Make draft, which the server would refuse.
    */
-  onPublish?: (item: Item) => void;
+  onPublish?: (item: T) => void;
   /** What a row adds on its second line: a phase's list holds drafts and blocked tickets. */
-  rowDetail?: (item: Item) => ReactNode;
+  rowDetail?: (item: T) => ReactNode;
   /** The list's name, for a screen reader. Defaults to `Queue`. */
   label?: string;
   /** The owner's approval from the row: the Agent-approved badge, or Approve. */
-  onApproval: (item: Item, action: ApprovalAction) => void;
+  onApproval: (item: T, action: ApprovalAction) => void;
   /** A drag was cancelled because the server's order changed under it. */
   onInterrupted: () => void;
 }
@@ -86,7 +91,7 @@ export function placeFor<T extends { id: string }>(
   return target <= 0 ? { before: others[0]!.id } : { after: others[target - 1]!.id };
 }
 
-function reordered(items: readonly Item[], from: number, to: number): string[] {
+function reordered(items: readonly ItemSummary[], from: number, to: number): string[] {
   const ids = items.map((item) => item.id);
   const [moved] = ids.splice(from, 1);
   ids.splice(to, 0, moved!);
@@ -94,7 +99,7 @@ function reordered(items: readonly Item[], from: number, to: number): string[] {
 }
 
 /** A gate marker's name: `Standard gate`, or `Gate` with no intensity. */
-function markerName(item: Item): string {
+function markerName(item: ItemSummary): string {
   return item.intensity === null ? 'Gate' : `${intensityLabel(item.intensity)} gate`;
 }
 
@@ -103,7 +108,7 @@ function markerName(item: Item): string {
  * for the marker's own name and for the title Add gate writes by default
  * (`Standard gate and release`), which the name and Release badge already say.
  */
-export function gateOwnTitle(item: Item): string | null {
+export function gateOwnTitle(item: ItemSummary): string | null {
   const title = item.title.trim();
   const said = [markerName(item)];
   if (item.intensity !== null) {
@@ -118,7 +123,7 @@ export function gateOwnTitle(item: Item): string | null {
 export interface GateMarkerProps {
   project: string;
   /** The gate. */
-  item: Item;
+  item: ItemSummary;
   /**
    * `queue` (the default) draws it in `--rag-extra`, the purple no status
    * uses; `done` draws the same line in the done status's green, for a
@@ -206,7 +211,7 @@ const SCROLL_STEP = 14;
  * *during* a drag (a manager's write landing), the drag is cancelled rather
  * than dropped against neighbours that are no longer there.
  */
-export function QueueList({
+export function QueueList<T extends ItemSummary>({
   project,
   items,
   reorderable,
@@ -221,7 +226,7 @@ export function QueueList({
   label = 'Queue',
   onApproval,
   onInterrupted,
-}: QueueListProps) {
+}: QueueListProps<T>) {
   const navigate = useNavigate();
   const rows = useRef(new Map<string, HTMLLIElement>());
   const geometry = useRef<DragGeometry | null>(null);
@@ -392,7 +397,7 @@ export function QueueList({
     }
   };
 
-  const menu = (item: Item, index: number): RowMenuAction[] => [
+  const menu = (item: T, index: number): RowMenuAction[] => [
     {
       id: 'open',
       label: 'Open',

@@ -59,7 +59,7 @@ describe('the dashboard', () => {
     server = new TrackerServer();
     server.on('/tracker/projects', { body: { projects: [] } });
     server.on(
-      /^\/tracker\/demo$/,
+      /^\/tracker\/demo\?fields=summary$/,
       queueRoute(() => view),
       'GET',
     );

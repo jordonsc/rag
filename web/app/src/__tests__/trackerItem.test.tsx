@@ -200,7 +200,7 @@ describe('the item page', () => {
   it('blocks on a dependency, choosing what it waits on from the project’s queued items (rag-t0018)', async () => {
     const user = userEvent.setup();
     server.on(
-      '/tracker/demo/items',
+      '/tracker/demo/items?fields=summary',
       {
         body: {
           project: 'demo',
@@ -222,7 +222,9 @@ describe('the item page', () => {
     // No picker until the reason is a dependency.
     expect(within(dialog).queryByRole('combobox')).toBeNull();
     await user.click(within(dialog).getByRole('radio', { name: 'Waits on tickets' }));
-    await waitFor(() => expect(server.matching('/tracker/demo/items', 'GET')).toHaveLength(1));
+    await waitFor(() =>
+      expect(server.matching('/tracker/demo/items?fields=summary', 'GET')).toHaveLength(1),
+    );
 
     // Nothing chosen: refused before any write.
     await user.click(within(dialog).getByRole('button', { name: 'Block' }));
@@ -1136,10 +1138,10 @@ describe('a ticket and its phase (spec:roadmap RM-48)', () => {
   it('offers a frozen ticket’s phase-mates as dependencies, read beside the queue', async () => {
     const user = userEvent.setup();
     serve(FROZEN);
-    server.on('/tracker/demo/items', {
+    server.on('/tracker/demo/items?fields=summary', {
       body: { project: 'demo', items: [item('demo-t0005', { title: 'In the queue' })] },
     });
-    server.on(`/tracker/demo/items?phase=${PHASE}`, {
+    server.on(`/tracker/demo/items?phase=${PHASE}&fields=summary`, {
       body: {
         project: 'demo',
         items: [
@@ -1155,7 +1157,9 @@ describe('a ticket and its phase (spec:roadmap RM-48)', () => {
     const dialog = screen.getByRole('dialog', { name: 'Block this ticket' });
     await user.click(within(dialog).getByRole('radio', { name: 'Waits on tickets' }));
     await waitFor(() =>
-      expect(server.matching(`/tracker/demo/items?phase=${PHASE}`, 'GET')).toHaveLength(1),
+      expect(
+        server.matching(`/tracker/demo/items?phase=${PHASE}&fields=summary`, 'GET'),
+      ).toHaveLength(1),
     );
     await user.click(within(dialog).getByRole('combobox'));
     const offered = (await screen.findAllByRole('option')).map(
@@ -1169,17 +1173,22 @@ describe('a ticket and its phase (spec:roadmap RM-48)', () => {
   it('keeps the queue’s candidates when the phase-mates cannot be read', async () => {
     const user = userEvent.setup();
     serve(FROZEN);
-    server.on('/tracker/demo/items', {
+    server.on('/tracker/demo/items?fields=summary', {
       body: { project: 'demo', items: [item('demo-t0005', { title: 'In the queue' })] },
     });
-    server.on(`/tracker/demo/items?phase=${PHASE}`, { status: 500, body: { error: 'Down.' } });
+    server.on(`/tracker/demo/items?phase=${PHASE}&fields=summary`, {
+      status: 500,
+      body: { error: 'Down.' },
+    });
     open();
     await screen.findByRole('heading', { name: 'Next up' });
     await user.click(screen.getByRole('button', { name: /Block…/ }));
     const dialog = screen.getByRole('dialog', { name: 'Block this ticket' });
     await user.click(within(dialog).getByRole('radio', { name: 'Waits on tickets' }));
     await waitFor(() =>
-      expect(server.matching(`/tracker/demo/items?phase=${PHASE}`, 'GET')).toHaveLength(1),
+      expect(
+        server.matching(`/tracker/demo/items?phase=${PHASE}&fields=summary`, 'GET'),
+      ).toHaveLength(1),
     );
     await user.click(within(dialog).getByRole('combobox'));
     expect(await screen.findByRole('option', { name: /In the queue/ })).toBeInTheDocument();
@@ -1187,7 +1196,11 @@ describe('a ticket and its phase (spec:roadmap RM-48)', () => {
 
   it('asks for no phase-mates for a ticket with no phase', async () => {
     const user = userEvent.setup();
-    server.on('/tracker/demo/items', { body: { project: 'demo', items: [] } }, 'GET');
+    server.on(
+      '/tracker/demo/items?fields=summary',
+      { body: { project: 'demo', items: [] } },
+      'GET',
+    );
     open();
     await screen.findByRole('heading', { name: 'Next up' });
     await user.click(screen.getByRole('button', { name: /Block…/ }));
@@ -1196,7 +1209,9 @@ describe('a ticket and its phase (spec:roadmap RM-48)', () => {
         name: 'Waits on tickets',
       }),
     );
-    await waitFor(() => expect(server.matching('/tracker/demo/items', 'GET')).toHaveLength(1));
+    await waitFor(() =>
+      expect(server.matching('/tracker/demo/items?fields=summary', 'GET')).toHaveLength(1),
+    );
     expect(server.matching(/items\?phase=/)).toHaveLength(0);
   });
 

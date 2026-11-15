@@ -254,6 +254,13 @@ export interface Item {
   events?: TrackerEvent[];
 }
 
+/**
+ * A ticket as the summary reads give it (`?fields=summary`, ubu-l3848): every
+ * field but `body`, which is most of a list's weight. The dashboard, the
+ * history and the pickers read these; the item page reads the whole ticket.
+ */
+export type ItemSummary = Omit<Item, 'body' | 'events'>;
+
 export interface ProjectSummary {
   name: string;
   created_at: string;
@@ -284,7 +291,10 @@ export interface ProjectsResponse {
   projects: ProjectSummary[];
 }
 
-/** `GET /tracker/{project}`: the dashboard's whole read (D14). */
+/**
+ * `GET /tracker/{project}?fields=summary`: the dashboard's whole read (D14),
+ * its tickets without their bodies (ubu-l3848).
+ */
 export interface QueueView {
   project: string;
   exists: boolean;
@@ -293,29 +303,29 @@ export interface QueueView {
    * (requests too), in list order. Never in any other section. Absent from a
    * server before drafts; read as empty.
    */
-  drafts?: Item[];
+  drafts?: ItemSummary[];
   /**
    * The owner's requests waiting to be broken down (rag-t0044), whatever
    * their status, in list order. Never in `queue`. Absent from a server
    * before them; read as empty.
    */
-  requests?: Item[];
+  requests?: ItemSummary[];
   /** Done, unacknowledged, oldest first and newest last (rag-t0029). */
-  done: Item[];
+  done: ItemSummary[];
   /**
    * Items in review (waiting on the owner), blocked or not, in list order
    * (rag-t0024). Absent from a server older than the status; read as empty.
    */
-  review?: Item[];
+  review?: ItemSummary[];
   /** The linked list head first, gates included, review, blocked and deferred items excluded. */
-  queue: Item[];
+  queue: ItemSummary[];
   /** Blocked queued items that are not deferred, in list order. */
-  blocked: Item[];
+  blocked: ItemSummary[];
   /**
    * Deferred items, blocked or not, in list order (rag-t0017). Absent from a
    * server older than the status; read as empty.
    */
-  deferred?: Item[];
+  deferred?: ItemSummary[];
   /**
    * How many tickets are frozen in a phase (spec:roadmap D20), drafts included.
    * Every list above leaves them out. Absent from a server before the roadmap.
@@ -570,6 +580,12 @@ export interface Roadmap {
 export interface ItemsResponse {
   project: string;
   items: Item[];
+}
+
+/** `GET /tracker/{project}/items?fields=summary` (ubu-l3848). */
+export interface ItemSummariesResponse {
+  project: string;
+  items: ItemSummary[];
 }
 
 /** One label of a project's vocabulary (rag-t0027). */

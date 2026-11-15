@@ -34,7 +34,7 @@ import type { LabelCount, QueueView as QueueViewRecord } from '../tracker/types'
 import { mountAt } from './harness';
 import { TrackerServer, gateItem, item, queueRoute, queueView } from './trackerFixtures';
 
-const QUEUE = /^\/tracker\/demo$/;
+const QUEUE = /^\/tracker\/demo\?fields=summary$/;
 const LABELS = '/tracker/demo/labels';
 const VOCABULARY: LabelCount[] = [
   { label: 'Biomes', count: 1, queued: 1 },

@@ -26,7 +26,7 @@ import type { DocumentView, QueueView as QueueViewRecord } from '../tracker/type
 import { AUTHOR, mount, mountAt } from './harness';
 import { STAMP, TrackerServer, item, queueRoute, queueView } from './trackerFixtures';
 
-const QUEUE = /^\/tracker\/demo$/;
+const QUEUE = /^\/tracker\/demo\?fields=summary$/;
 const ITEMS = '/tracker/demo/items';
 const AS_OWNER = { author_email: AUTHOR, surface: 'web' };
 

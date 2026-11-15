@@ -332,7 +332,7 @@ describe('the dashboard and the item page', () => {
     server = new TrackerServer();
     server.on('/tracker/projects', { body: { projects: [] } });
     server.on(
-      /^\/tracker\/demo$/,
+      /^\/tracker\/demo\?fields=summary$/,
       queueRoute(() => view),
       'GET',
     );
@@ -441,7 +441,7 @@ describe('History and Documents', () => {
     server = new TrackerServer();
     server.on('/tracker/projects', { body: { projects: [] } });
     server.on(
-      /^\/tracker\/demo\/items\?status=done$/,
+      /^\/tracker\/demo\/items\?status=done&fields=summary$/,
       {
         body: {
           project: 'demo',

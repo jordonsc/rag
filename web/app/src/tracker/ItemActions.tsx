@@ -17,7 +17,7 @@ import {
 
 import { asApiError, isAbort, type LedgerApiError } from '../api';
 import writeStyles from '../writes/writes.module.css';
-import { listItems, setItemPhase, updateItem } from './api';
+import { listItemSummaries, setItemPhase, updateItem } from './api';
 import { AttachTextarea, useAttachments } from './attach';
 import { CopyButton } from './CopyButton';
 import {
@@ -42,6 +42,7 @@ import {
   type BlockReason,
   type Intensity,
   type Item,
+  type ItemSummary,
   type ItemStatus,
   type ItemUpdate,
   type Link,
@@ -141,7 +142,7 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
   // Block with reason dependency (rag-t0018): the items it waits on, chosen
   // from the project's queued items, read when that reason is first chosen.
   const [waitsOn, setWaitsOn] = useState<string[]>([]);
-  const [candidates, setCandidates] = useState<Item[] | null>(null);
+  const [candidates, setCandidates] = useState<ItemSummary[] | null>(null);
 
   useEffect(() => {
     if (open !== 'block' || reason !== 'dependency' || candidates !== null) {
@@ -153,10 +154,10 @@ export function ItemActions({ item, onWritten }: ItemActionsProps) {
     // leaves the rest on offer.
     const phase = item.phase ?? '';
     Promise.all([
-      listItems(item.project, undefined, controller.signal),
+      listItemSummaries(item.project, undefined, controller.signal),
       phase === ''
         ? { items: [] }
-        : listItems(item.project, { phase }, controller.signal).catch((error: unknown) => {
+        : listItemSummaries(item.project, { phase }, controller.signal).catch((error: unknown) => {
             if (isAbort(error)) {
               throw error;
             }
@@ -653,14 +654,17 @@ export function editBody(
  * works across the boundary). Done and cancelled items are left out: there is
  * nothing to wait for in either.
  */
-export function dependencyCandidates(item: Item, items: readonly Item[]): Item[] {
+export function dependencyCandidates<T extends ItemSummary>(
+  item: ItemSummary,
+  items: readonly T[],
+): T[] {
   return items.filter(
     (candidate) => candidate.id !== item.id && (candidate.queued || candidate.frozen === true),
   );
 }
 
 /** Two lists as one: each ticket once, the first list's order first. */
-function mergeById(first: readonly Item[], second: readonly Item[]): Item[] {
+function mergeById<T extends ItemSummary>(first: readonly T[], second: readonly T[]): T[] {
   const seen = new Set(first.map((item) => item.id));
   return [...first, ...second.filter((item) => !seen.has(item.id))];
 }

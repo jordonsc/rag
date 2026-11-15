@@ -28,7 +28,7 @@ import { Link } from 'react-router';
 import { cx } from '../util';
 import { phasePath } from './paths';
 import styles from './tracker.module.css';
-import type { Item, Roadmap } from './types';
+import type { ItemSummary, Roadmap } from './types';
 import { useRoadmap } from './useRoadmap';
 import { readVelocityWindow } from './velocity';
 
@@ -53,7 +53,7 @@ export function phaseTitleMap(roadmap: Roadmap): Titles {
 }
 
 /** The phases `items` name, once each, in id order, with `keep` added (a filter's options). */
-export function phasesIn(items: readonly Item[], keep = ''): string[] {
+export function phasesIn(items: readonly Pick<ItemSummary, 'phase'>[], keep = ''): string[] {
   const ids = new Set(items.flatMap((item) => (item.phase ? [item.phase] : [])));
   if (keep !== '') {
     ids.add(keep);

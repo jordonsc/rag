@@ -23,6 +23,7 @@ import {
   getVelocity,
   isProjectName,
   listItems,
+  listItemSummaries,
   moveItem,
   movePhase,
   recallPhase,
@@ -104,15 +105,18 @@ describe('the author fields', () => {
 
 describe('the queue read', () => {
   it('is unconditional without a validator and conditional with one', async () => {
-    server.on('/tracker/demo', { body: queueView(), headers: { etag: '"abc"' } });
+    // The summary read (ubu-l3848): no row draws a body.
+    const QUEUE = '/tracker/demo?fields=summary';
+    server.on(QUEUE, { body: queueView(), headers: { etag: '"abc"' } });
     const first = await getQueue('demo');
     expect(first).toMatchObject({ kind: 'fresh', etag: '"abc"' });
-    expect(server.last('/tracker/demo').headers['if-none-match']).toBeUndefined();
+    expect(server.last(QUEUE).headers['if-none-match']).toBeUndefined();
 
-    server.onceOn('/tracker/demo', { status: 304, headers: { etag: '"abc"' } });
+    server.onceOn(QUEUE, { status: 304, headers: { etag: '"abc"' } });
     const second = await getQueue('demo', '"abc"');
     expect(second).toEqual({ kind: 'unchanged' });
-    expect(server.last('/tracker/demo').headers['if-none-match']).toBe('"abc"');
+    expect(server.last(QUEUE).headers['if-none-match']).toBe('"abc"');
+    expect(server.matching('/tracker/demo')).toHaveLength(0);
   });
 
   it('acknowledges with the author fields alone', async () => {
@@ -239,6 +243,19 @@ describe('the roadmap (spec:roadmap RM-40 to RM-49)', () => {
     }
     await listItems('demo');
     expect(server.last(/items/).path).toBe('/tracker/demo/items');
+  });
+
+  it('reads summaries with `fields=summary`, beside the other filters (ubu-l3848)', async () => {
+    server.on(/\/tracker\/demo\/items/, { body: { project: 'demo', items: [] } });
+    await listItemSummaries('demo');
+    expect(server.last(/items/).path).toBe('/tracker/demo/items?fields=summary');
+    await listItemSummaries('demo', 'done');
+    expect(server.last(/items/).path).toBe('/tracker/demo/items?status=done&fields=summary');
+    await listItemSummaries('demo', { phase: 'demo-p0001' });
+    expect(server.last(/items/).path).toBe('/tracker/demo/items?phase=demo-p0001&fields=summary');
+    // The full read stays the default.
+    await listItems('demo', 'done');
+    expect(server.last(/items/).path).toBe('/tracker/demo/items?status=done');
   });
 
   it('builds the pages’ paths, never under /tracker/', () => {

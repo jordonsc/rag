@@ -446,6 +446,11 @@ ledger's rules above: the identity gate prompts rather than hides
 (`tracker/gate.ts`), nothing is optimistic, and a failure is the server's own
 sentence.
 
+Lists are read as summaries (`fields=summary`, ledger ubu-l3848): the dashboard's queue view, the
+History page and the dependency picker get every ticket without its `body` (`ItemSummary` in
+`types.ts`), which the ticket page reads when it opens one. History's text filter also searches
+bodies, so its first use reads the full lists once, in the background.
+
 | File                                                         | What it is                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `api.ts`, `types.ts`                                         | The client for **every** m01 route — the queue, tickets, documents, revisions and diffs, specs, milestones, concepts, attachments — typed from `api.md`. The documents pages (m04) build on it as it stands                                                                                                                                                                                                                                                                                                         |

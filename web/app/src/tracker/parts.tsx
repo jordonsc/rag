@@ -13,7 +13,7 @@ import { linkKey, linkTooltip, useLinkTitles } from './linkTitles';
 import { itemPath, linkHref, projectPath } from './paths';
 import { PhaseChip } from './phaseTitles';
 import styles from './tracker.module.css';
-import type { Approval, Item, Link as ItemLink } from './types';
+import type { Approval, ItemSummary, Link as ItemLink } from './types';
 import {
   approvalLabel,
   approvalTone,
@@ -381,7 +381,7 @@ export function PageNotice({ tone = 'info', children, onDismiss }: PageNoticePro
 }
 
 /** A blocked item's reason (or the bare word) and what it waits on. */
-export function BlockDetail({ project, item }: { project: string; item: Item }) {
+export function BlockDetail({ project, item }: { project: string; item: ItemSummary }) {
   if (!item.blocked) {
     return null;
   }
@@ -397,7 +397,7 @@ export function BlockDetail({ project, item }: { project: string; item: Item }) 
 
 export interface SecondLineProps {
   project: string;
-  item: Item;
+  item: ItemSummary;
   /** What follows the type and the assignee on the left: a badge, what it waits on. */
   children?: ReactNode;
 }

@@ -6,8 +6,9 @@
  * which say they are a last change; acknowledged and unacknowledged done both
  * listed; the status, type and text filters, kept in the URL; a row and its
  * link opening the item page; a failed read with its retry; a refused project
- * name never becoming a request; and the History tab beside Queue and
- * Documents.
+ * name never becoming a request; the summary reads, and the bodies read only
+ * once the text filter is used (ubu-l3848); and the History tab beside Queue
+ * and Documents.
  */
 
 import { screen, waitFor, within } from '@testing-library/react';
@@ -76,7 +77,8 @@ beforeEach(() => {
   server.on(
     ITEMS,
     (sent) => {
-      const status = new URL(sent.path, 'http://x').searchParams.get('status');
+      const query = new URL(sent.path, 'http://x').searchParams;
+      const status = query.get('status');
       const items =
         status === 'done'
           ? DONE
@@ -85,7 +87,10 @@ beforeEach(() => {
             : status === 'failed'
               ? FAILED
               : [item('demo-t0009', { title: 'Still pending' })];
-      return { body: { project: 'demo', items } };
+      // As the server answers it: a summary carries no body.
+      const shaped =
+        query.get('fields') === 'summary' ? items.map(({ body: _body, ...rest }) => rest) : items;
+      return { body: { project: 'demo', items: shaped } };
     },
     'GET',
   );
@@ -123,6 +128,48 @@ describe('the history page', () => {
       .sort();
     expect(statuses).toEqual(['cancelled', 'done', 'failed']);
     expect(screen.queryByText('Still pending')).toBeNull();
+  });
+
+  it('reads summaries, and the bodies only once the text filter is used (ubu-l3848)', async () => {
+    const user = userEvent.setup();
+    open();
+    await loaded();
+    const fields = () =>
+      server
+        .matching(ITEMS, 'GET')
+        .map((sent) => new URL(sent.path, 'http://x').searchParams.get('fields'));
+    expect(fields()).toEqual(['summary', 'summary', 'summary']);
+
+    // Filtering by status or type needs no body.
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Type' }), 'recon');
+    expect(rowIds()).toEqual(['demo-t0005']);
+    expect(fields()).toHaveLength(3);
+
+    // The first text reads the full lists once, and a body phrase then matches.
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Type' }), '');
+    await user.type(screen.getByLabelText('Narrow the history'), 'migration');
+    await waitFor(() => expect(rowIds()).toEqual(['demo-t0005']));
+    expect(fields()).toEqual(['summary', 'summary', 'summary', null, null, null]);
+    // Read once: a new text, after clearing, reads nothing more.
+    await user.clear(screen.getByLabelText('Narrow the history'));
+    await user.type(screen.getByLabelText('Narrow the history'), 'superseded');
+    expect(rowIds()).toEqual(['demo-t0005']);
+    expect(fields()).toHaveLength(6);
+  });
+
+  it('keeps narrowing by the other fields when the bodies cannot be read', async () => {
+    const user = userEvent.setup();
+    server.onceOn(
+      /status=cancelled$/,
+      { status: 500, body: { error: 'store unavailable' } },
+      'GET',
+    );
+    open();
+    await loaded();
+    await user.type(screen.getByLabelText('Narrow the history'), 'importer');
+    await waitFor(() => expect(server.matching(/status=cancelled$/, 'GET')).toHaveLength(1));
+    expect(rowIds()).toEqual(['demo-t0006']);
+    expect(screen.queryByText('Could not load demo’s history.')).toBeNull();
   });
 
   it('lists every finished item newest first, acknowledged or not', async () => {
@@ -194,7 +241,7 @@ describe('the history page', () => {
     const box = screen.getByLabelText('Narrow the history');
 
     await user.type(box, 'MIGRATION');
-    expect(rowIds()).toEqual(['demo-t0005']);
+    await waitFor(() => expect(rowIds()).toEqual(['demo-t0005']));
     expect(screen.getByTestId('address')).toHaveTextContent('?q=MIGRATION');
 
     await user.clear(box);
@@ -263,7 +310,7 @@ describe('the history page', () => {
 describe('the History tab', () => {
   beforeEach(() => {
     server.on(
-      /^\/tracker\/demo$/,
+      /^\/tracker\/demo\?fields=summary$/,
       queueRoute(() => queueView()),
       'GET',
     );

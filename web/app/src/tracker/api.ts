@@ -55,6 +55,7 @@ import type {
   ItemStatus,
   ItemUpdate,
   ItemsResponse,
+  ItemSummariesResponse,
   LabelsResponse,
   Milestone,
   MilestoneCreate,
@@ -324,7 +325,9 @@ export type QueueFetch =
   { kind: 'fresh'; view: QueueView; etag: string | null } | { kind: 'unchanged' };
 
 /**
- * The dashboard's read (D14): done, the queue in list order, blocked.
+ * The dashboard's read (D14): done, the queue in list order, blocked. Its
+ * tickets come without their bodies (`fields=summary`, ubu-l3848): no row
+ * draws one, and a ticket's page reads it whole.
  *
  * Pass the `etag` of the view in hand to make it conditional; `null` or
  * absent fetches it whole.
@@ -334,7 +337,7 @@ export async function getQueue(
   etag?: string | null,
   signal?: AbortSignal,
 ): Promise<QueueFetch> {
-  const fetched = await send<QueueView>(`/tracker/${enc(project)}`, {
+  const fetched = await send<QueueView>(`/tracker/${enc(project)}?fields=summary`, {
     signal,
     etag: etag ?? null,
   });
@@ -392,6 +395,28 @@ export function listItems(
     typeof filter === 'string' ? { status: filter, phase: null } : (filter ?? {});
   return request<ItemsResponse>(
     `/tracker/${enc(project)}/items${query({ status, phase: phase?.trim() ?? undefined })}`,
+    { signal },
+  );
+}
+
+/**
+ * {@link listItems} without each ticket's body (`fields=summary`, ubu-l3848):
+ * the read for anything that lists tickets but draws no body. Bodies are
+ * about two thirds of a busy project's full list.
+ */
+export function listItemSummaries(
+  project: string,
+  filter?: ItemFilter,
+  signal?: AbortSignal,
+): Promise<ItemSummariesResponse> {
+  const { status, phase } =
+    typeof filter === 'string' ? { status: filter, phase: null } : (filter ?? {});
+  return request<ItemSummariesResponse>(
+    `/tracker/${enc(project)}/items${query({
+      status,
+      phase: phase?.trim() ?? undefined,
+      fields: 'summary',
+    })}`,
     { signal },
   );
 }

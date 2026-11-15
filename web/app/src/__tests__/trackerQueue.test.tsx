@@ -25,7 +25,7 @@ import { onTestFinished } from 'vitest';
 import userEvent from '@testing-library/user-event';
 
 import { QueueView } from '../tracker/QueueView';
-import type { Item, QueueView as QueueViewRecord } from '../tracker/types';
+import type { Item, ItemSummary, QueueView as QueueViewRecord } from '../tracker/types';
 import { mountAt } from './harness';
 import { QueueList, gateOwnTitle } from '../tracker/QueueList';
 import { summary } from '../tracker/ProjectPicker';
@@ -39,7 +39,7 @@ import {
   roadmap,
 } from './trackerFixtures';
 
-const QUEUE = /^\/tracker\/demo$/;
+const QUEUE = /^\/tracker\/demo\?fields=summary$/;
 const PROJECTS = '/tracker/projects';
 
 let server: TrackerServer;
@@ -597,7 +597,7 @@ describe('approving from the row', () => {
       `/tracker/items/${id}`,
       (sent) => {
         const approval = sent.body!.approval as Item['approval'];
-        const set = (row: Item) => (row.id === id ? { ...row, approval } : row);
+        const set = (row: ItemSummary) => (row.id === id ? { ...row, approval } : row);
         view = {
           ...view,
           done: view.done.map(set),

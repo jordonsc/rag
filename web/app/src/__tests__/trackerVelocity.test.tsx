@@ -27,7 +27,7 @@ import { formatRate, formatVelocity } from '../tracker/velocity';
 import { mountAt } from './harness';
 import { TrackerServer, item, queueRoute, queueView } from './trackerFixtures';
 
-const QUEUE = /^\/tracker\/demo$/;
+const QUEUE = /^\/tracker\/demo\?fields=summary$/;
 const VELOCITY = '/tracker/demo/velocity';
 const WINDOW_KEY = 'rag.tracker.velocityWindow';
 

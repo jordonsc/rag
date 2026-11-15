@@ -35,7 +35,7 @@ import { PhaseFilter, phasesIn, PhaseTitlesProvider } from './phaseTitles';
 import { ProjectPicker } from './ProjectPicker';
 import { GateMarker, QueueList } from './QueueList';
 import styles from './tracker.module.css';
-import type { Item, Place } from './types';
+import type { ItemSummary, Place } from './types';
 import { useScrollMemory } from './scrollMemory';
 import { useQueue } from './useQueue';
 import { useVelocity } from './useVelocity';
@@ -70,12 +70,12 @@ function refocusRow(id: string) {
  * in progress and no gate. The queue's lists hold no blocked or review ticket,
  * so this is all of them.
  */
-function isWorkInProgress(item: Item): boolean {
+function isWorkInProgress(item: ItemSummary): boolean {
   return item.status === 'in_progress' && item.type !== 'gate';
 }
 
 /** The queue in `order`, any id the order does not name kept at the end. */
-function inOrder(items: readonly Item[], order: readonly string[] | null): Item[] {
+function inOrder(items: readonly ItemSummary[], order: readonly string[] | null): ItemSummary[] {
   if (order === null) {
     return [...items];
   }
@@ -90,7 +90,7 @@ function inOrder(items: readonly Item[], order: readonly string[] | null): Item[
 
 interface FlatRowProps {
   project: string;
-  item: Item;
+  item: ItemSummary;
   state: DotState;
   /** The first line's right end: the approval and the section's own actions. */
   actions: ReactNode;
@@ -215,15 +215,17 @@ function Dashboard({ project }: { project: string }) {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [unratified, setUnratified] = useState(false);
   const [adding, setAdding] = useState<'item' | 'gate' | 'request' | null>(null);
-  const [removing, setRemoving] = useState<Item | null>(null);
-  const [unblocking, setUnblocking] = useState<Item | null>(null);
-  const [deferring, setDeferring] = useState<Item | null>(null);
-  const [resuming, setResuming] = useState<Item | null>(null);
-  const [publishing, setPublishing] = useState<Item | null>(null);
-  const [drafting, setDrafting] = useState<Item | null>(null);
-  const [confirming, setConfirming] = useState<Item | null>(null);
-  const [sendingBack, setSendingBack] = useState<Item | null>(null);
-  const [approving, setApproving] = useState<{ item: Item; action: ApprovalAction } | null>(null);
+  const [removing, setRemoving] = useState<ItemSummary | null>(null);
+  const [unblocking, setUnblocking] = useState<ItemSummary | null>(null);
+  const [deferring, setDeferring] = useState<ItemSummary | null>(null);
+  const [resuming, setResuming] = useState<ItemSummary | null>(null);
+  const [publishing, setPublishing] = useState<ItemSummary | null>(null);
+  const [drafting, setDrafting] = useState<ItemSummary | null>(null);
+  const [confirming, setConfirming] = useState<ItemSummary | null>(null);
+  const [sendingBack, setSendingBack] = useState<ItemSummary | null>(null);
+  const [approving, setApproving] = useState<{ item: ItemSummary; action: ApprovalAction } | null>(
+    null,
+  );
   const [refocus, setRefocus] = useState<string | null>(null);
   const [acking, setAcking] = useState(false);
   const [params, setParams] = useSearchParams();
@@ -260,7 +262,7 @@ function Dashboard({ project }: { project: string }) {
   }, [refocus]);
 
   const move = useCallback(
-    (item: Item, place: Place, order: string[]) => {
+    (item: ItemSummary, place: Place, order: string[]) => {
       if (gate.fields === null) {
         gate.prompt();
         return;
@@ -282,7 +284,7 @@ function Dashboard({ project }: { project: string }) {
   );
 
   const approve = useCallback(
-    (item: Item, action: ApprovalAction) => {
+    (item: ItemSummary, action: ApprovalAction) => {
       if (!gate.ready) {
         gate.prompt();
         return;
@@ -316,7 +318,7 @@ function Dashboard({ project }: { project: string }) {
 
   const view = state.kind === 'ready' ? state.view : null;
   const keep = useCallback(
-    (item: Item) =>
+    (item: ItemSummary) =>
       (!unratified || item.approval === 'agent') &&
       hasLabel(item, label) &&
       (phase === '' || item.phase === phase),
@@ -326,7 +328,7 @@ function Dashboard({ project }: { project: string }) {
   // the filtered work is in. The unratified filter applies to them as before.
   const narrowed = label !== '' || phase !== '';
   const keepInQueue = useCallback(
-    (item: Item) =>
+    (item: ItemSummary) =>
       item.type === 'gate' && narrowed ? !unratified || item.approval === 'agent' : keep(item),
     [keep, unratified, narrowed],
   );

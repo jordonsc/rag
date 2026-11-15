@@ -11,7 +11,7 @@
  * `LabelEditor`'s `useProjectLabels`.
  */
 
-import type { Item, LabelCount } from './types';
+import type { ItemSummary, LabelCount } from './types';
 
 /** The longest label, in characters (the server's `MAX_LABEL_CHARS`). */
 export const LABEL_MAX_CHARS = 32;
@@ -100,7 +100,7 @@ export function sameLabels(a: readonly string[], b: readonly string[]): boolean 
 }
 
 /** Whether `item` carries `label`, ignoring case. An empty label matches every item. */
-export function hasLabel(item: Item, label: string): boolean {
+export function hasLabel(item: Pick<ItemSummary, 'labels'>, label: string): boolean {
   const key = labelKey(normaliseLabel(label));
   return key === '' || (item.labels ?? []).some((own) => labelKey(own) === key);
 }
@@ -110,7 +110,7 @@ export function hasLabel(item: Item, label: string): boolean {
  * `keep` added when no item carries it: a filter's options, so a label in the
  * URL is still offered (and can be cleared) when nothing in view has it.
  */
-export function labelsIn(items: readonly Item[], keep = ''): string[] {
+export function labelsIn(items: readonly Pick<ItemSummary, 'labels'>[], keep = ''): string[] {
   const byKey = new Map<string, string>();
   for (const item of items) {
     for (const label of item.labels ?? []) {

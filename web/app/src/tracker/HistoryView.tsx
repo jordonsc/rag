@@ -15,7 +15,7 @@ import {
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 
 import { asApiError, isAbort, type LedgerApiError } from '../api';
-import { isProjectName, listItems, PROJECT_NAME_ERROR } from './api';
+import { isProjectName, listItems, listItemSummaries, PROJECT_NAME_ERROR } from './api';
 import { ProjectTabs } from './docParts';
 import styles from './history.module.css';
 import { hasLabel, labelsIn, normaliseLabel } from './labels';
@@ -24,7 +24,7 @@ import { itemPath, storeLastProject } from './paths';
 import { ProjectPicker } from './ProjectPicker';
 import { useScrollMemory } from './scrollMemory';
 import frame from './tracker.module.css';
-import { ITEM_TYPES, type Item, type ItemType } from './types';
+import { ITEM_TYPES, type ItemSummary, type ItemType } from './types';
 import { itemStatusLabel, itemTypeLabel } from './vocab';
 
 /**
@@ -56,7 +56,10 @@ function isItemType(value: string | null): value is ItemType {
  * last change as a cancel time. A `done` item without `done_at` cannot happen
  * on the wire; it falls back the same way rather than sorting as the epoch.
  */
-export function finishedAt(item: Item): { at: string; field: 'done_at' | 'updated_at' } {
+export function finishedAt(item: Pick<ItemSummary, 'status' | 'done_at' | 'updated_at'>): {
+  at: string;
+  field: 'done_at' | 'updated_at';
+} {
   if (item.status === 'done' && item.done_at !== null) {
     return { at: item.done_at, field: 'done_at' };
   }
@@ -67,24 +70,38 @@ export function finishedAt(item: Item): { at: string; field: 'done_at' | 'update
  * Newest first by `finishedAt`, then by id descending (a later id was minted
  * later). RFC 3339 UTC stamps compare as strings.
  */
-export function byFinishedDesc(a: Item, b: Item): number {
+export function byFinishedDesc(a: ItemSummary, b: ItemSummary): number {
   const at = finishedAt(b).at.localeCompare(finishedAt(a).at);
   return at !== 0 ? at : b.id.localeCompare(a.id);
 }
 
-/** Whether an item holds `text`: its id, title, body or assignee, ignoring case. */
-export function matchesText(item: Item, text: string): boolean {
+/**
+ * A row of the page: a ticket's summary, with its body once the bodies are
+ * read (only when the text filter is first used, ubu-l3848).
+ */
+export type HistoryItem = ItemSummary & { body?: string };
+
+/**
+ * Whether an item holds `text`: its id, title, body (when read) or assignee,
+ * ignoring case.
+ */
+export function matchesText(item: HistoryItem, text: string): boolean {
   const needle = text.trim().toLowerCase();
   if (needle === '') {
     return true;
   }
-  return [item.id, item.title, item.body, item.assignee ?? ''].some((field) =>
+  return [item.id, item.title, item.body ?? '', item.assignee ?? ''].some((field) =>
     field.toLowerCase().includes(needle),
   );
 }
 
 type Loaded =
-  { kind: 'loading' } | { kind: 'ready'; items: Item[] } | { kind: 'error'; error: LedgerApiError };
+  | { kind: 'loading' }
+  | { kind: 'ready'; items: ItemSummary[] }
+  | { kind: 'error'; error: LedgerApiError };
+
+/** The bodies, by ticket id: unread until the text filter is first used. */
+type Bodies = { kind: 'unread' } | { kind: 'reading' } | { kind: 'read'; by: Map<string, string> };
 
 /** The route: a project name the server would refuse never becomes a request. */
 export function HistoryView() {
@@ -107,8 +124,11 @@ export function HistoryView() {
  * cancelled, or done and acknowledged, the dashboard no longer draws it. This
  * is the way back to it: every row opens the item page, which has Reopen.
  *
- * One `GET /tracker/{project}/items?status=…` per status, in parallel; the
- * filters (status, type, label, text) narrow on the client and live in the URL
+ * One `GET /tracker/{project}/items?status=…&fields=summary` per status, in
+ * parallel: the rows draw no body, and a busy project's bodies are most of
+ * its weight (ubu-l3848). The text filter searches bodies too, so its first
+ * use reads the full lists once, in the background; until they land it
+ * matches the id, title and assignee. The filters (status, type, label, text) narrow on the client and live in the URL
  * (`?status=`, `?type=`, `?label=`, `?q=`), so a reload or a shared link keeps
  * them. The label filter (rag-t0027) offers the labels the finished items
  * carry and matches case-insensitively; each item's labels are drawn under
@@ -127,6 +147,7 @@ function History({ project }: { project: string }) {
   const label = normaliseLabel(params.get('label') ?? '');
   const [text, setText] = useState(params.get('q') ?? '');
   const [loaded, setLoaded] = useState<Loaded>({ kind: 'loading' });
+  const [bodies, setBodies] = useState<Bodies>({ kind: 'unread' });
   const [attempt, setAttempt] = useState(0);
   // Back from an item lands where the reader left the list (rag-t0040).
   useScrollMemory(`history:${project}`, loaded.kind === 'ready');
@@ -136,7 +157,7 @@ function History({ project }: { project: string }) {
   useEffect(() => {
     const controller = new AbortController();
     setLoaded({ kind: 'loading' });
-    Promise.all(HISTORY_STATUSES.map((s) => listItems(project, s, controller.signal)))
+    Promise.all(HISTORY_STATUSES.map((s) => listItemSummaries(project, s, controller.signal)))
       .then((responses) =>
         setLoaded({ kind: 'ready', items: responses.flatMap((response) => response.items) }),
       )
@@ -147,6 +168,39 @@ function History({ project }: { project: string }) {
       });
     return () => controller.abort();
   }, [project, attempt]);
+
+  // The bodies, read once, when the text filter is first used. A failure
+  // leaves the filter on the other fields.
+  const searching = text.trim() !== '';
+  useEffect(() => {
+    if (!searching || bodies.kind !== 'unread') {
+      return undefined;
+    }
+    const controller = new AbortController();
+    setBodies({ kind: 'reading' });
+    Promise.all(HISTORY_STATUSES.map((s) => listItems(project, s, controller.signal)))
+      .then((responses) =>
+        setBodies({
+          kind: 'read',
+          by: new Map(
+            responses.flatMap((response) =>
+              response.items.map((item): [string, string] => [item.id, item.body]),
+            ),
+          ),
+        }),
+      )
+      .catch((error: unknown) => {
+        if (!isAbort(error)) {
+          setBodies({ kind: 'read', by: new Map() });
+        }
+      });
+    return () => {
+      controller.abort();
+      setBodies((current) => (current.kind === 'reading' ? { kind: 'unread' } : current));
+    };
+    // `bodies` is left out on purpose: its own change to `reading` must not
+    // cancel the read it starts.
+  }, [project, searching, attempt]);
 
   /** Set or clear one filter in the URL, keeping the others. */
   const setParam = (key: 'status' | 'type' | 'label' | 'q', value: string) => {
@@ -164,10 +218,15 @@ function History({ project }: { project: string }) {
     );
   };
 
-  const all = useMemo(
-    () => (loaded.kind === 'ready' ? [...loaded.items].sort(byFinishedDesc) : []),
-    [loaded],
-  );
+  const all = useMemo((): HistoryItem[] => {
+    if (loaded.kind !== 'ready') {
+      return [];
+    }
+    const sorted = [...loaded.items].sort(byFinishedDesc);
+    return bodies.kind === 'read'
+      ? sorted.map((item) => ({ ...item, body: bodies.by.get(item.id) ?? '' }))
+      : sorted;
+  }, [loaded, bodies]);
   // The status counts follow the type and text filters but not the status
   // filter itself, so each segment says what choosing it would show.
   const narrowed = useMemo(
@@ -190,7 +249,7 @@ function History({ project }: { project: string }) {
     return by;
   }, [narrowed]);
 
-  const columns: Array<Column<Item>> = [
+  const columns: Array<Column<HistoryItem>> = [
     {
       key: 'status',
       header: 'Status',
