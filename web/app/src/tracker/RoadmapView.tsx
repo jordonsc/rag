@@ -15,7 +15,7 @@ import { asApiError } from '../api';
 import { cx } from '../util';
 import { isProjectName, movePhase, PROJECT_NAME_ERROR, unarchivePhase } from './api';
 import { NewPhaseDialog, NoteDialog } from './dialogs';
-import { ProjectTabs } from './docParts';
+import { ProjectsHomeIcon, ProjectTabs } from './docParts';
 import { TRACKER_IDENTITY_NEEDED, useTrackerGate } from './gate';
 import { PageNotice } from './parts';
 import { phasePath, storeLastProject } from './paths';
@@ -149,7 +149,7 @@ function RoadmapPage({ project }: { project: string }) {
   const head = (
     <header className={frame.head}>
       <div className={frame.headTitle}>
-        <Icon name="map" size={18} />
+        <ProjectsHomeIcon icon="map" />
         <h1 className={frame.title}>{project}</h1>
       </div>
       <div className={frame.headControls}>

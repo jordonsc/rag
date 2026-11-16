@@ -172,6 +172,14 @@ describe('the history page', () => {
     expect(screen.queryByText('Could not load demo’s history.')).toBeNull();
   });
 
+  it('links the icon beside the title back to the project list (rag-t0074)', async () => {
+    open();
+    await loaded();
+    const back = screen.getByRole('link', { name: 'Back to projects' });
+    expect(back).toHaveAttribute('href', '/projects');
+    expect(back).toHaveAttribute('title', 'Back to projects');
+  });
+
   it('lists every finished item newest first, acknowledged or not', async () => {
     open();
     await loaded();

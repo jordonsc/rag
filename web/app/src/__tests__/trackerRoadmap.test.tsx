@@ -150,6 +150,14 @@ describe('the figures', () => {
     }
   });
 
+  it('links the icon beside the title back to the project list (rag-t0074)', async () => {
+    open();
+    await ready();
+    const back = screen.getByRole('link', { name: 'Back to projects' });
+    expect(back).toHaveAttribute('href', '/projects');
+    expect(back).toHaveAttribute('title', 'Back to projects');
+  });
+
   it('draws a null ETA as a dash and speaks it as unknown', async () => {
     current = roadmap({
       velocity_per_day: 0,

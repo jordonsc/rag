@@ -82,6 +82,30 @@ describe('the tracker in the shell', () => {
     expect(screen.getByLabelText('Open by id')).toBeInTheDocument();
   });
 
+  // rag-t0074: the icon beside the project's title is the way back to the list.
+  it('goes back to the project list from the icon beside the title', async () => {
+    const user = userEvent.setup();
+    mount(<App />, { route: '/projects/demo' });
+    await screen.findByRole('heading', { name: 'demo' });
+    const back = screen.getByRole('link', { name: 'Back to projects' });
+    // A real link, so a middle click or Open in new tab works.
+    expect(back.tagName).toBe('A');
+    expect(back).toHaveAttribute('href', '/projects');
+    expect(back).toHaveAttribute('title', 'Back to projects');
+
+    await user.click(back);
+    expect(screen.getByTestId('address')).toHaveTextContent(/^\/projects$/);
+    expect(
+      await screen.findByRole('link', { name: /demo.*6 queued · 1 blocked · 2 done/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('draws no way back to the project list on the project list itself', async () => {
+    mount(<App />, { route: '/projects' });
+    await screen.findByRole('heading', { name: 'Projects' });
+    expect(screen.queryByRole('link', { name: 'Back to projects' })).toBeNull();
+  });
+
   it('switches project from the picker', async () => {
     const user = userEvent.setup();
     mount(<App />, { route: '/projects/demo' });

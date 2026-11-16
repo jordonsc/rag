@@ -6,6 +6,7 @@ import { asApiError, isAbort, type LedgerApiError } from '../api';
 import { cx } from '../util';
 import { getReport, getVelocity, isProjectName, PROJECT_NAME_ERROR } from './api';
 import { BurnDown, RangeBars, type BurnPoint, type RangeRow } from './charts';
+import { ProjectsHomeIcon } from './docParts';
 import { projectPath, storeLastProject } from './paths';
 import styles from './report.module.css';
 import { dayLabels, localDays } from './reportMath';
@@ -156,7 +157,7 @@ function Report({ project }: { project: string }) {
     <div className={frame.view}>
       <header className={frame.head}>
         <div className={frame.headTitle}>
-          <Icon name="clock" size={18} />
+          <ProjectsHomeIcon icon="clock" />
           <h1 className={frame.title}>{project} report</h1>
         </div>
         <div className={frame.headControls}>

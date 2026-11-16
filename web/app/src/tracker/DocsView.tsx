@@ -43,7 +43,7 @@ import {
   updateMilestone,
 } from './api';
 import { Attachments } from './Attachments';
-import { ProjectTabs, StateBadge } from './docParts';
+import { ProjectsHomeIcon, ProjectTabs, StateBadge } from './docParts';
 import styles from './docs.module.css';
 import { draftKey, hasDraft } from './drafts';
 import { useTrackerGate } from './gate';
@@ -144,7 +144,7 @@ function Documents({ project }: { project: string }) {
     <div className={frame.view}>
       <header className={frame.head}>
         <div className={frame.headTitle}>
-          <Icon name="file-text" size={18} />
+          <ProjectsHomeIcon icon="file-text" />
           <h1 className={frame.title}>{project} documents</h1>
         </div>
         <div className={frame.headControls}>

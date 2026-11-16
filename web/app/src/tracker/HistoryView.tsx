@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Card,
   ErrorState,
-  Icon,
   Input,
   Panel,
   Segmented,
@@ -16,7 +15,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 
 import { asApiError, isAbort, type LedgerApiError } from '../api';
 import { isProjectName, listItems, listItemSummaries, PROJECT_NAME_ERROR } from './api';
-import { ProjectTabs } from './docParts';
+import { ProjectsHomeIcon, ProjectTabs } from './docParts';
 import styles from './history.module.css';
 import { hasLabel, labelsIn, normaliseLabel } from './labels';
 import { LabelChips, labelQuery, StatusDot, TypeBadge } from './parts';
@@ -354,7 +353,7 @@ function History({ project }: { project: string }) {
     <div className={frame.view}>
       <header className={frame.head}>
         <div className={frame.headTitle}>
-          <Icon name="history" size={18} />
+          <ProjectsHomeIcon icon="history" />
           <h1 className={frame.title}>{project} history</h1>
         </div>
         <div className={frame.headControls}>

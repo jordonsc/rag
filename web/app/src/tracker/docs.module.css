@@ -54,6 +54,32 @@
   }
 }
 
+/* The icon beside a project page's title, a link back to the project list
+   (rag-t0074). The negative margin gives it a padded hit area without moving
+   the title; at rest it is the dim icon it was. */
+.homeIcon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  margin: calc(-1 * var(--rag-space-1));
+  padding: var(--rag-space-1);
+  border-radius: var(--rag-radius-s);
+  color: var(--rag-dim);
+  text-decoration: none;
+}
+
+.homeIcon:hover {
+  background: var(--rag-surface2);
+  color: var(--rag-bright);
+}
+
+.homeIcon:focus-visible {
+  outline: 2px solid var(--rag-acc);
+  outline-offset: 1px;
+  color: var(--rag-bright);
+}
+
 .state {
   display: inline-flex;
 }

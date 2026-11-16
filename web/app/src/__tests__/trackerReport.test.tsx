@@ -245,6 +245,14 @@ describe('the window', () => {
     expect(windowChoice('7 d')).toHaveAttribute('aria-checked', 'true');
   });
 
+  it('links the icon beside the title back to the project list (rag-t0074)', async () => {
+    open();
+    await figures();
+    const back = screen.getByRole('link', { name: 'Back to projects' });
+    expect(back).toHaveAttribute('href', '/projects');
+    expect(back).toHaveAttribute('title', 'Back to projects');
+  });
+
   it('reads the 24-hour report from the parameter, which wins over the kept choice', async () => {
     open('/projects/demo/report?window=24h', '7d');
     await figures();

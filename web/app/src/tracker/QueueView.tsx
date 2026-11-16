@@ -26,7 +26,7 @@ import {
   SEND_BACK_NOTE_ROWS,
   type ApprovalAction,
 } from './dialogs';
-import { ProjectTabs } from './docParts';
+import { ProjectsHomeIcon, ProjectTabs } from './docParts';
 import { TRACKER_IDENTITY_NEEDED, useTrackerGate } from './gate';
 import { hasLabel, labelsIn, normaliseLabel } from './labels';
 import { ApprovalControl, BlockDetail, DraftBadge, SecondLine, StatusDot } from './parts';
@@ -425,7 +425,7 @@ function Dashboard({ project }: { project: string }) {
       <div className={styles.view}>
         <header className={styles.head}>
           <div className={styles.headTitle}>
-            <Icon name="list-todo" size={18} />
+            <ProjectsHomeIcon icon="list-todo" />
             <h1 className={styles.title}>{project}</h1>
           </div>
           <div className={styles.headControls}>

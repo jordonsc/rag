@@ -250,6 +250,14 @@ describe('the documents page', () => {
     server.on('/tracker/demo/docs?kind=doc', { body: { project: 'demo', documents: [] } });
   });
 
+  it('links the icon beside the title back to the project list (rag-t0074)', async () => {
+    mountAt('/projects/:project/docs', <DocsView />, { route: '/projects/demo/docs' });
+    await screen.findByRole('region', { name: 'Open' });
+    const back = screen.getByRole('link', { name: 'Back to projects' });
+    expect(back).toHaveAttribute('href', '/projects');
+    expect(back).toHaveAttribute('title', 'Back to projects');
+  });
+
   it('lists concepts by state, the archived folded away', async () => {
     const user = userEvent.setup();
     mountAt('/projects/:project/docs', <DocsView />, { route: '/projects/demo/docs' });

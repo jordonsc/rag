@@ -1,7 +1,9 @@
 /**
  * The small pieces the documents pages (m04) are drawn from: a rendered
  * document whose links to other documents stay in the application, a line
- * diff, the Queue / Roadmap / Documents / History switch, and a record's state.
+ * diff, the Queue / Roadmap / Documents / History switch, the icon beside a
+ * project page's title that leads back to the project list, and a record's
+ * state.
  */
 
 import type { MouseEvent } from 'react';
@@ -12,7 +14,7 @@ import { Markdown } from '../markdown/Markdown';
 import { cx } from '../util';
 import type { DiffRow } from './diff';
 import styles from './docs.module.css';
-import { docsPath, historyPath, projectPath, roadmapPath } from './paths';
+import { docsPath, historyPath, PROJECTS_PATH, projectPath, roadmapPath } from './paths';
 import { RETURN_STATE } from './scrollMemory';
 import { recordStateLabel, recordStateTone } from './vocab';
 
@@ -141,6 +143,28 @@ export function ProjectTabs({ project, active }: { project: string; active: Proj
       {tab('docs', docsPath(project), 'file-text', 'Documents')}
       {tab('history', historyPath(project), 'history', 'History')}
     </nav>
+  );
+}
+
+/** The accessible name and tooltip of the way back to the project list. */
+export const BACK_TO_PROJECTS = 'Back to projects';
+
+/**
+ * The icon beside a project page's title, as the way back to the project list
+ * (rag-t0074). A real link, so a middle click or Open in new tab works and
+ * the keyboard reaches it; it looks like the plain icon it replaced until a
+ * hover or focus marks it as one.
+ */
+export function ProjectsHomeIcon({ icon }: { icon: string }) {
+  return (
+    <Link
+      to={PROJECTS_PATH}
+      className={styles.homeIcon}
+      aria-label={BACK_TO_PROJECTS}
+      title={BACK_TO_PROJECTS}
+    >
+      <Icon name={icon} size={18} />
+    </Link>
   );
 }
 
